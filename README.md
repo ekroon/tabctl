@@ -1,4 +1,8 @@
-# Tab Archive Helper (Edge macOS)
+# Tab Control
+
+Tab Control is a local-first Microsoft Edge Manifest V3 (MV3) extension with a native messaging host and the `tabctl` command-line interface (CLI) for inspecting, analyzing, and managing browser tabs. It can list tabs and groups, analyze duplicates or stale tabs, inspect page metadata and selector signals (for example, extracting a price or headline), open new tabs into named groups, move tabs and groups around, close or archive targets, generate reports in JSON/Markdown/CSV, and undo actions when needed. A policy file can mark pinned tabs or specific group titles as protected so automated actions skip them.
+
+It requires the Edge extension to be installed and the native host running on the same machine; the CLI talks to the host, and the host proxies requests to the extension.
 
 This repo contains:
 - Edge MV3 extension (tab/group inspection + actions)
@@ -27,8 +31,14 @@ npm test
 2. Click **Load unpacked** and select `extension`.
 3. Copy the extension ID shown on the extensions page.
 
-## 2) Register the native messaging host
-Use the helper script to generate the manifest and wrapper:
+## 2) Register the native messaging host (macOS)
+Use the CLI to generate the manifest and wrapper:
+
+```bash
+tabctl setup --browser edge --extension-id <YOUR_EXTENSION_ID>
+```
+
+You can also use the helper script:
 
 ```bash
 bash scripts/setup-native-host.sh <YOUR_EXTENSION_ID>
@@ -100,7 +110,7 @@ Create a default policy file:
 tabctl policy --init
 ```
 
-The setup script also installs a default policy if none exists.
+The shell setup script also installs a default policy if none exists; `tabctl setup` does not.
 See `config/policy.example.json` for a starter template.
 
 ## Install tabctl on PATH
