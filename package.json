@@ -1,0 +1,14 @@
+{
+  "name": "check-browser-tabs",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/sync-build.js",
+    "test": "npm run build && node --test tests/unit/*.js",
+    "test:unit": "npm run build && node --test tests/unit/*.js"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.277",
+    "@types/node": "^20.11.30",
+    "typescript": "^5.4.5"
+  }
+}

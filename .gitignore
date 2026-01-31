@@ -1,0 +1,6 @@
+node_modules/
+build/
+.tabarchive/
+*.log
+*.sock
+.DS_Store

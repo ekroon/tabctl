@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Tab Archive Helper",
+  "version": "0.1.0",
+  "description": "Archive and manage browser tabs with CLI support",
+  "permissions": [
+    "tabs",
+    "tabGroups",
+    "scripting",
+    "storage",
+    "downloads",
+    "nativeMessaging",
+    "sessions",
+    "alarms"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
