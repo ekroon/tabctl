@@ -88,6 +88,18 @@ Options:
 
 If no window selector is provided, the focused window is used.
 
+### group-assign
+Move existing tabs into an existing group (or create one).
+Options:
+- `--tab <id>` (repeatable)
+- `--group <name>`
+- `--group-id <id>`
+- `--window <id>` (disambiguate group titles or create target)
+- `--create` (create group if missing)
+- `--color <name>`
+- `--collapsed`
+- `--expanded`
+
 ### move-tab
 Move a single tab before/after a tab or group.
 Options:

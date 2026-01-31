@@ -37,7 +37,7 @@ function parseArgs(argv: string[]) {
     }
 
     const key = arg.slice(2);
-    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json", "window-title"].includes(key)) {
+    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json", "window-title", "create", "collapsed", "expanded"].includes(key)) {
       options[key] = true;
       continue;
     }
@@ -396,6 +396,7 @@ function buildHelpData() {
       "inspect",
       "focus",
       "open",
+      "group-assign",
       "move-tab",
       "move-group",
       "setup",
@@ -442,6 +443,16 @@ function buildHelpData() {
         "--window-group <name>",
         "--window-tab <id>",
         "--window-url <substring>",
+      ],
+      "group-assign": [
+        "--tab <id> (repeatable)",
+        "--group <name>",
+        "--group-id <id>",
+        "--window <id>",
+        "--create",
+        "--color <name>",
+        "--collapsed",
+        "--expanded",
       ],
       "move-tab": [
         "--tab <id>",
@@ -696,6 +707,18 @@ async function main() {
         windowUrl: options["window-url"],
       };
       break;
+    case "group-assign":
+      action = "group-assign";
+      params = {
+        tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
+        groupTitle: options.group,
+        groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
+        windowId: options.window ? Number(options.window) : undefined,
+        create: Boolean(options.create),
+        color: options.color,
+        collapsed: options.collapsed === true ? true : options.expanded === true ? false : undefined,
+      };
+      break;
     case "move-tab":
       action = "move-tab";
       params = {
@@ -770,7 +793,7 @@ async function main() {
       errorOut(`Unknown command: ${command}`);
   }
 
-  if (enforcePolicy && ["analyze", "inspect", "report", "close", "archive", "focus", "move-tab", "move-group"].includes(command)) {
+  if (enforcePolicy && ["analyze", "inspect", "report", "close", "archive", "focus", "move-tab", "move-group", "group-assign"].includes(command)) {
     if (command === "close" && options.apply) {
       errorOut("Policy blocks close --apply; use explicit tab targets.");
     }
@@ -840,7 +863,7 @@ async function main() {
           pinned: tab.pinned,
         })),
       };
-    } else if (command === "move-tab" || command === "move-group") {
+    } else if (command === "move-tab" || command === "move-group" || command === "group-assign") {
       if (!eligibleIds.length || (command === "move-group" && protectedTabs.length > 0)) {
         earlyResponse = {
           ok: true,
@@ -859,7 +882,7 @@ async function main() {
             policy: policySummary,
           },
         };
-      } else if (command === "move-tab") {
+      } else if (command === "move-tab" || command === "group-assign") {
         params = {
           ...params,
           tabId: eligibleIds[0],

@@ -7,6 +7,7 @@ import test from "node:test";
 import { startMockSocket, stopMockSocket } from "./socket";
 
 const cliPath = path.resolve(__dirname, "../../cli/tabctl.js");
+const testConfigHome = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-test-config-"));
 
 async function runCli(args: string[], socketPath?: string, extraEnv?: Record<string, string>) {
   const env = { ...process.env };
@@ -15,6 +16,10 @@ async function runCli(args: string[], socketPath?: string, extraEnv?: Record<str
   }
   if (extraEnv) {
     Object.assign(env, extraEnv);
+  }
+  const hasCustomConfig = extraEnv && Object.prototype.hasOwnProperty.call(extraEnv, "XDG_CONFIG_HOME");
+  if (!hasCustomConfig) {
+    env.XDG_CONFIG_HOME = testConfigHome;
   }
 
   return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
@@ -306,6 +311,50 @@ test("open passes urls and window selectors", async () => {
   assert.equal(params?.windowUrl, "mail.google.com");
 });
 
+test("group-assign passes grouping options", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { summary: { groupedTabs: 2 } },
+  }));
+
+  const result = await runCli([
+    "group-assign",
+    "--tab",
+    "12",
+    "--tab",
+    "15",
+    "--group",
+    "Research",
+    "--window",
+    "2",
+    "--create",
+    "--color",
+    "blue",
+    "--collapsed",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "group-assign");
+  const params = requests[0].params as {
+    tabIds?: number[];
+    groupTitle?: string;
+    groupId?: number;
+    windowId?: number;
+    create?: boolean;
+    color?: string;
+    collapsed?: boolean;
+  } | undefined;
+  assert.deepEqual(params?.tabIds, [12, 15]);
+  assert.equal(params?.groupTitle, "Research");
+  assert.equal(params?.windowId, 2);
+  assert.equal(params?.create, true);
+  assert.equal(params?.color, "blue");
+  assert.equal(params?.collapsed, true);
+});
+
 test("move-tab passes target options", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
     ok: true,
@@ -459,6 +508,7 @@ test("help supports json output", async () => {
   assert.ok(options?.analyze?.includes("--window-title (include active window title)"));
   assert.ok(options?.open?.includes("--url <url> (repeatable)"));
   assert.ok(options?.open?.includes("--after-group <name>"));
+  assert.ok(options?.["group-assign"]?.includes("--create"));
   assert.ok(options?.["move-tab"]?.includes("--after-tab <id>"));
   assert.ok(options?.["move-group"]?.includes("--before-group <name>"));
   assert.ok(options?.setup?.includes("--browser edge|chrome"));

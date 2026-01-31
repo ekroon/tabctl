@@ -79,6 +79,7 @@ tabctl inspect --tab 123 --signal github-state --signal-concurrency 4 --signal-t
 tabctl inspect --tab 123 --signal selector --selector "price=.price" --signal-timeout-ms 1500 --progress
 tabctl inspect --tab 123 --signal selector --signal-config ~/.config/tabctl/signals.json --progress
 tabctl focus --tab 123
+tabctl group-assign --tab 123 --group "Work" --create
 tabctl policy --init
 tabctl archive --all
 tabctl archive --window 3
