@@ -56,13 +56,13 @@ if [[ -f "$DEFAULT_POLICY" && ! -f "$POLICY_PATH" ]]; then
 fi
 
 HOST_DIR="$HOME/Library/Application Support/Microsoft Edge/NativeMessagingHosts"
-MANIFEST_PATH="$HOST_DIR/com.example.tabarchive.json"
+MANIFEST_PATH="$HOST_DIR/com.erwinkroon.tabctl.json"
 
 mkdir -p "$HOST_DIR"
 
 cat > "$MANIFEST_PATH" <<EOF
 {
-  "name": "com.example.tabarchive",
+  "name": "com.erwinkroon.tabctl",
   "description": "Tab archive native host",
   "path": "$WRAPPER_PATH",
   "type": "stdio",

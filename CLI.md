@@ -109,6 +109,19 @@ Options:
 - `--after-group <name>`
 - `--window <id>` (disambiguate group names)
 
+### setup
+Install the native host manifest (macOS only).
+Options:
+- `--browser edge|chrome` (required)
+- `--extension-id <id>` (required; or `TABARCHIVE_EXTENSION_ID`)
+- `--node <path>` (optional; or `TABARCHIVE_NODE`)
+
+Run once per browser:
+```bash
+tabctl setup --browser edge --extension-id <edge-id>
+tabctl setup --browser chrome --extension-id <chrome-id>
+```
+
 ### policy
 Show the current policy summary and path, or create a default policy file.
 Options:

@@ -35,7 +35,7 @@ bash scripts/setup-native-host.sh <YOUR_EXTENSION_ID>
 ```
 
 This writes the manifest to:
-`~/Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.example.tabarchive.json`
+`~/Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.erwinkroon.tabctl.json`
 
 The manifest points to a wrapper script at:
 `~/.tabarchive/tabarchive-host.sh`

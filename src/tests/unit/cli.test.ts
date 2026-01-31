@@ -377,6 +377,52 @@ test("move-group passes target options", async () => {
   assert.equal(params?.windowId, 3);
 });
 
+test("setup writes native host manifest", async () => {
+  if (process.platform !== "darwin") {
+    return;
+  }
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-"));
+  const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const nodePath = process.execPath;
+  const result = await runCli([
+    "setup",
+    "--browser",
+    "edge",
+    "--extension-id",
+    extensionId,
+    "--node",
+    nodePath,
+  ], undefined, { HOME: homeDir });
+
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim()) as { ok: boolean; data: Record<string, unknown> };
+  assert.equal(output.ok, true);
+
+  const wrapperPath = path.join(homeDir, ".tabarchive", "tabarchive-host.sh");
+  const manifestPath = path.join(
+    homeDir,
+    "Library",
+    "Application Support",
+    "Microsoft Edge",
+    "NativeMessagingHosts",
+    "com.erwinkroon.tabctl.json",
+  );
+  assert.equal(output.data.wrapperPath, wrapperPath);
+  assert.equal(output.data.manifestPath, manifestPath);
+  assert.ok(fs.existsSync(wrapperPath));
+  assert.ok(fs.existsSync(manifestPath));
+
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { name?: string; path?: string; allowed_origins?: string[] };
+  assert.equal(manifest.name, "com.erwinkroon.tabctl");
+  assert.equal(manifest.path, wrapperPath);
+  assert.deepEqual(manifest.allowed_origins, [`chrome-extension://${extensionId}/`]);
+
+  const wrapper = fs.readFileSync(wrapperPath, "utf8");
+  const hostPath = path.resolve(__dirname, "../../host/host.js");
+  assert.ok(wrapper.includes(nodePath));
+  assert.ok(wrapper.includes(hostPath));
+});
+
 test("policy init creates default file", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabarchive-policy-init-"));
   const result = await runCli(["policy", "--init"], undefined, { XDG_CONFIG_HOME: dir });
@@ -409,6 +455,7 @@ test("help supports json output", async () => {
   assert.ok(options?.open?.includes("--after-group <name>"));
   assert.ok(options?.["move-tab"]?.includes("--after-tab <id>"));
   assert.ok(options?.["move-group"]?.includes("--before-group <name>"));
+  assert.ok(options?.setup?.includes("--browser edge|chrome"));
   assert.ok(options?.report?.includes("--format json|md|csv"));
   assert.ok(options?.close?.includes("--dry-run"));
   assert.ok(options?.history?.includes("--limit <n>"));

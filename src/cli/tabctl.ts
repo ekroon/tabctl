@@ -7,6 +7,9 @@ import { renderCsv, renderMarkdown } from "./lib/report";
 import { annotateEntry, defaultPolicyPath, defaultPolicyTemplate, evaluateTab, loadPolicy, summarizePolicy, type Policy } from "./lib/policy";
 
 const SOCKET_PATH = process.env.TABARCHIVE_SOCKET || path.join(os.homedir(), ".tabarchive", "tabarchive.sock");
+const HOST_NAME = "com.erwinkroon.tabctl";
+const HOST_DESCRIPTION = "Tab archive native host";
+const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
 
 type Options = {
   _: string[];
@@ -259,6 +262,127 @@ function printJson(payload: Record<string, unknown>, pretty = true) {
   process.stdout.write(`${output}\n`);
 }
 
+function resolveBrowser(value: unknown): "edge" | "chrome" | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed === "edge" || trimmed === "chrome") {
+    return trimmed;
+  }
+  return null;
+}
+
+function resolveExtensionId(options: Options) {
+  const raw = typeof options["extension-id"] === "string"
+    ? String(options["extension-id"])
+    : (process.env.TABARCHIVE_EXTENSION_ID || "");
+  const value = raw.trim().toLowerCase();
+  if (!value) {
+    errorOut("Missing --extension-id (or TABARCHIVE_EXTENSION_ID)");
+  }
+  if (!EXTENSION_ID_PATTERN.test(value)) {
+    errorOut(`Extension ID looks unusual: ${raw}`);
+  }
+  return value;
+}
+
+function resolveNodePath(options: Options) {
+  const raw = typeof options.node === "string"
+    ? String(options.node)
+    : (process.env.TABARCHIVE_NODE || process.execPath || "");
+  const value = raw.trim();
+  if (!value) {
+    errorOut("Node binary not found. Set --node or TABARCHIVE_NODE.");
+  }
+  if (!path.isAbsolute(value)) {
+    errorOut(`Node path must be absolute: ${value}`);
+  }
+  try {
+    fs.accessSync(value, fs.constants.X_OK);
+  } catch (error) {
+    errorOut(`Node binary not executable: ${value}`);
+  }
+  return value;
+}
+
+function resolveHostPath() {
+  const root = path.resolve(__dirname, "..");
+  const hostPath = path.join(root, "host", "host.js");
+  if (!fs.existsSync(hostPath)) {
+    errorOut(`Host script not found at ${hostPath}. Run: npm run build`);
+  }
+  return hostPath;
+}
+
+function resolveManifestDir(browser: "edge" | "chrome") {
+  const home = os.homedir();
+  if (!home) {
+    errorOut("Home directory not found.");
+  }
+  if (browser === "edge") {
+    return path.join(home, "Library", "Application Support", "Microsoft Edge", "NativeMessagingHosts");
+  }
+  return path.join(home, "Library", "Application Support", "Google", "Chrome", "NativeMessagingHosts");
+}
+
+function writeWrapper(nodePath: string, hostPath: string) {
+  const wrapperDir = path.join(os.homedir(), ".tabarchive");
+  fs.mkdirSync(wrapperDir, { recursive: true, mode: 0o700 });
+  const wrapperPath = path.join(wrapperDir, "tabarchive-host.sh");
+  const escapedNode = nodePath.replace(/"/g, "\\\"");
+  const escapedHost = hostPath.replace(/"/g, "\\\"");
+  const wrapper = [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    `exec \"${escapedNode}\" \"${escapedHost}\"`,
+    "",
+  ].join("\n");
+  fs.writeFileSync(wrapperPath, wrapper, "utf8");
+  fs.chmodSync(wrapperPath, 0o700);
+  return wrapperPath;
+}
+
+function runSetup(options: Options, prettyOutput: boolean) {
+  if (process.platform !== "darwin") {
+    errorOut("tabctl setup is only supported on macOS.");
+  }
+
+  const browser = resolveBrowser(options.browser);
+  if (!browser) {
+    errorOut("Missing or invalid --browser (edge|chrome)");
+  }
+
+  const extensionId = resolveExtensionId(options);
+  const nodePath = resolveNodePath(options);
+  const hostPath = resolveHostPath();
+  const wrapperPath = writeWrapper(nodePath, hostPath);
+  const manifestDir = resolveManifestDir(browser);
+  fs.mkdirSync(manifestDir, { recursive: true });
+
+  const manifestPath = path.join(manifestDir, `${HOST_NAME}.json`);
+  const manifest = {
+    name: HOST_NAME,
+    description: HOST_DESCRIPTION,
+    path: wrapperPath,
+    type: "stdio",
+    allowed_origins: [`chrome-extension://${extensionId}/`],
+  };
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+
+  printJson({
+    ok: true,
+    data: {
+      browser,
+      extensionId,
+      manifestPath,
+      wrapperPath,
+      hostPath,
+      nodePath,
+    },
+  }, prettyOutput);
+}
+
 function buildHelpData() {
   return {
     commands: [
@@ -270,6 +394,7 @@ function buildHelpData() {
       "open",
       "move-tab",
       "move-group",
+      "setup",
       "policy",
       "archive",
       "close",
@@ -330,6 +455,11 @@ function buildHelpData() {
         "--before-group <name>",
         "--after-group <name>",
         "--window <id>",
+      ],
+      setup: [
+        "--browser edge|chrome",
+        "--extension-id <id>",
+        "--node <path>",
       ],
       policy: [
         "--init",
@@ -398,9 +528,10 @@ function printHelp(jsonOutput: boolean) {
   process.stdout.write(lines.join("\n") + "\n");
 }
 
-function errorOut(message: string) {
+function errorOut(message: string): never {
   printJson({ ok: false, error: { message } });
   process.exit(1);
+  throw new Error(message);
 }
 
 async function main() {
@@ -425,6 +556,11 @@ async function main() {
 
   if (!command || command === "help" || options.help) {
     printHelp(options.json === true);
+    return;
+  }
+
+  if (command === "setup") {
+    runSetup(options, prettyOutput);
     return;
   }
 

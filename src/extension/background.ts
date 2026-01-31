@@ -1,4 +1,4 @@
-const HOST_NAME = "com.example.tabarchive";
+const HOST_NAME = "com.erwinkroon.tabctl";
 const KEEPALIVE_ALARM = "tabarchive-keepalive";
 const KEEPALIVE_INTERVAL_MINUTES = 1;
 const DEFAULT_STALE_DAYS = 30;
