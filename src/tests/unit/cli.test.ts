@@ -442,6 +442,12 @@ test("help outputs plain text by default", async () => {
   assert.match(result.stdout, /tabctl - Edge tab management CLI/);
 });
 
+test("help supports --help flag", async () => {
+  const result = await runCli(["--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /tabctl - Edge tab management CLI/);
+});
+
 test("help supports json output", async () => {
   const result = await runCli(["help", "--json"]);
   assert.equal(result.status, 0);

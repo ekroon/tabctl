@@ -22,12 +22,16 @@ function createId() {
 
 function parseArgs(argv: string[]) {
   const args = [...argv];
-  const command = args.shift();
+  let command: string | undefined;
   const options: Options = { _: [] };
 
   while (args.length > 0) {
     const arg = args.shift() as string;
     if (!arg.startsWith("--")) {
+      if (!command) {
+        command = arg;
+        continue;
+      }
       options._.push(arg);
       continue;
     }
