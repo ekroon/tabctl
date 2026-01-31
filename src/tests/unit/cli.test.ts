@@ -233,11 +233,3 @@ test("help supports json output", async () => {
   assert.equal(output.ok, true);
   assert.ok(output.data?.commands);
 });
-
-test("no-policy flag is rejected", async () => {
-  const result = await runCli(["list", "--no-policy"]);
-  assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
-  assert.equal(output.ok, false);
-  assert.match(output.error.message, /no-policy/);
-});

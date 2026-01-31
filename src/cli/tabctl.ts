@@ -35,6 +35,7 @@ function parseArgs(argv: string[]) {
       continue;
     }
 
+
     const value = args.shift();
     if (key === "signal") {
       if (!options.signal) {
@@ -321,9 +322,6 @@ function errorOut(message: string) {
 async function main() {
   let { command, options } = parseArgs(process.argv.slice(2));
   const prettyOutput = options.pretty !== false;
-  if (Object.prototype.hasOwnProperty.call(options, "no-policy")) {
-    errorOut("--no-policy is not supported.");
-  }
   if (Object.prototype.hasOwnProperty.call(options, "policy")) {
     errorOut("Custom policy path is not supported. Use XDG_CONFIG_HOME/tabctl/policy.json.");
   }

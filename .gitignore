@@ -4,3 +4,9 @@ build/
 *.log
 *.sock
 .DS_Store
+/cli/*.js
+/cli/lib/*.js
+/host/*.js
+/host/lib/*.js
+/extension/*.js
+/tests/unit/*.js
