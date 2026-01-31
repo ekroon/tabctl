@@ -70,6 +70,17 @@ function handleNativeMessage(payload) {
     if (!pendingRequest) {
         return;
     }
+    if (message.progress) {
+        refreshTimeout(pendingRequest, messageId);
+        respond(pendingRequest.socket, {
+            ok: true,
+            action: pendingRequest.action,
+            requestId: messageId,
+            progress: true,
+            data: message.data || {},
+        });
+        return;
+    }
     clearTimeout(pendingRequest.timeout);
     pending.delete(messageId);
     if (!message.ok) {
@@ -129,6 +140,18 @@ function handleNativeMessage(payload) {
 }
 function respond(socket, payload) {
     socket.write(`${JSON.stringify(payload)}\n`);
+}
+function refreshTimeout(pendingRequest, requestId) {
+    clearTimeout(pendingRequest.timeout);
+    pendingRequest.timeout = setTimeout(() => {
+        pending.delete(requestId);
+        respond(pendingRequest.socket, {
+            ok: false,
+            action: pendingRequest.action,
+            requestId,
+            error: { message: "Request timed out" },
+        });
+    }, REQUEST_TIMEOUT_MS);
 }
 function forwardToExtension(socket, request, overrides = {}) {
     const requestId = request.id || createId("req");

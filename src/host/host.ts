@@ -88,6 +88,18 @@ function handleNativeMessage(payload: string) {
     return;
   }
 
+  if (message.progress) {
+    refreshTimeout(pendingRequest, messageId);
+    respond(pendingRequest.socket, {
+      ok: true,
+      action: pendingRequest.action,
+      requestId: messageId,
+      progress: true,
+      data: message.data || {},
+    });
+    return;
+  }
+
   clearTimeout(pendingRequest.timeout);
   pending.delete(messageId);
 
@@ -154,6 +166,19 @@ function handleNativeMessage(payload: string) {
 
 function respond(socket: net.Socket, payload: Record<string, unknown>) {
   socket.write(`${JSON.stringify(payload)}\n`);
+}
+
+function refreshTimeout(pendingRequest: PendingRequest, requestId: string) {
+  clearTimeout(pendingRequest.timeout);
+  pendingRequest.timeout = setTimeout(() => {
+    pending.delete(requestId);
+    respond(pendingRequest.socket, {
+      ok: false,
+      action: pendingRequest.action,
+      requestId,
+      error: { message: "Request timed out" },
+    });
+  }, REQUEST_TIMEOUT_MS);
 }
 
 function forwardToExtension(

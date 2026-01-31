@@ -23,3 +23,14 @@ for (const target of targets) {
   const dest = path.join(root, target);
   copyDir(src, dest);
 }
+
+const executableTargets = [
+  path.join(root, "host", "host.sh"),
+  path.join(root, "cli", "tabctl.js"),
+];
+
+for (const executablePath of executableTargets) {
+  if (fs.existsSync(executablePath)) {
+    fs.chmodSync(executablePath, 0o755);
+  }
+}

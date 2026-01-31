@@ -28,25 +28,22 @@ npm test
 3. Copy the extension ID shown on the extensions page.
 
 ## 2) Register the native messaging host
-Create the host manifest at:
-`~/Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.example.tabarchive.json`
-
-Use this content (replace the path + extension ID):
-
-```json
-{
-  "name": "com.example.tabarchive",
-  "description": "Tab archive native host",
-  "path": "/Users/<you>/develop/scripts/check-browser-tabs/host/host.js",
-  "type": "stdio",
-  "allowed_origins": ["chrome-extension://<YOUR_EXTENSION_ID>/"]
-}
-```
-
-Make the host executable:
+Use the helper script to generate the manifest and wrapper:
 
 ```bash
-chmod +x /Users/<you>/develop/scripts/check-browser-tabs/host/host.js
+bash scripts/setup-native-host.sh <YOUR_EXTENSION_ID>
+```
+
+This writes the manifest to:
+`~/Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.example.tabarchive.json`
+
+The manifest points to a wrapper script at:
+`~/.tabarchive/tabarchive-host.sh`
+
+If `node` is not on PATH for Edge, pass an explicit path:
+
+```bash
+TABARCHIVE_NODE=/usr/local/bin/node bash scripts/setup-native-host.sh <YOUR_EXTENSION_ID>
 ```
 
 ## 3) Run the CLI
@@ -59,16 +56,61 @@ node /Users/<you>/develop/scripts/check-browser-tabs/cli/tabctl.js list
 ## CLI commands
 
 ```bash
+tabctl --help
+tabctl help --json
 tabctl list
 tabctl analyze --stale-days 30
+tabctl analyze --stale-days 30 --github
+tabctl analyze --stale-days 30 --tab 123 --github --progress
+tabctl analyze --stale-days 30 --github --github-concurrency 4 --progress
+tabctl analyze --stale-days 30 --github --github-concurrency 4 --github-timeout-ms 4000 --progress
+tabctl inspect --tab 123 --signal page-meta --progress
+tabctl inspect --tab 123 --signal github-state --signal-concurrency 4 --signal-timeout-ms 4000 --progress
+tabctl inspect --tab 123 --signal selector --selector "price=.price" --signal-timeout-ms 1500 --progress
+tabctl inspect --tab 123 --signal selector --signal-config ~/.config/tabctl/signals.json --progress
+tabctl focus --tab 123
+tabctl policy --init
 tabctl archive --all
 tabctl archive --window 3
-tabctl close --apply <analysisId>
 tabctl close --tab 123 --confirm
 tabctl report --format md --out /path/to/report.md
 tabctl undo <txid>
 tabctl history --limit 20
 ```
+
+## Policy (protect tabs)
+By default the CLI loads a policy file from:
+`$XDG_CONFIG_HOME/tabctl/policy.json` (or `~/.config/tabctl/policy.json`)
+
+This is a **protection-only** policy that marks tabs as ineligible for agent actions.
+Example:
+
+```json
+{
+  "protect": {
+    "pinned": true,
+    "groupTitles": ["\ud83d\udd12"]
+  }
+}
+```
+
+Create a default policy file:
+
+```bash
+tabctl policy --init
+```
+
+The setup script also installs a default policy if none exists.
+See `config/policy.example.json` for a starter template.
+
+## Install tabctl on PATH
+Use npm to install the local bin:
+
+```bash
+npm link
+```
+
+Then you can run `tabctl` directly.
 
 Notes:
 - `close --apply` uses the most recent analysis by `analysisId`.

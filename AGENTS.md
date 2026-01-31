@@ -7,11 +7,12 @@ This project controls a live Edge session. The testing approach must avoid touch
 - Never run `archive --all` or `close --apply` in a normal browsing session.
 - Use a unique, recognizable prefix for test groups and windows, e.g. `TEST-TabArchive-<timestamp>`.
 - Prefer `list`, `analyze`, and `report` for smoke tests; use `close` and `archive` only in a controlled test window.
+- Always add or update tests for new features.
 
 ## Preconditions
 - Edge is open.
 - The extension is loaded (`extension/`) and connected to the native host.
-- The native host manifest is installed and points to `host/host.js`.
+- The native host manifest is installed (use `scripts/setup-native-host.sh`).
 - CLI available via: `node /Users/<you>/develop/scripts/check-browser-tabs/cli/tabctl.js`.
 
 ## Unit tests (no Edge required)
@@ -30,6 +31,8 @@ Run these anytime:
 - `tabctl ping`
 - `tabctl list`
 - `tabctl analyze --stale-days 30`
+- `tabctl inspect --tab <tabId> --signal page-meta --progress`
+- `tabctl inspect --tab <tabId> --signal selector --selector "price=.price" --progress`
 - `tabctl report --format json` (no `--out`)
 
 ## Controlled mutation tests (real Edge, minimal risk)
@@ -64,14 +67,13 @@ Only use a dedicated test window and clearly labeled groups.
 1. Run `tabctl report --window <windowId> --format md --out /tmp/tab-report.md`.
 2. Verify the report includes descriptions for the example pages.
 
-## Safe usage of analyze/close apply
-`tabctl close --apply <analysisId>` will close every candidate in the analysis result.
-Only run this in a dedicated test profile/window with **no real tabs**. Otherwise it can close real work.
+## Safe usage of analyze/close
+`tabctl close` only works with explicit targets and is blocked for protected tabs by policy.
 
 Recommended safe pattern:
 1. Use a dedicated test profile or a brand-new Edge window with only test tabs.
-2. Run `tabctl analyze`.
-3. Run `tabctl close --apply <analysisId>`.
+2. Run `tabctl analyze` (add `--github` only when you accept slower analysis).
+3. Use `tabctl close --tab <tabId> --confirm` for a single test tab.
 4. Run `tabctl undo <txid>` to restore.
 
 ## Undo history sanity checks (synthetic)
