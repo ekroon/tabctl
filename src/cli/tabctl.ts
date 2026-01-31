@@ -4,7 +4,7 @@ import net from "net";
 import os from "os";
 import path from "path";
 import { renderCsv, renderMarkdown } from "./lib/report";
-import { annotateEntry, defaultPolicyPath, defaultPolicyTemplate, evaluateTab, loadPolicy, summarizePolicy } from "./lib/policy";
+import { annotateEntry, defaultPolicyPath, defaultPolicyTemplate, evaluateTab, loadPolicy, summarizePolicy, type Policy } from "./lib/policy";
 
 const SOCKET_PATH = process.env.TABARCHIVE_SOCKET || path.join(os.homedir(), ".tabarchive", "tabarchive.sock");
 
@@ -30,7 +30,7 @@ function parseArgs(argv: string[]) {
     }
 
     const key = arg.slice(2);
-    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json"].includes(key)) {
+    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json", "window-title"].includes(key)) {
       options[key] = true;
       continue;
     }
@@ -49,6 +49,13 @@ function parseArgs(argv: string[]) {
         options.tab = [];
       }
       (options.tab as string[]).push(value as string);
+      continue;
+    }
+    if (key === "url") {
+      if (!options.url) {
+        options.url = [];
+      }
+      (options.url as string[]).push(value as string);
       continue;
     }
     if (key === "selector") {
@@ -130,6 +137,31 @@ function buildTabIndex(snapshot: Record<string, unknown>) {
     }
   }
   return tabIndex;
+}
+
+function buildWindowTitleIndex(snapshot: Record<string, unknown>, policy: Policy | null) {
+  const windowTitleIndex = new Map<number, string | null>();
+  const windows = (snapshot.windows as Array<Record<string, unknown>>) || [];
+  for (const window of windows) {
+    const windowId = window.windowId as number;
+    if (typeof windowId !== "number") {
+      continue;
+    }
+    const tabs = (window.tabs as Array<Record<string, unknown>>) || [];
+    const activeTab = tabs.find((tab) => tab.active === true);
+    if (!activeTab) {
+      windowTitleIndex.set(windowId, null);
+      continue;
+    }
+    const { eligible } = evaluateTab(activeTab, policy);
+    if (!eligible) {
+      windowTitleIndex.set(windowId, null);
+      continue;
+    }
+    const title = typeof activeTab.title === "string" ? activeTab.title : null;
+    windowTitleIndex.set(windowId, title);
+  }
+  return windowTitleIndex;
 }
 
 function selectTabsFromSnapshot(snapshot: Record<string, unknown>, params: Record<string, unknown>) {
@@ -230,10 +262,14 @@ function printJson(payload: Record<string, unknown>, pretty = true) {
 function buildHelpData() {
   return {
     commands: [
+      "help",
       "list",
       "analyze",
       "inspect",
       "focus",
+      "open",
+      "move-tab",
+      "move-group",
       "policy",
       "archive",
       "close",
@@ -249,16 +285,17 @@ function buildHelpData() {
         "--github",
         "--github-concurrency <n>",
         "--github-timeout-ms <ms>",
-        "--tab <id>",
+        "--tab <id> (repeatable)",
+        "--window-title (include active window title)",
         "--progress",
       ],
       inspect: [
         "--signal-config <path>",
-        "--signal <id>",
-        "--selector <name=css|json>",
+        "--signal <id> (repeatable)",
+        "--selector <name=css|json> (repeatable)",
         "--signal-concurrency <n>",
         "--signal-timeout-ms <ms>",
-        "--tab <id>",
+        "--tab <id> (repeatable)",
         "--group <name>",
         "--group-id <id>",
         "--window <id>",
@@ -268,16 +305,62 @@ function buildHelpData() {
       focus: [
         "--tab <id>",
       ],
+      open: [
+        "--url <url> (repeatable)",
+        "--group <name>",
+        "--after-group <name>",
+        "--window <id>",
+        "--window-group <name>",
+        "--window-tab <id>",
+        "--window-url <substring>",
+      ],
+      "move-tab": [
+        "--tab <id>",
+        "--before-tab <id>",
+        "--after-tab <id>",
+        "--before-group <name>",
+        "--after-group <name>",
+        "--window <id>",
+      ],
+      "move-group": [
+        "--group <name>",
+        "--group-id <id>",
+        "--before-tab <id>",
+        "--after-tab <id>",
+        "--before-group <name>",
+        "--after-group <name>",
+        "--window <id>",
+      ],
+      policy: [
+        "--init",
+      ],
+      archive: [
+        "--all",
+        "--window <id>",
+        "--group <name>",
+        "--group-id <id>",
+        "--tab <id> (repeatable)",
+      ],
       close: [
         "--apply <analysisId>",
-        "--tab <id>",
+        "--tab <id> (repeatable)",
         "--group <name>",
         "--group-id <id>",
         "--window <id>",
         "--confirm",
+        "--dry-run",
       ],
-      policy: [
-        "--init",
+      report: [
+        "--format json|md|csv",
+        "--out <path>",
+        "--tab <id> (repeatable)",
+        "--group <name>",
+        "--group-id <id>",
+        "--window <id>",
+        "--all",
+      ],
+      history: [
+        "--limit <n>",
       ],
       global: [
         "--help",
@@ -311,6 +394,7 @@ function printHelp(jsonOutput: boolean) {
   }
   lines.push("");
   lines.push("Policy: $XDG_CONFIG_HOME/tabctl/policy.json (or ~/.config/tabctl/policy.json)");
+  lines.push("Policy is enforced when the file exists; missing file means no policy.");
   process.stdout.write(lines.join("\n") + "\n");
 }
 
@@ -330,6 +414,7 @@ async function main() {
   const policySummary = summarizePolicy(policyContext.policy, policyContext.path);
   const policyEnabled = policyContext.policy !== null;
   const enforcePolicy = policyEnabled;
+  const includeWindowTitle = options["window-title"] === true;
   let policySnapshot: Record<string, unknown> | null = null;
   const getPolicySnapshot = async () => {
     if (!policySnapshot) {
@@ -459,6 +544,42 @@ async function main() {
         tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
       };
       break;
+    case "open":
+      action = "open";
+      params = {
+        urls: options.url ? (options.url as string[]).map(String) : undefined,
+        groupTitle: options.group,
+        afterGroupTitle: options["after-group"],
+        windowId: options.window ? Number(options.window) : undefined,
+        windowGroupTitle: options["window-group"],
+        windowTabId: options["window-tab"] ? Number(options["window-tab"]) : undefined,
+        windowUrl: options["window-url"],
+      };
+      break;
+    case "move-tab":
+      action = "move-tab";
+      params = {
+        tabId: options.tab ? Number((options.tab as string[])[0]) : undefined,
+        tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
+        beforeTabId: options["before-tab"] ? Number(options["before-tab"]) : undefined,
+        afterTabId: options["after-tab"] ? Number(options["after-tab"]) : undefined,
+        beforeGroupTitle: options["before-group"],
+        afterGroupTitle: options["after-group"],
+        windowId: options.window ? Number(options.window) : undefined,
+      };
+      break;
+    case "move-group":
+      action = "move-group";
+      params = {
+        groupTitle: options.group,
+        groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
+        beforeTabId: options["before-tab"] ? Number(options["before-tab"]) : undefined,
+        afterTabId: options["after-tab"] ? Number(options["after-tab"]) : undefined,
+        beforeGroupTitle: options["before-group"],
+        afterGroupTitle: options["after-group"],
+        windowId: options.window ? Number(options.window) : undefined,
+      };
+      break;
     case "archive":
       action = "archive";
       params = {
@@ -509,7 +630,7 @@ async function main() {
       errorOut(`Unknown command: ${command}`);
   }
 
-  if (enforcePolicy && ["analyze", "inspect", "report", "close", "archive", "focus"].includes(command)) {
+  if (enforcePolicy && ["analyze", "inspect", "report", "close", "archive", "focus", "move-tab", "move-group"].includes(command)) {
     if (command === "close" && options.apply) {
       errorOut("Policy blocks close --apply; use explicit tab targets.");
     }
@@ -564,6 +685,44 @@ async function main() {
         };
       } else if (command === "archive") {
         params = {
+          tabIds: eligibleIds,
+        };
+      }
+
+      policyInfo = {
+        protected: protectedTabs.map((tab) => ({
+          tabId: tab.tabId,
+          windowId: tab.windowId,
+          groupId: tab.groupId,
+          groupTitle: tab.groupTitle,
+          title: tab.title,
+          url: tab.url,
+          pinned: tab.pinned,
+        })),
+      };
+    } else if (command === "move-tab" || command === "move-group") {
+      if (!eligibleIds.length || (command === "move-group" && protectedTabs.length > 0)) {
+        earlyResponse = {
+          ok: true,
+          action: command,
+          data: {
+            summary: { eligible: eligibleIds.length, protected: protectedTabs.length },
+            protected: protectedTabs.map((tab) => ({
+              tabId: tab.tabId,
+              windowId: tab.windowId,
+              groupId: tab.groupId,
+              groupTitle: tab.groupTitle,
+              title: tab.title,
+              url: tab.url,
+              pinned: tab.pinned,
+            })),
+            policy: policySummary,
+          },
+        };
+      } else if (command === "move-tab") {
+        params = {
+          ...params,
+          tabId: eligibleIds[0],
           tabIds: eligibleIds,
         };
       }
@@ -707,17 +866,24 @@ async function main() {
 
     if (command === "analyze" && Array.isArray(data.candidates)) {
       let snapshot: Record<string, unknown> | null = null;
-      if (policyEnabled) {
+      if (policyEnabled || includeWindowTitle) {
         snapshot = await getPolicySnapshot();
       }
       const tabIndex = snapshot ? buildTabIndex(snapshot) : null;
+      const windowTitleIndex = snapshot && includeWindowTitle
+        ? buildWindowTitleIndex(snapshot, policyContext.policy)
+        : null;
       data.candidates = (data.candidates as Array<Record<string, unknown>>).map((candidate) => {
         const tab = tabIndex?.get(candidate.tabId as number) || candidate;
         const { eligible, protectedReasons } = evaluateTab(tab, policyContext.policy);
+        const windowTitle = includeWindowTitle
+          ? (windowTitleIndex?.get(candidate.windowId as number) ?? null)
+          : undefined;
         return {
           ...candidate,
           eligible,
           protectedReasons,
+          ...(includeWindowTitle ? { windowTitle } : {}),
         };
       }).filter((candidate) => candidate.eligible !== false);
     }

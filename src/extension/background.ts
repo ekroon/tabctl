@@ -161,6 +161,12 @@ async function handleAction(action: string, params: Record<string, unknown>, req
       return await inspectTabs(params, requestId);
     case "focus":
       return await focusTab(params);
+    case "open":
+      return await openTabs(params);
+    case "move-tab":
+      return await moveTab(params);
+    case "move-group":
+      return await moveGroup(params);
     case "archive":
       return await archiveTabs(params);
     case "close":
@@ -765,6 +771,437 @@ async function focusTab(params: Record<string, unknown>) {
   return {
     tabId,
     windowId: tab.windowId,
+  };
+}
+
+type WindowSnapshot = {
+  windowId: number;
+  focused: boolean;
+  tabs: Array<Record<string, unknown>>;
+  groups: Array<Record<string, unknown>>;
+};
+
+function matchIncludes(value: unknown, needle: string) {
+  if (!needle) {
+    return false;
+  }
+  return typeof value === "string" && value.toLowerCase().includes(needle);
+}
+
+function resolveOpenWindow(snapshot: { windows: Array<Record<string, unknown>> }, params: Record<string, unknown>) {
+  const windows = snapshot.windows as WindowSnapshot[];
+  if (!windows.length) {
+    return { error: { message: "No windows available" } };
+  }
+
+  if (params.windowId != null) {
+    const windowId = Number(params.windowId);
+    const found = windows.find((win) => win.windowId === windowId);
+    if (!found) {
+      return { error: { message: "Window not found" } };
+    }
+    return { windowId };
+  }
+
+  if (params.windowTabId != null) {
+    const tabId = Number(params.windowTabId);
+    const found = windows.find((win) => win.tabs.some((tab) => tab.tabId === tabId));
+    if (!found) {
+      return { error: { message: "Window not found for tab" } };
+    }
+    return { windowId: found.windowId };
+  }
+
+  let candidates = [...windows];
+  let filtered = false;
+
+  if (typeof params.afterGroupTitle === "string" && params.afterGroupTitle.trim()) {
+    const groupTitle = params.afterGroupTitle.trim();
+    candidates = candidates.filter((win) => win.groups.some((group) => group.title === groupTitle));
+    filtered = true;
+  }
+
+  if (typeof params.windowGroupTitle === "string" && params.windowGroupTitle.trim()) {
+    const groupTitle = params.windowGroupTitle.trim();
+    candidates = candidates.filter((win) => win.groups.some((group) => group.title === groupTitle));
+    filtered = true;
+  }
+
+  if (typeof params.windowUrl === "string" && params.windowUrl.trim()) {
+    const needle = params.windowUrl.trim().toLowerCase();
+    candidates = candidates.filter((win) => win.tabs.some((tab) => matchIncludes(tab.url, needle)));
+    filtered = true;
+  }
+
+  if (filtered) {
+    if (candidates.length === 1) {
+      return { windowId: candidates[0].windowId };
+    }
+    if (candidates.length === 0) {
+      return { error: { message: "No matching window found" } };
+    }
+    return { error: { message: "Multiple windows match selection. Provide --window to disambiguate." } };
+  }
+
+  const focused = windows.find((win) => win.focused);
+  if (focused) {
+    return { windowId: focused.windowId };
+  }
+
+  if (windows.length === 1) {
+    return { windowId: windows[0].windowId };
+  }
+
+  return { error: { message: "Multiple windows available. Provide --window to target one." } };
+}
+
+async function openTabs(params: Record<string, unknown>) {
+  const urls = Array.isArray(params.urls)
+    ? params.urls.map((url) => (typeof url === "string" ? url.trim() : "")).filter(Boolean)
+    : [];
+  if (!urls.length) {
+    throw new Error("No URLs provided");
+  }
+
+  const snapshot = await getTabSnapshot();
+  const selection = resolveOpenWindow(snapshot, params);
+  if ((selection as { error?: Record<string, unknown> }).error) {
+    throw (selection as { error: Record<string, unknown> }).error;
+  }
+
+  const windowId = (selection as { windowId: number }).windowId;
+  const windowSnapshot = (snapshot.windows as WindowSnapshot[]).find((win) => win.windowId === windowId);
+  if (!windowSnapshot) {
+    throw new Error("Window snapshot unavailable");
+  }
+  const groupTitle = typeof params.groupTitle === "string" ? params.groupTitle.trim() : "";
+  const afterGroupTitle = typeof params.afterGroupTitle === "string" ? params.afterGroupTitle.trim() : "";
+  const created: Array<Record<string, unknown>> = [];
+  const skipped: Array<Record<string, unknown>> = [];
+  let insertIndex: number | null = null;
+
+  if (afterGroupTitle) {
+    const targetGroup = windowSnapshot.groups.find((group) => group.title === afterGroupTitle);
+    if (!targetGroup) {
+      throw new Error("Group not found in target window");
+    }
+    const groupTabs = windowSnapshot.tabs.filter((tab) => tab.groupId === targetGroup.groupId);
+    if (!groupTabs.length) {
+      throw new Error("Group has no tabs to anchor insertion");
+    }
+    const indices = groupTabs.map((tab) => Number(tab.index)).filter((value) => Number.isFinite(value)) as number[];
+    if (!indices.length) {
+      throw new Error("Group tabs missing indices");
+    }
+    insertIndex = Math.max(...indices) + 1;
+  }
+
+  let nextIndex = insertIndex;
+  for (const url of urls) {
+    try {
+      const createOptions: chrome.tabs.CreateProperties = { windowId, url, active: false };
+      if (nextIndex != null) {
+        createOptions.index = nextIndex;
+        nextIndex += 1;
+      }
+      const tab = await chrome.tabs.create(createOptions);
+      created.push({
+        tabId: tab.id,
+        windowId: tab.windowId,
+        index: tab.index,
+        url: tab.url,
+        title: tab.title,
+      });
+    } catch (error) {
+      skipped.push({ url, reason: "create_failed" });
+    }
+  }
+
+  let groupId: number | null = null;
+  if (groupTitle && created.length > 0) {
+    try {
+      const tabIds = created.map((tab) => tab.tabId as number).filter((id) => typeof id === "number");
+      if (tabIds.length > 0) {
+        groupId = await chrome.tabs.group({ tabIds, createProperties: { windowId } });
+        await chrome.tabGroups.update(groupId, { title: groupTitle });
+      }
+    } catch (error) {
+      log("Failed to create group", error);
+      groupId = null;
+    }
+  }
+
+  return {
+    windowId,
+    groupId,
+    groupTitle: groupTitle || null,
+    afterGroupTitle: afterGroupTitle || null,
+    insertIndex,
+    created,
+    skipped,
+    summary: {
+      createdTabs: created.length,
+      skippedUrls: skipped.length,
+      grouped: Boolean(groupId),
+    },
+  };
+}
+
+type GroupMatch = {
+  windowId: number;
+  group: Record<string, unknown>;
+  tabs: Array<Record<string, unknown>>;
+};
+
+function getGroupTabs(windowSnapshot: WindowSnapshot, groupId: number) {
+  return windowSnapshot.tabs
+    .filter((tab) => tab.groupId === groupId)
+    .sort((a, b) => (Number(a.index) || 0) - (Number(b.index) || 0));
+}
+
+function findGroupMatches(snapshot: { windows: Array<Record<string, unknown>> }, groupTitle: string, windowId?: number) {
+  const matches: GroupMatch[] = [];
+  const windows = snapshot.windows as WindowSnapshot[];
+  for (const win of windows) {
+    if (windowId && win.windowId !== windowId) {
+      continue;
+    }
+    for (const group of win.groups) {
+      if (group.title === groupTitle) {
+        matches.push({
+          windowId: win.windowId,
+          group,
+          tabs: getGroupTabs(win, group.groupId as number),
+        });
+      }
+    }
+  }
+  return matches;
+}
+
+function resolveGroupByTitle(snapshot: { windows: Array<Record<string, unknown>> }, groupTitle: string, windowId?: number) {
+  const matches = findGroupMatches(snapshot, groupTitle, windowId);
+  if (matches.length === 0) {
+    return { error: { message: "No matching group title found" } };
+  }
+  if (matches.length > 1) {
+    return { error: { message: "Group title is ambiguous. Provide a windowId." } };
+  }
+  return { match: matches[0] };
+}
+
+function resolveGroupById(snapshot: { windows: Array<Record<string, unknown>> }, groupId: number) {
+  const windows = snapshot.windows as WindowSnapshot[];
+  const matches: GroupMatch[] = [];
+  for (const win of windows) {
+    const group = win.groups.find((entry) => entry.groupId === groupId);
+    if (group) {
+      matches.push({
+        windowId: win.windowId,
+        group,
+        tabs: getGroupTabs(win, groupId),
+      });
+    }
+  }
+  if (matches.length === 0) {
+    return { error: { message: "Group not found" } };
+  }
+  if (matches.length > 1) {
+    return { error: { message: "Group id is ambiguous. Provide a windowId." } };
+  }
+  return { match: matches[0] };
+}
+
+function resolveMoveTarget(snapshot: { windows: Array<Record<string, unknown>> }, params: Record<string, unknown>) {
+  const beforeTabId = Number(params.beforeTabId);
+  const afterTabId = Number(params.afterTabId);
+  const beforeGroupTitle = typeof params.beforeGroupTitle === "string" ? params.beforeGroupTitle.trim() : "";
+  const afterGroupTitle = typeof params.afterGroupTitle === "string" ? params.afterGroupTitle.trim() : "";
+
+  const targets = [
+    Number.isFinite(beforeTabId) ? "before-tab" : null,
+    Number.isFinite(afterTabId) ? "after-tab" : null,
+    beforeGroupTitle ? "before-group" : null,
+    afterGroupTitle ? "after-group" : null,
+  ].filter(Boolean) as string[];
+
+  if (targets.length === 0) {
+    return { error: { message: "Missing target position (--before/--after)" } };
+  }
+  if (targets.length > 1) {
+    return { error: { message: "Only one target position is allowed" } };
+  }
+
+  const windows = snapshot.windows as WindowSnapshot[];
+  const findTab = (tabId: number) => {
+    for (const win of windows) {
+      const tab = win.tabs.find((entry) => entry.tabId === tabId);
+      if (tab) {
+        return { tab, windowId: win.windowId };
+      }
+    }
+    return null;
+  };
+
+  if (targets[0] === "before-tab" || targets[0] === "after-tab") {
+    const tabId = targets[0] === "before-tab" ? beforeTabId : afterTabId;
+    if (!Number.isFinite(tabId)) {
+      return { error: { message: "Invalid tab target" } };
+    }
+    const match = findTab(tabId);
+    if (!match) {
+      return { error: { message: "Target tab not found" } };
+    }
+    const index = Number(match.tab.index);
+    if (!Number.isFinite(index)) {
+      return { error: { message: "Target tab index unavailable" } };
+    }
+    return {
+      windowId: match.windowId,
+      index: targets[0] === "before-tab" ? index : index + 1,
+      anchor: { type: "tab", tabId },
+    };
+  }
+
+  const groupTitle = targets[0] === "before-group" ? beforeGroupTitle : afterGroupTitle;
+  const windowId = Number.isFinite(params.windowId as number) ? Number(params.windowId) : undefined;
+  const resolved = resolveGroupByTitle(snapshot, groupTitle, windowId);
+  if (resolved.error) {
+    return resolved;
+  }
+  const match = resolved.match as GroupMatch;
+  if (!match.tabs.length) {
+    return { error: { message: "Target group has no tabs" } };
+  }
+  const indices = match.tabs.map((tab) => Number(tab.index)).filter((value) => Number.isFinite(value)) as number[];
+  if (!indices.length) {
+    return { error: { message: "Target group indices unavailable" } };
+  }
+  const minIndex = Math.min(...indices);
+  const maxIndex = Math.max(...indices);
+  return {
+    windowId: match.windowId,
+    index: targets[0] === "before-group" ? minIndex : maxIndex + 1,
+    anchor: { type: "group", groupId: match.group.groupId, groupTitle },
+  };
+}
+
+async function moveTab(params: Record<string, unknown>) {
+  const tabIds = Array.isArray(params.tabIds) ? params.tabIds.map(Number) : [];
+  const tabId = Number.isFinite(params.tabId as number)
+    ? Number(params.tabId)
+    : tabIds.length
+      ? Number(tabIds[0])
+      : null;
+  if (!tabId) {
+    throw new Error("Missing tabId");
+  }
+
+  const snapshot = await getTabSnapshot();
+  const target = resolveMoveTarget(snapshot, params);
+  if ((target as { error?: Record<string, unknown> }).error) {
+    throw (target as { error: Record<string, unknown> }).error;
+  }
+
+  const windows = snapshot.windows as WindowSnapshot[];
+  const sourceWindow = windows.find((win) => win.tabs.some((tab) => tab.tabId === tabId));
+  if (!sourceWindow) {
+    throw new Error("Source tab not found");
+  }
+  const sourceTab = sourceWindow.tabs.find((tab) => tab.tabId === tabId);
+  if (!sourceTab) {
+    throw new Error("Source tab not found");
+  }
+
+  const targetWindowId = (target as { windowId: number }).windowId;
+  let targetIndex = (target as { index: number }).index;
+  const sourceIndex = Number(sourceTab.index);
+  if (Number.isFinite(sourceIndex) && sourceWindow.windowId === targetWindowId && sourceIndex < targetIndex) {
+    targetIndex -= 1;
+  }
+
+  const moved = await chrome.tabs.move(tabId, { windowId: targetWindowId, index: targetIndex });
+  return {
+    tabId,
+    from: { windowId: sourceWindow.windowId, index: sourceTab.index },
+    to: { windowId: targetWindowId, index: (moved as chrome.tabs.Tab).index },
+    summary: { movedTabs: 1 },
+  };
+}
+
+async function moveGroup(params: Record<string, unknown>) {
+  const groupId = Number.isFinite(params.groupId as number) ? Number(params.groupId) : null;
+  const groupTitle = typeof params.groupTitle === "string" ? params.groupTitle.trim() : "";
+  if (!groupId && !groupTitle) {
+    throw new Error("Missing group identifier");
+  }
+
+  const snapshot = await getTabSnapshot();
+  const resolvedGroup = groupId != null
+    ? resolveGroupById(snapshot, groupId)
+    : resolveGroupByTitle(snapshot, groupTitle, Number.isFinite(params.windowId as number) ? Number(params.windowId) : undefined);
+  if ((resolvedGroup as { error?: Record<string, unknown> }).error) {
+    throw (resolvedGroup as { error: Record<string, unknown> }).error;
+  }
+  const source = (resolvedGroup as { match: GroupMatch }).match;
+  if (!source.tabs.length) {
+    throw new Error("Group has no tabs to move");
+  }
+
+  const target = resolveMoveTarget(snapshot, params);
+  if ((target as { error?: Record<string, unknown> }).error) {
+    throw (target as { error: Record<string, unknown> }).error;
+  }
+
+  if ((target as { anchor?: { type: string; tabId?: number; groupId?: number } }).anchor?.type === "tab") {
+    const anchorTabId = (target as { anchor: { tabId: number } }).anchor.tabId;
+    if (source.tabs.some((tab) => tab.tabId === anchorTabId)) {
+      throw new Error("Target tab is within the source group");
+    }
+  }
+  if ((target as { anchor?: { type: string; groupId?: number } }).anchor?.type === "group") {
+    const anchorGroupId = (target as { anchor: { groupId: number } }).anchor.groupId;
+    if (anchorGroupId === source.group.groupId && source.windowId === (target as { windowId: number }).windowId) {
+      throw new Error("Target group matches source group");
+    }
+  }
+
+  const tabIds = source.tabs.map((tab) => tab.tabId).filter((id) => typeof id === "number") as number[];
+  const indices = source.tabs.map((tab) => Number(tab.index)).filter((value) => Number.isFinite(value)) as number[];
+  const minIndex = Math.min(...indices);
+  const maxIndex = Math.max(...indices);
+  const targetWindowId = (target as { windowId: number }).windowId;
+  let targetIndex = (target as { index: number }).index;
+  if (source.windowId === targetWindowId && targetIndex > maxIndex) {
+    targetIndex -= tabIds.length;
+  }
+
+  const moved = await chrome.tabs.move(tabIds, { windowId: targetWindowId, index: targetIndex });
+  const movedList = Array.isArray(moved) ? moved : [moved];
+
+  let newGroupId: number | null = null;
+  if (targetWindowId !== source.windowId) {
+    try {
+      const movedIds = movedList.map((tab) => tab.id as number).filter((id) => typeof id === "number");
+      if (movedIds.length > 0) {
+        newGroupId = await chrome.tabs.group({ tabIds: movedIds, createProperties: { windowId: targetWindowId } });
+        await chrome.tabGroups.update(newGroupId, {
+          title: (source.group.title as string) || "",
+          color: (source.group.color as chrome.tabGroups.ColorEnum) || "grey",
+          collapsed: (source.group.collapsed as boolean | undefined) || false,
+        });
+      }
+    } catch (error) {
+      log("Failed to regroup tabs", error);
+    }
+  }
+
+  return {
+    groupId: source.group.groupId,
+    windowId: source.windowId,
+    movedToWindowId: targetWindowId,
+    newGroupId,
+    summary: { movedTabs: tabIds.length },
   };
 }
 

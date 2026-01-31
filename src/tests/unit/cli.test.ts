@@ -121,6 +121,56 @@ test("analyze passes tab ids and github options", async () => {
   assert.equal(params?.progress, true);
 });
 
+test("analyze --window-title includes window title", async () => {
+  const snapshot = {
+    windows: [
+      {
+        windowId: 1,
+        focused: true,
+        tabs: [
+          { tabId: 10, windowId: 1, active: true, title: "Window A", url: "https://example.com" },
+          { tabId: 11, windowId: 1, active: false, title: "Duplicate", url: "https://example.com" },
+        ],
+        groups: [],
+      },
+    ],
+  };
+  const analyzeData = {
+    generatedAt: 1700000000000,
+    staleDays: 30,
+    totals: { tabs: 2, analyzed: 2, candidates: 1 },
+    meta: { durationMs: 0, githubChecked: 0, githubTotal: 0, githubMatched: 0, githubTimeoutMs: 4000 },
+    candidates: [
+      {
+        tabId: 11,
+        windowId: 1,
+        groupId: -1,
+        url: "https://example.com",
+        title: "Duplicate",
+        lastFocusedAt: null,
+        reasons: [{ type: "duplicate", detail: "Matches tab 10" }],
+        severity: "high",
+      },
+    ],
+    analysisId: "analysis-1",
+  };
+
+  const { socketPath, server, sockets } = await startMockSocket((req) => {
+    if (req.action === "list") {
+      return { ok: true, action: req.action, requestId: req.id, data: snapshot };
+    }
+    return { ok: true, action: req.action, requestId: req.id, data: analyzeData };
+  });
+
+  const result = await runCli(["analyze", "--window-title"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, true);
+  assert.equal(output.data.candidates[0].windowTitle, "Window A");
+});
+
 test("report format md returns markdown content", async () => {
   const { socketPath, server, sockets } = await startMockSocket((req) => ({
     ok: true,
@@ -207,6 +257,126 @@ test("focus passes tab id", async () => {
   assert.equal(params?.tabId, 99);
 });
 
+test("open passes urls and window selectors", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { summary: { createdTabs: 2 } },
+  }));
+
+  const result = await runCli([
+    "open",
+    "--url",
+    "https://nos.nl",
+    "--url",
+    "https://nu.nl",
+    "--group",
+    "News",
+    "--after-group",
+    "Microsoft 365 migration",
+    "--window",
+    "3",
+    "--window-group",
+    "Graceful loader",
+    "--window-tab",
+    "42",
+    "--window-url",
+    "mail.google.com",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "open");
+  const params = requests[0].params as {
+    urls?: string[];
+    groupTitle?: string;
+    afterGroupTitle?: string;
+    windowId?: number;
+    windowGroupTitle?: string;
+    windowTabId?: number;
+    windowUrl?: string;
+  } | undefined;
+  assert.deepEqual(params?.urls, ["https://nos.nl", "https://nu.nl"]);
+  assert.equal(params?.groupTitle, "News");
+  assert.equal(params?.afterGroupTitle, "Microsoft 365 migration");
+  assert.equal(params?.windowId, 3);
+  assert.equal(params?.windowGroupTitle, "Graceful loader");
+  assert.equal(params?.windowTabId, 42);
+  assert.equal(params?.windowUrl, "mail.google.com");
+});
+
+test("move-tab passes target options", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { summary: { movedTabs: 1 } },
+  }));
+
+  const result = await runCli([
+    "move-tab",
+    "--tab",
+    "12",
+    "--after-tab",
+    "99",
+    "--window",
+    "3",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "move-tab");
+  const params = requests[0].params as {
+    tabId?: number;
+    tabIds?: number[];
+    beforeTabId?: number;
+    afterTabId?: number;
+    beforeGroupTitle?: string;
+    afterGroupTitle?: string;
+    windowId?: number;
+  } | undefined;
+  assert.equal(params?.tabId, 12);
+  assert.deepEqual(params?.tabIds, [12]);
+  assert.equal(params?.afterTabId, 99);
+  assert.equal(params?.windowId, 3);
+});
+
+test("move-group passes target options", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { summary: { movedTabs: 2 } },
+  }));
+
+  const result = await runCli([
+    "move-group",
+    "--group",
+    "News",
+    "--before-group",
+    "Microsoft 365 migration",
+    "--window",
+    "3",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "move-group");
+  const params = requests[0].params as {
+    groupTitle?: string;
+    groupId?: number;
+    beforeTabId?: number;
+    afterTabId?: number;
+    beforeGroupTitle?: string;
+    afterGroupTitle?: string;
+    windowId?: number;
+  } | undefined;
+  assert.equal(params?.groupTitle, "News");
+  assert.equal(params?.beforeGroupTitle, "Microsoft 365 migration");
+  assert.equal(params?.windowId, 3);
+});
+
 test("policy init creates default file", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabarchive-policy-init-"));
   const result = await runCli(["policy", "--init"], undefined, { XDG_CONFIG_HOME: dir });
@@ -232,4 +402,14 @@ test("help supports json output", async () => {
   const output = JSON.parse(result.stdout.trim());
   assert.equal(output.ok, true);
   assert.ok(output.data?.commands);
+  const options = output.data?.options as Record<string, string[]> | undefined;
+  assert.ok(options);
+  assert.ok(options?.analyze?.includes("--window-title (include active window title)"));
+  assert.ok(options?.open?.includes("--url <url> (repeatable)"));
+  assert.ok(options?.open?.includes("--after-group <name>"));
+  assert.ok(options?.["move-tab"]?.includes("--after-tab <id>"));
+  assert.ok(options?.["move-group"]?.includes("--before-group <name>"));
+  assert.ok(options?.report?.includes("--format json|md|csv"));
+  assert.ok(options?.close?.includes("--dry-run"));
+  assert.ok(options?.history?.includes("--limit <n>"));
 });

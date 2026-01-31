@@ -4,11 +4,13 @@
 ```bash
 npm link
 tabctl --help
+tabctl help --json
 tabctl policy --init
 ```
 
-## Policy (always enforced)
+## Policy (enforced when present)
 - Policy file: `$XDG_CONFIG_HOME/tabctl/policy.json` (or `~/.config/tabctl/policy.json`)
+- If the file is missing, no policy is applied.
 - Protected tabs are excluded from outputs and actions.
 - The default policy protects pinned tabs and group title `🔒`.
 
@@ -22,6 +24,13 @@ tabctl policy --init
 - `--json`: JSON help output (use with `tabctl help --json`)
 
 ## Commands
+
+### help
+Show CLI help.
+```bash
+tabctl help
+tabctl help --json
+```
 
 ### list
 List eligible tabs and groups only.
@@ -37,13 +46,14 @@ Options:
 - `--github-concurrency <n>`
 - `--github-timeout-ms <ms>`
 - `--tab <id>` (repeatable)
+- `--window-title` (include active window title in output)
 - `--progress`
 
 ### inspect
 Run signals to collect metadata (page-meta, github-state, selector).
 Options:
-- `--signal <id>` (repeatable)
 - `--signal-config <path>`
+- `--signal <id>` (repeatable)
 - `--selector <name=css|json>` (repeatable)
 - `--signal-concurrency <n>`
 - `--signal-timeout-ms <ms>`
@@ -65,6 +75,45 @@ Focus a tab by id.
 tabctl focus --tab <id>
 ```
 
+### open
+Open new tabs and optionally group them in a target window.
+Options:
+- `--url <url>` (repeatable)
+- `--group <name>` (new group title)
+- `--after-group <name>` (insert tabs after this group)
+- `--window <id>`
+- `--window-group <name>` (window containing a group with this title)
+- `--window-tab <id>` (window containing this tab)
+- `--window-url <substring>` (window containing a tab whose URL includes this substring)
+
+If no window selector is provided, the focused window is used.
+
+### move-tab
+Move a single tab before/after a tab or group.
+Options:
+- `--tab <id>`
+- `--before-tab <id>`
+- `--after-tab <id>`
+- `--before-group <name>`
+- `--after-group <name>`
+- `--window <id>` (disambiguate group names)
+
+### move-group
+Move a group before/after a tab or group.
+Options:
+- `--group <name>`
+- `--group-id <id>`
+- `--before-tab <id>`
+- `--after-tab <id>`
+- `--before-group <name>`
+- `--after-group <name>`
+- `--window <id>` (disambiguate group names)
+
+### policy
+Show the current policy summary and path, or create a default policy file.
+Options:
+- `--init`
+
 ### archive
 Move tabs/groups into the Archive window.
 Options:
@@ -75,13 +124,17 @@ Options:
 - `--tab <id>` (repeatable)
 
 ### close
-Close explicit targets only (policy-filtered). Requires confirmation.
+Close explicit targets only (policy-filtered). Requires confirmation for direct close.
 Options:
+- `--apply <analysisId>`
 - `--tab <id>` (repeatable)
 - `--group <name>`
 - `--group-id <id>`
 - `--window <id>`
 - `--confirm`
+- `--dry-run` (alias for `analyze`)
+
+Note: policy enforcement blocks `close --apply`; use explicit tab targets.
 
 ### report
 Generate a report for eligible tabs.
@@ -102,6 +155,8 @@ tabctl undo <txid>
 
 ### history
 List recent actions.
+Options:
+- `--limit <n>`
 ```bash
 tabctl history --limit 20
 ```
