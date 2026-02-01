@@ -1,8 +1,8 @@
-import fs from "fs";
 import net from "net";
 import os from "os";
 import path from "path";
 import crypto from "crypto";
+import fs from "fs";
 
 export function createSocketPath(): string {
   const name = `tabctl-${process.pid}-${Date.now()}-${crypto.randomBytes(3).toString("hex")}.sock`;

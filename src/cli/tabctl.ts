@@ -285,6 +285,78 @@ function buildWindowLabelIndex(snapshot: Record<string, unknown>) {
   return windowLabels;
 }
 
+function buildGroupsFromSnapshot(snapshot: Record<string, unknown>, windowId: number | null) {
+  const windows = (snapshot.windows as Array<Record<string, unknown>>) || [];
+  const windowLabels = buildWindowLabelIndex(snapshot);
+  const groups: Array<Record<string, unknown>> = [];
+  for (const win of windows) {
+    const winId = win.windowId as number;
+    if (!Number.isFinite(winId)) {
+      continue;
+    }
+    if (Number.isFinite(windowId) && winId !== windowId) {
+      continue;
+    }
+    const counts = new Map<number, number>();
+    const tabs = (win.tabs as Array<Record<string, unknown>>) || [];
+    for (const tab of tabs) {
+      const groupId = tab.groupId as number;
+      if (typeof groupId === "number" && groupId !== -1) {
+        counts.set(groupId, (counts.get(groupId) || 0) + 1);
+      }
+    }
+    const windowGroups = (win.groups as Array<Record<string, unknown>>) || [];
+    for (const group of windowGroups) {
+      const groupId = group.groupId as number;
+      if (!Number.isFinite(groupId)) {
+        continue;
+      }
+      groups.push({
+        windowId: winId,
+        windowLabel: windowLabels.get(winId) ?? null,
+        groupId,
+        title: group.title ?? null,
+        color: group.color ?? null,
+        collapsed: group.collapsed ?? null,
+        tabCount: counts.get(groupId) || 0,
+      });
+    }
+  }
+  return groups;
+}
+
+function filterGroupsByScope(groups: Array<Record<string, unknown>>, scope: ReturnType<typeof resolveScopeFlags>, snapshot: Record<string, unknown> | null) {
+  let filtered = groups;
+  const allScope = !scope.hasScope || scope.ungrouped === true;
+  if (!allScope) {
+    if (Number.isFinite(scope.windowId)) {
+      filtered = filtered.filter((group) => group.windowId === scope.windowId);
+    }
+    if (Number.isFinite(scope.groupId)) {
+      filtered = filtered.filter((group) => group.groupId === scope.groupId);
+    }
+    if (scope.groupTitle) {
+      filtered = filtered.filter((group) => group.title === scope.groupTitle);
+    }
+    if (scope.tabIds.length > 0 && snapshot) {
+      const tabIndex = buildTabIndex(snapshot);
+      const groupIds = new Set<number>();
+      for (const tabId of scope.tabIds) {
+        const tab = tabIndex.get(tabId);
+        if (!tab) {
+          continue;
+        }
+        const groupId = tab.groupId as number;
+        if (Number.isFinite(groupId) && groupId !== -1) {
+          groupIds.add(groupId);
+        }
+      }
+      filtered = filtered.filter((group) => groupIds.has(group.groupId as number));
+    }
+  }
+  return filtered;
+}
+
 function formatCliArgValue(value: unknown) {
   const raw = String(value);
   if (!raw) {
@@ -694,12 +766,6 @@ function resolveSkillTargetDir(globalInstall: boolean) {
   return path.join(resolveProjectRoot(), ".opencode", "skills", SKILL_NAME);
 }
 
-function removeIfExists(targetPath: string) {
-  if (fs.existsSync(targetPath)) {
-    fs.rmSync(targetPath, { recursive: true, force: true });
-  }
-}
-
 function runSkillsCli(args: string[]) {
   const result = spawnSync("npx", ["skills", ...args], { stdio: "pipe" });
   if (result.error) {
@@ -717,7 +783,6 @@ function runSkillsCli(args: string[]) {
 function runSkillInstall(options: Options, prettyOutput: boolean) {
   const globalInstall = options.global === true;
   const installTarget = resolveSkillTargetDir(globalInstall);
-  removeIfExists(installTarget);
   const agents = Array.isArray(options.agent)
     ? (options.agent as string[]).filter((value) => typeof value === "string" && value.trim())
     : [];
@@ -1079,6 +1144,15 @@ function printHelp(jsonOutput: boolean) {
   process.stdout.write(lines.join("\n") + "\n");
 }
 
+function setupStdoutErrorHandling() {
+  process.stdout.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code === "EPIPE") {
+      process.exit(0);
+    }
+    throw error;
+  });
+}
+
 function errorOut(message: string): never {
   printJson({ ok: false, error: { message } });
   process.exit(1);
@@ -1109,6 +1183,7 @@ function emitVersionWarnings(response: Record<string, unknown>, fallbackAction: 
 }
 
 async function main() {
+  setupStdoutErrorHandling();
   let { command, options } = parseArgs(process.argv.slice(2));
   if (command === "dedupe" && (options as Record<string, unknown>).close) {
     errorOut("dedupe does not support --close; use --confirm or close --apply <analysisId>.");
@@ -1772,6 +1847,17 @@ async function main() {
 
   if (response.data && typeof response.data === "object") {
     const data = response.data as Record<string, unknown>;
+    if (command === "group-list" && (!Array.isArray(data.groups) || data.groups === null)) {
+      const scope = resolveScopeFlags(options);
+      const snapshot = await getPolicySnapshot();
+      if (snapshot) {
+        const scopeWindow = Number.isFinite(scope.windowId) ? scope.windowId : null;
+        const groups = buildGroupsFromSnapshot(snapshot, scopeWindow);
+        data.groups = filterGroupsByScope(groups, scope, snapshot);
+      } else {
+        data.groups = [];
+      }
+    }
     if (command === "list" && Array.isArray(data.windows)) {
       const filtered = filterSnapshotByPolicy(data, policyContext.policy) as Record<string, unknown>;
       const scope = resolveScopeFlags(options);

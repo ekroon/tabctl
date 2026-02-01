@@ -803,6 +803,48 @@ test("group-list with --all skips tab scoping", async () => {
   assert.equal(data.groups?.length, 2);
 });
 
+test("group-list falls back to snapshot when groups missing", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
+    if (req.action === "group-list") {
+      return { ok: true, action: req.action, requestId: req.id, data: { groups: null } };
+    }
+    if (req.action === "list") {
+      return {
+        ok: true,
+        action: req.action,
+        requestId: req.id,
+        data: {
+          windows: [
+            {
+              windowId: 7,
+              tabs: [
+                { tabId: 1, windowId: 7, index: 0, groupId: 33 },
+              ],
+              groups: [
+                { groupId: 33, title: "Test", color: "blue", collapsed: false },
+              ],
+            },
+          ],
+        },
+      };
+    }
+    return { ok: true, action: req.action, requestId: req.id, data: {} };
+  });
+
+  const result = await runCli(["group-list", "--window", "7"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "group-list");
+  assert.equal(requests.length, 2);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, true);
+  const groups = output.data?.groups as Array<Record<string, unknown>>;
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].groupId, 33);
+  assert.equal(groups[0].windowId, 7);
+});
+
 test("archive supports --ungrouped", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
     ok: true,
