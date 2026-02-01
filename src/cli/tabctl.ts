@@ -171,6 +171,35 @@ function buildWindowTitleIndex(snapshot: Record<string, unknown>, policy: Policy
   return windowTitleIndex;
 }
 
+function buildWindowLabelIndex(snapshot: Record<string, unknown>) {
+  const windowLabels = new Map<number, string>();
+  const windows = (snapshot.windows as Array<Record<string, unknown>>) || [];
+  windows.forEach((win, index) => {
+    const windowId = win.windowId as number;
+    if (typeof windowId === "number") {
+      windowLabels.set(windowId, `W${index + 1}`);
+    }
+  });
+  return windowLabels;
+}
+
+function listGroupSummaries(snapshot: Record<string, unknown>, windowLabels: Map<number, string>) {
+  const windows = (snapshot.windows as Array<Record<string, unknown>>) || [];
+  const summaries: Array<Record<string, unknown>> = [];
+  for (const win of windows) {
+    const groups = (win.groups as Array<Record<string, unknown>>) || [];
+    for (const group of groups) {
+      summaries.push({
+        windowId: win.windowId,
+        windowLabel: windowLabels.get(win.windowId as number) ?? null,
+        groupId: group.groupId,
+        title: typeof group.title === "string" ? group.title : null,
+      });
+    }
+  }
+  return summaries;
+}
+
 function selectTabsFromSnapshot(snapshot: Record<string, unknown>, params: Record<string, unknown>) {
   const windows = (snapshot.windows as Array<Record<string, unknown>>) || [];
   const allTabs = windows.flatMap((win) => (win.tabs as Array<Record<string, unknown>>) || []);
@@ -186,22 +215,44 @@ function selectTabsFromSnapshot(snapshot: Record<string, unknown>, params: Recor
   }
 
   if (params.groupTitle) {
-    const matches: Array<{ windowId: number; groupId: number }> = [];
+    const windowLabels = buildWindowLabelIndex(snapshot);
+    const matches: Array<{ windowId: number; groupId: number; windowLabel: string | null }> = [];
     for (const win of windows) {
       const groups = (win.groups as Array<Record<string, unknown>>) || [];
       for (const group of groups) {
         if (group.title === params.groupTitle) {
-          matches.push({ windowId: win.windowId as number, groupId: group.groupId as number });
+          matches.push({
+            windowId: win.windowId as number,
+            windowLabel: windowLabels.get(win.windowId as number) ?? null,
+            groupId: group.groupId as number,
+          });
         }
       }
     }
 
+    const availableGroups = listGroupSummaries(snapshot, windowLabels);
+
     if (matches.length === 0) {
-      return { tabs: [], error: { message: "No matching group title found" } };
+      return {
+        tabs: [],
+        error: {
+          message: "No matching group title found",
+          hint: "Use tabctl group-list to see existing groups.",
+          availableGroups,
+        },
+      };
     }
 
     if (matches.length > 1 && !params.windowId) {
-      return { tabs: [], error: { message: "Group title is ambiguous. Provide a windowId." } };
+      return {
+        tabs: [],
+        error: {
+          message: "Group title is ambiguous. Provide a windowId.",
+          hint: "Use --window to disambiguate group titles.",
+          matches,
+          availableGroups,
+        },
+      };
     }
 
     const target = params.windowId
@@ -209,10 +260,18 @@ function selectTabsFromSnapshot(snapshot: Record<string, unknown>, params: Recor
       : matches[0];
 
     if (!target) {
-      return { tabs: [], error: { message: "Group title not found in specified window" } };
+      return {
+        tabs: [],
+        error: {
+          message: "Group title not found in specified window",
+          hint: "Use tabctl group-list to see existing groups.",
+          matches,
+          availableGroups,
+        },
+      };
     }
 
-    return { tabs: allTabs.filter((tab) => tab.groupId === target.groupId) };
+    return { tabs: allTabs.filter((tab) => tab.groupId === target.groupId && tab.windowId === target.windowId) };
   }
 
   if (params.windowId != null) {
@@ -588,6 +647,9 @@ function printHelp(jsonOutput: boolean) {
     }
   }
   lines.push("");
+  lines.push("Notes:");
+  lines.push("  --before-group/--after-group only position tabs; use group-assign to move tabs into a group.");
+  lines.push("");
   lines.push("Policy: $XDG_CONFIG_HOME/tabctl/policy.json (or ~/.config/tabctl/policy.json)");
   lines.push("Policy is enforced when the file exists; missing file means no policy.");
   process.stdout.write(lines.join("\n") + "\n");
@@ -932,7 +994,8 @@ async function main() {
 
     const selection = selectTabsFromSnapshot(snapshot, params);
     if ((selection as { error?: Record<string, unknown> }).error) {
-      errorOut("Failed to resolve selection for policy evaluation");
+      printJson({ ok: false, error: (selection as { error: Record<string, unknown> }).error }, prettyOutput);
+      process.exit(1);
     }
 
     const selectedTabs = (selection as { tabs: Array<Record<string, unknown>> }).tabs;

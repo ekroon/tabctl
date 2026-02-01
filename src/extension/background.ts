@@ -1047,10 +1047,46 @@ type GroupMatch = {
   tabs: Array<Record<string, unknown>>;
 };
 
+type GroupSummary = {
+  windowId: number;
+  windowLabel: string | null;
+  groupId: number;
+  title: string | null;
+};
+
 function getGroupTabs(windowSnapshot: WindowSnapshot, groupId: number) {
   return windowSnapshot.tabs
     .filter((tab) => tab.groupId === groupId)
     .sort((a, b) => (Number(a.index) || 0) - (Number(b.index) || 0));
+}
+
+function listGroupSummaries(snapshot: { windows: Array<Record<string, unknown>> }, windowId?: number) {
+  const windowLabels = buildWindowLabels(snapshot as { windows: Array<{ windowId: number }> });
+  const summaries: GroupSummary[] = [];
+  const windows = snapshot.windows as WindowSnapshot[];
+  for (const win of windows) {
+    if (windowId && win.windowId !== windowId) {
+      continue;
+    }
+    for (const group of win.groups) {
+      summaries.push({
+        windowId: win.windowId,
+        windowLabel: windowLabels.get(win.windowId) ?? null,
+        groupId: group.groupId as number,
+        title: typeof group.title === "string" ? group.title : null,
+      });
+    }
+  }
+  return summaries;
+}
+
+function summarizeGroupMatch(match: GroupMatch, windowLabels: Map<number, string>) {
+  return {
+    windowId: match.windowId,
+    windowLabel: windowLabels.get(match.windowId) ?? null,
+    groupId: match.group.groupId,
+    title: typeof match.group.title === "string" ? match.group.title : null,
+  };
 }
 
 function findGroupMatches(snapshot: { windows: Array<Record<string, unknown>> }, groupTitle: string, windowId?: number) {
@@ -1074,12 +1110,32 @@ function findGroupMatches(snapshot: { windows: Array<Record<string, unknown>> },
 }
 
 function resolveGroupByTitle(snapshot: { windows: Array<Record<string, unknown>> }, groupTitle: string, windowId?: number) {
-  const matches = findGroupMatches(snapshot, groupTitle, windowId);
+  const windowLabels = buildWindowLabels(snapshot as { windows: Array<{ windowId: number }> });
+  const allMatches = findGroupMatches(snapshot, groupTitle);
+  const matches = windowId ? allMatches.filter((match) => match.windowId === windowId) : allMatches;
+  const availableGroups = listGroupSummaries(snapshot);
   if (matches.length === 0) {
-    return { error: { message: "No matching group title found" } };
+    const message = windowId && allMatches.length > 0
+      ? "Group title not found in specified window"
+      : "No matching group title found";
+    return {
+      error: {
+        message,
+        hint: "Use tabctl group-list to see existing groups.",
+        matches: allMatches.map((match) => summarizeGroupMatch(match, windowLabels)),
+        availableGroups,
+      },
+    };
   }
   if (matches.length > 1) {
-    return { error: { message: "Group title is ambiguous. Provide a windowId." } };
+    return {
+      error: {
+        message: "Group title is ambiguous. Provide a windowId.",
+        hint: "Use --window to disambiguate group titles.",
+        matches: matches.map((match) => summarizeGroupMatch(match, windowLabels)),
+        availableGroups,
+      },
+    };
   }
   return { match: matches[0] };
 }
@@ -1098,10 +1154,24 @@ function resolveGroupById(snapshot: { windows: Array<Record<string, unknown>> },
     }
   }
   if (matches.length === 0) {
-    return { error: { message: "Group not found" } };
+    return {
+      error: {
+        message: "Group not found",
+        hint: "Use tabctl group-list to see existing groups.",
+        availableGroups: listGroupSummaries(snapshot),
+      },
+    };
   }
   if (matches.length > 1) {
-    return { error: { message: "Group id is ambiguous. Provide a windowId." } };
+    const windowLabels = buildWindowLabels(snapshot as { windows: Array<{ windowId: number }> });
+    return {
+      error: {
+        message: "Group id is ambiguous. Provide a windowId.",
+        hint: "Use --window to disambiguate group ids.",
+        matches: matches.map((match) => summarizeGroupMatch(match, windowLabels)),
+        availableGroups: listGroupSummaries(snapshot),
+      },
+    };
   }
   return { match: matches[0] };
 }
@@ -1525,6 +1595,7 @@ async function mergeWindow(params: Record<string, unknown>) {
 async function listGroups(params: Record<string, unknown>) {
   const snapshot = await getTabSnapshot();
   const windows = snapshot.windows as WindowSnapshot[];
+  const windowLabels = buildWindowLabels(snapshot as { windows: Array<{ windowId: number }> });
   const windowIdParam = Number.isFinite(params.windowId as number) ? Number(params.windowId) : null;
   if (windowIdParam && !windows.some((win) => win.windowId === windowIdParam)) {
     throw new Error("Window not found");
@@ -1546,6 +1617,7 @@ async function listGroups(params: Record<string, unknown>) {
       const groupId = group.groupId as number;
       groups.push({
         windowId: win.windowId,
+        windowLabel: windowLabels.get(win.windowId) ?? null,
         groupId,
         title: group.title ?? null,
         color: group.color ?? null,
@@ -1840,35 +1912,15 @@ function selectTabsByScope(snapshot: { windows: Array<Record<string, unknown>> }
   }
 
   if (params.groupTitle) {
-    const matching = (snapshot.windows as Array<{ groups: Array<{ title: string; groupId: number }>; windowId: number }>).flatMap((win) =>
-      win.groups
-        .filter((group) => group.title === params.groupTitle)
-        .map((group) => ({ windowId: win.windowId, groupId: group.groupId }))
-    );
-
-    if (matching.length === 0) {
-      return { tabs: [], error: { message: "No matching group title found" } };
+    const windowId = Number.isFinite(params.windowId as number) ? Number(params.windowId) : undefined;
+    const resolved = resolveGroupByTitle(snapshot, params.groupTitle as string, windowId);
+    if ((resolved as { error?: Record<string, unknown> }).error) {
+      return { tabs: [], error: (resolved as { error: Record<string, unknown> }).error };
     }
-
-    if (matching.length > 1 && !params.windowId) {
-      return {
-        tabs: [],
-        error: {
-          message: "Group title is ambiguous. Provide a windowId.",
-          matches: matching,
-        },
-      };
-    }
-
-    const target = params.windowId
-      ? matching.find((group) => group.windowId === Number(params.windowId))
-      : matching[0];
-
-    if (!target) {
-      return { tabs: [], error: { message: "Group title not found in specified window" } };
-    }
-
-    return { tabs: allTabs.filter((tab) => tab.groupId === target.groupId) };
+    const match = (resolved as { match: GroupMatch }).match;
+    return {
+      tabs: allTabs.filter((tab) => tab.groupId === match.group.groupId && tab.windowId === match.windowId),
+    };
   }
 
   if (params.windowId) {

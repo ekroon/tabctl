@@ -113,7 +113,7 @@ Options:
 If no window selector is provided, the focused window is used.
 
 ### group-list
-List groups with their window and tab counts.
+List groups with window ids/labels and tab counts.
 Options:
 - `--window <id>`
 
@@ -158,6 +158,8 @@ Options:
 - `--window <id>` (disambiguate group names)
 - `--new-window`
 
+Note: `--before-group`/`--after-group` only position tabs; use `group-assign` to move tabs into a group.
+
 ### move-group
 Move a group before/after a tab or group.
 Options:
@@ -169,6 +171,8 @@ Options:
 - `--after-group <name>`
 - `--window <id>` (disambiguate group names)
 - `--new-window`
+
+Note: `--before-group`/`--after-group` only position groups; they do not merge groups.
 
 ### merge-window
 Move tabs from one window into another (policy-filtered).
