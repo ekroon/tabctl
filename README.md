@@ -109,6 +109,7 @@ tabctl inspect --tab 123 --signal github-state --signal-concurrency 4 --signal-t
 tabctl inspect --tab 123 --signal selector --selector "price=.price" --signal-timeout-ms 1500 --progress
 tabctl inspect --tab 123 --signal selector --signal-config ~/.config/tabctl/signals.json --progress
 tabctl focus --tab 123
+tabctl refresh --tab 123
 tabctl open --new-window --url https://example.com
 tabctl open --url https://example.com --group "Docs" --color blue
 tabctl move-tab --tab 123 --new-window

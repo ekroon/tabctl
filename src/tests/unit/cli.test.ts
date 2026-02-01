@@ -594,6 +594,39 @@ test("focus passes tab id", async () => {
   assert.equal(params?.tabId, 99);
 });
 
+test("refresh passes tab id", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { summary: { refreshedTabs: 1 } },
+  }));
+
+  const result = await runCli(["refresh", "--tab", "99"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "refresh");
+  const params = requests[0].params as { tabId?: number } | undefined;
+  assert.equal(params?.tabId, 99);
+});
+
+test("refresh requires --tab", async () => {
+  const result = await runCli(["refresh"]);
+  assert.equal(result.status, 1);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, false);
+  assert.equal(output.error.message, "refresh requires --tab");
+});
+
+test("refresh rejects multiple --tab", async () => {
+  const result = await runCli(["refresh", "--tab", "1", "--tab", "2"]);
+  assert.equal(result.status, 1);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, false);
+  assert.equal(output.error.message, "refresh requires a single --tab");
+});
+
 test("open passes urls and window selectors", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
     ok: true,
@@ -1367,6 +1400,7 @@ test("help supports json output", async () => {
   assert.ok(options?.inspect?.includes("--offset <n>"));
   assert.ok(options?.inspect?.includes("--no-page"));
   assert.ok(options?.inspect?.includes("--ungrouped"));
+  assert.ok(options?.refresh?.includes("--tab <id>"));
   assert.ok(options?.report?.includes("--limit <n>"));
   assert.ok(options?.report?.includes("--offset <n>"));
   assert.ok(options?.report?.includes("--no-page"));

@@ -897,6 +897,7 @@ function buildHelpData() {
       "dedupe",
       "inspect",
       "focus",
+      "refresh",
       "open",
       "group-list",
       "group",
@@ -979,6 +980,9 @@ function buildHelpData() {
         "--progress",
       ],
       focus: [
+        "--tab <id>",
+      ],
+      refresh: [
         "--tab <id>",
       ],
       open: [
@@ -1199,6 +1203,18 @@ async function main() {
     errorOut("Custom policy path is not supported. Use XDG_CONFIG_HOME/tabctl/policy.json.");
   }
 
+  if (command === "refresh") {
+    const tabValues = Array.isArray(options.tab)
+      ? (options.tab as string[]).map((value) => String(value).trim()).filter(Boolean)
+      : [];
+    if (tabValues.length === 0) {
+      errorOut("refresh requires --tab");
+    }
+    if (tabValues.length > 1) {
+      errorOut("refresh requires a single --tab");
+    }
+  }
+
   if (command === "open" && options.color && !options.group) {
     errorOut("--color requires --group");
   }
@@ -1373,6 +1389,13 @@ async function main() {
       break;
     case "focus":
       action = "focus";
+      params = {
+        tabId: options.tab ? Number((options.tab as string[])[0]) : undefined,
+        tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
+      };
+      break;
+    case "refresh":
+      action = "refresh";
       params = {
         tabId: options.tab ? Number((options.tab as string[])[0]) : undefined,
         tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
@@ -1554,7 +1577,7 @@ async function main() {
     }
   }
 
-  if (enforcePolicy && ["analyze", "inspect", "report", "close", "archive", "focus", "move-tab", "move-group", "group-assign", "group-update", "group-ungroup", "merge-window"].includes(command)) {
+  if (enforcePolicy && ["analyze", "inspect", "report", "close", "archive", "focus", "refresh", "move-tab", "move-group", "group-assign", "group-update", "group-ungroup", "merge-window"].includes(command)) {
     if (command === "close" && options.apply) {
       errorOut("Policy blocks close --apply; use explicit tab targets.");
     }
@@ -1575,13 +1598,12 @@ async function main() {
     const protectedTabs = selectedTabs.filter((tab) => !evaluateTab(tab, policyContext.policy).eligible);
     const eligibleIds = eligibleTabs.map((tab) => tab.tabId).filter((id) => typeof id === "number") as number[];
 
-    if (command === "focus") {
+    if (command === "focus" || command === "refresh") {
       if (!eligibleIds.length) {
-        errorOut("Tab is protected by policy and cannot be focused via CLI");
+        errorOut(`Tab is protected by policy and cannot be ${command === "focus" ? "focused" : "refreshed"} via CLI`);
       }
       params = {
         tabId: eligibleIds[0],
-        tabIds: eligibleIds,
       };
     } else if (command === "close" || command === "archive") {
       if (!eligibleIds.length) {

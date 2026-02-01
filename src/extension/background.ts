@@ -199,6 +199,8 @@ async function handleAction(action: string, params: Record<string, unknown>, req
       return await inspectTabs(params, requestId);
     case "focus":
       return await focusTab(params);
+    case "refresh":
+      return await refreshTabs(params);
     case "open":
       return await openTabs(params);
     case "group-list":
@@ -820,6 +822,23 @@ async function focusTab(params: Record<string, unknown>) {
   return {
     tabId,
     windowId: tab.windowId,
+  };
+}
+
+async function refreshTabs(params: Record<string, unknown>) {
+  const tabId = Number.isFinite(params.tabId as number)
+    ? Number(params.tabId)
+    : null;
+
+  if (!tabId) {
+    throw new Error("Missing tabId");
+  }
+
+  await chrome.tabs.reload(tabId);
+
+  return {
+    tabId,
+    summary: { refreshedTabs: 1 },
   };
 }
 
