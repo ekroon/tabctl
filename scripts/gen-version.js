@@ -8,6 +8,7 @@ const { execSync } = require("node:child_process");
 const root = path.resolve(__dirname, "..");
 const pkgPath = path.join(root, "package.json");
 const targetPath = path.join(root, "src", "shared", "version.ts");
+const manifestTemplatePath = path.join(root, "extension", "manifest.template.json");
 const manifestPath = path.join(root, "extension", "manifest.json");
 
 function readPackageVersion() {
@@ -78,12 +79,13 @@ if (!fs.existsSync(targetPath) || fs.readFileSync(targetPath, "utf8") !== conten
 }
 
 try {
-  const manifestRaw = fs.readFileSync(manifestPath, "utf8");
-  const manifest = JSON.parse(manifestRaw);
+  const templateRaw = fs.readFileSync(manifestTemplatePath, "utf8");
+  const manifest = JSON.parse(templateRaw);
   manifest.version = baseVersion;
   manifest.version_name = version;
   const nextManifest = JSON.stringify(manifest, null, 2) + "\n";
-  if (manifestRaw !== nextManifest) {
+  const currentManifest = fs.existsSync(manifestPath) ? fs.readFileSync(manifestPath, "utf8") : "";
+  if (currentManifest !== nextManifest) {
     fs.writeFileSync(manifestPath, nextManifest, "utf8");
   }
 } catch (error) {

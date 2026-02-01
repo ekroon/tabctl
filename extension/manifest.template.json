@@ -2,7 +2,6 @@
   "manifest_version": 3,
   "name": "Tab Control",
   "version": "0.1.0",
-  "version_name": "0.1.0",
   "description": "Archive and manage browser tabs with CLI support",
   "permissions": [
     "tabs",

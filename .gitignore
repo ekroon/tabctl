@@ -9,4 +9,7 @@ build/
 /host/*.js
 /host/lib/*.js
 /extension/*.js
+/extension/manifest.json
 /tests/unit/*.js
+/src/shared/version.ts
+/shared/version.js
