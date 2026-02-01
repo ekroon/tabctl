@@ -103,6 +103,7 @@ tabctl inspect --tab 123 --signal selector --selector "price=.price" --signal-ti
 tabctl inspect --tab 123 --signal selector --signal-config ~/.config/tabctl/signals.json --progress
 tabctl focus --tab 123
 tabctl open --new-window --url https://example.com
+tabctl open --url https://example.com --group "Docs" --color blue
 tabctl move-tab --tab 123 --new-window
 tabctl merge-window --from 1 --to 2
 tabctl group-list

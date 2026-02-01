@@ -909,6 +909,7 @@ async function openTabs(params: Record<string, unknown>) {
     ? params.urls.map((url) => (typeof url === "string" ? url.trim() : "")).filter(Boolean)
     : [];
   const groupTitle = typeof params.groupTitle === "string" ? params.groupTitle.trim() : "";
+  const groupColor = typeof params.color === "string" ? params.color.trim() : "";
   const afterGroupTitle = typeof params.afterGroupTitle === "string" ? params.afterGroupTitle.trim() : "";
   const newWindow = params.newWindow === true;
   if (!urls.length && !newWindow) {
@@ -974,7 +975,11 @@ async function openTabs(params: Record<string, unknown>) {
         const tabIds = created.map((tab) => tab.tabId as number).filter((id) => typeof id === "number");
         if (tabIds.length > 0) {
           groupId = await chrome.tabs.group({ tabIds, createProperties: { windowId } });
-          await chrome.tabGroups.update(groupId, { title: groupTitle });
+          const update: chrome.tabGroups.UpdateProperties = { title: groupTitle };
+          if (groupColor) {
+            update.color = groupColor as chrome.tabGroups.ColorEnum;
+          }
+          await chrome.tabGroups.update(groupId, update);
         }
       } catch (error) {
         log("Failed to create group", error);
@@ -1058,7 +1063,11 @@ async function openTabs(params: Record<string, unknown>) {
       const tabIds = created.map((tab) => tab.tabId as number).filter((id) => typeof id === "number");
       if (tabIds.length > 0) {
         groupId = await chrome.tabs.group({ tabIds, createProperties: { windowId } });
-        await chrome.tabGroups.update(groupId, { title: groupTitle });
+        const update: chrome.tabGroups.UpdateProperties = { title: groupTitle };
+        if (groupColor) {
+          update.color = groupColor as chrome.tabGroups.ColorEnum;
+        }
+        await chrome.tabGroups.update(groupId, update);
       }
     } catch (error) {
       log("Failed to create group", error);

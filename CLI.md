@@ -103,12 +103,20 @@ Open new tabs and optionally group them in a target window.
 Options:
 - `--url <url>` (repeatable)
 - `--group <name>` (new group title)
+- `--color <name>` (group color)
 - `--after-group <name>` (insert tabs after this group)
 - `--window <id>`
 - `--new-window`
 - `--window-group <name>` (window containing a group with this title)
 - `--window-tab <id>` (window containing this tab)
 - `--window-url <substring>` (window containing a tab whose URL includes this substring)
+
+Allowed colors: `grey`, `blue`, `red`, `yellow`, `green`, `pink`, `purple`, `cyan`, `orange`.
+
+Example:
+```bash
+tabctl open --url https://example.com --group "Docs" --color blue
+```
 
 If no window selector is provided, the focused window is used.
 

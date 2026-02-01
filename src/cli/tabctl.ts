@@ -13,6 +13,17 @@ const LEGACY_SOCKET_PATH = path.join(os.homedir(), ".tabarchive", "tabarchive.so
 const HOST_NAME = "com.erwinkroon.tabctl";
 const HOST_DESCRIPTION = "Tab archive native host";
 const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
+const GROUP_COLORS = new Set([
+  "grey",
+  "blue",
+  "red",
+  "yellow",
+  "green",
+  "pink",
+  "purple",
+  "cyan",
+  "orange",
+]);
 
 type Options = {
   _: string[];
@@ -21,6 +32,20 @@ type Options = {
 
 function createId() {
   return `req-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function normalizeGroupColor(value: unknown) {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (!GROUP_COLORS.has(trimmed)) {
+    errorOut(`Invalid color: ${value}. Use one of: ${Array.from(GROUP_COLORS).join(", ")}`);
+  }
+  return trimmed;
 }
 
 function parseArgs(argv: string[]) {
@@ -585,6 +610,7 @@ function buildHelpData() {
       open: [
         "--url <url> (repeatable)",
         "--group <name>",
+        "--color <name>",
         "--after-group <name>",
         "--window <id>",
         "--new-window",
@@ -771,6 +797,10 @@ async function main() {
     errorOut("Custom policy path is not supported. Use XDG_CONFIG_HOME/tabctl/policy.json.");
   }
 
+  if (command === "open" && options.color && !options.group) {
+    errorOut("--color requires --group");
+  }
+
   const policyContext = loadPolicy();
   const policySummary = summarizePolicy(policyContext.policy, policyContext.path);
   const policyEnabled = policyContext.policy !== null;
@@ -939,6 +969,7 @@ async function main() {
       params = {
         urls: options.url ? (options.url as string[]).map(String) : undefined,
         groupTitle: options.group,
+        color: normalizeGroupColor(options.color),
         afterGroupTitle: options["after-group"],
         windowId: options.window ? Number(options.window) : undefined,
         newWindow: options["new-window"] === true,

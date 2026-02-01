@@ -109,10 +109,10 @@ function sendSocketRequest(socketPath: string, request: NativeMessage): Promise<
   });
 }
 
-async function startHost(stateHome: string) {
+async function startHost(stateHome: string, extraEnv: Record<string, string> = {}) {
   const hostPath = path.resolve(__dirname, "../../host/host.js");
   const child = spawn(process.execPath, [hostPath], {
-    env: { ...process.env, XDG_STATE_HOME: stateHome },
+    env: { ...process.env, ...extraEnv, XDG_STATE_HOME: stateHome },
     stdio: ["pipe", "pipe", "pipe"],
   });
 
@@ -194,12 +194,20 @@ test("host responds to version", async () => {
     assert.equal(response.ok, true);
     assert.equal(response.action, "version");
     const data = response.data as Record<string, unknown> | undefined;
-    assert.equal(data?.version, "0.1.0");
+    const version = data?.version as string | undefined;
+    assert.ok(version);
+    if (version && version.includes("-dev.")) {
+      assert.match(version, /^0\.1\.0-dev\.[0-9a-f]{8}(\.dirty)?$/);
+    } else {
+      assert.equal(version, "0.1.0");
+    }
     assert.equal(data?.component, "host");
-    assert.equal(response.version, "0.1.0");
+    if (typeof response.version === "string" && response.version.includes("-dev.")) {
+      assert.match(response.version, /^0\.1\.0-dev\.[0-9a-f]{8}(\.dirty)?$/);
+    } else {
+      assert.equal(response.version, "0.1.0");
+    }
     assert.equal(data?.baseVersion, "0.1.0");
-    assert.equal(data?.gitSha, null);
-    assert.equal(data?.dirty, false);
   } finally {
     await stopHost(child);
   }

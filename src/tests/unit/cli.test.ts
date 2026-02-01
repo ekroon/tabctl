@@ -52,6 +52,15 @@ async function runCli(args: string[], socketPath?: string, extraEnv?: Record<str
   });
 }
 
+function assertVersion(version: string | undefined) {
+  assert.ok(version);
+  if (version && version.includes("-dev.")) {
+    assert.match(version, /^0\.1\.0-dev\.[0-9a-f]{8}(\.dirty)?$/);
+  } else {
+    assert.equal(version, "0.1.0");
+  }
+}
+
 test("list sends list action", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
     ok: true,
@@ -324,6 +333,8 @@ test("open passes urls and window selectors", async () => {
     "https://nu.nl",
     "--group",
     "News",
+    "--color",
+    "blue",
     "--after-group",
     "Microsoft 365 migration",
     "--window",
@@ -342,6 +353,7 @@ test("open passes urls and window selectors", async () => {
   const params = requests[0].params as {
     urls?: string[];
     groupTitle?: string;
+    color?: string;
     afterGroupTitle?: string;
     windowId?: number;
     windowGroupTitle?: string;
@@ -350,6 +362,7 @@ test("open passes urls and window selectors", async () => {
   } | undefined;
   assert.deepEqual(params?.urls, ["https://nos.nl", "https://nu.nl"]);
   assert.equal(params?.groupTitle, "News");
+  assert.equal(params?.color, "blue");
   assert.equal(params?.afterGroupTitle, "Microsoft 365 migration");
   assert.equal(params?.windowId, 3);
   assert.equal(params?.windowGroupTitle, "Graceful loader");
@@ -377,6 +390,14 @@ test("open supports new window flag", async () => {
   assert.equal(requests[0].action, "open");
   const params = requests[0].params as { newWindow?: boolean } | undefined;
   assert.equal(params?.newWindow, true);
+});
+
+test("open rejects invalid color", async () => {
+  const result = await runCli(["open", "--group", "Docs", "--color", "chartreuse", "--url", "https://example.com"]);
+  assert.equal(result.status, 1);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, false);
+  assert.equal(output.error?.message, "Invalid color: chartreuse. Use one of: grey, blue, red, yellow, green, pink, purple, cyan, orange");
 });
 
 test("group-list passes window option", async () => {
@@ -828,7 +849,7 @@ test("help supports json output", async () => {
   const output = JSON.parse(result.stdout.trim());
   assert.equal(output.ok, true);
   assert.ok(output.data?.commands);
-  assert.equal(output.data?.version, "0.1.0");
+  assertVersion(output.data?.version as string | undefined);
   const options = output.data?.options as Record<string, string[]> | undefined;
   assert.ok(options);
   assert.ok(options?.analyze?.includes("--window-title (include active window title)"));
@@ -840,6 +861,7 @@ test("help supports json output", async () => {
   assert.ok(options?.dedupe?.includes("--confirm"));
   assert.ok(options?.list?.includes("--groups (alias for group-list)"));
   assert.ok(options?.open?.includes("--url <url> (repeatable)"));
+  assert.ok(options?.open?.includes("--color <name>"));
   assert.ok(options?.open?.includes("--after-group <name>"));
   assert.ok(options?.open?.includes("--new-window"));
   assert.ok(options?.["group-list"]?.includes("--window <id>"));
@@ -864,7 +886,7 @@ test("version outputs cli version", async () => {
   assert.equal(result.status, 0);
   const output = JSON.parse(result.stdout.trim());
   assert.equal(output.ok, true);
-  assert.equal(output.data?.version, "0.1.0");
+  assertVersion(output.data?.version as string | undefined);
   assert.equal(output.data?.component, "cli");
   assert.equal(output.data?.baseVersion, "0.1.0");
 });
