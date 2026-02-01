@@ -74,6 +74,7 @@ tabctl analyze --stale-days 30 --github
 tabctl analyze --stale-days 30 --tab 123 --github --progress
 tabctl analyze --stale-days 30 --github --github-concurrency 4 --progress
 tabctl analyze --stale-days 30 --github --github-concurrency 4 --github-timeout-ms 4000 --progress
+tabctl dedupe --stale-days 30 --github
 tabctl inspect --tab 123 --signal page-meta --progress
 tabctl inspect --tab 123 --signal github-state --signal-concurrency 4 --signal-timeout-ms 4000 --progress
 tabctl inspect --tab 123 --signal selector --selector "price=.price" --signal-timeout-ms 1500 --progress

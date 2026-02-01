@@ -457,7 +457,6 @@ async function extractSelectorSignal(tabId: number, specs: Array<Record<string, 
 async function analyzeTabs(params: Record<string, unknown>, requestId: string) {
   const staleDays = Number.isFinite(params.staleDays) ? params.staleDays : DEFAULT_STALE_DAYS;
   const checkGitHub = params.checkGitHub === true;
-  const requestedTabIds = Array.isArray(params.tabIds) ? params.tabIds.map(Number) : null;
   const githubConcurrencyRaw = Number(params.githubConcurrency);
   const githubConcurrency = Number.isFinite(githubConcurrencyRaw) && githubConcurrencyRaw > 0
     ? Math.min(10, Math.floor(githubConcurrencyRaw))
@@ -468,11 +467,12 @@ async function analyzeTabs(params: Record<string, unknown>, requestId: string) {
     : 4000;
   const progressEnabled = params.progress === true;
   const snapshot = await getTabSnapshot();
-  const tabs = flattenTabs(snapshot);
-  const selectedTabs = requestedTabIds
-    ? tabs.filter((tab) => requestedTabIds.includes(tab.tabId as number))
-    : tabs;
-  const scopeTabs = requestedTabIds ? selectedTabs : tabs;
+  const selection = selectTabsByScope(snapshot, params) as { tabs: Array<Record<string, unknown>>; error?: Record<string, unknown> };
+  if (selection.error) {
+    throw selection.error;
+  }
+  const selectedTabs = selection.tabs;
+  const scopeTabs = selectedTabs;
   const now = Date.now();
   const startedAt = Date.now();
   let githubChecked = 0;

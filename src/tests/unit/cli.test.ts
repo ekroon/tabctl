@@ -126,6 +126,52 @@ test("analyze passes tab ids and github options", async () => {
   assert.equal(params?.progress, true);
 });
 
+test("analyze defaults to all scope", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { candidates: [], totals: { tabs: 0, candidates: 0 } },
+  }));
+
+  const result = await runCli(["analyze"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "analyze");
+  const params = requests[0].params as { all?: boolean } | undefined;
+  assert.equal(params?.all, true);
+});
+
+test("analyze passes scope selectors", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { candidates: [], totals: { tabs: 0, candidates: 0 } },
+  }));
+
+  const result = await runCli([
+    "analyze",
+    "--window",
+    "2",
+    "--group",
+    "Work",
+    "--group-id",
+    "7",
+    "--all",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "analyze");
+  const params = requests[0].params as { windowId?: number; groupTitle?: string; groupId?: number; all?: boolean } | undefined;
+  assert.equal(params?.windowId, 2);
+  assert.equal(params?.groupTitle, "Work");
+  assert.equal(params?.groupId, 7);
+  assert.equal(params?.all, true);
+});
+
 test("analyze --window-title includes window title", async () => {
   const snapshot = {
     windows: [
@@ -536,6 +582,57 @@ test("merge-window passes window ids and close source", async () => {
   assert.equal(params?.confirmed, true);
 });
 
+test("dedupe runs analyze then close on confirm", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
+    if (req.action === "analyze") {
+      return {
+        ok: true,
+        action: req.action,
+        requestId: req.id,
+        data: {
+          generatedAt: Date.now(),
+          staleDays: 30,
+          totals: { tabs: 2, analyzed: 2, candidates: 1 },
+          meta: { durationMs: 0, githubChecked: 0, githubTotal: 0, githubMatched: 0, githubTimeoutMs: 4000 },
+          candidates: [
+            {
+              tabId: 12,
+              windowId: 1,
+              groupId: -1,
+              url: "https://example.com",
+              title: "Example",
+              lastFocusedAt: null,
+              reasons: [{ type: "duplicate", detail: "Matches tab 10" }],
+              severity: "high",
+            },
+          ],
+          analysisId: "analysis-1",
+        },
+      };
+    }
+    return {
+      ok: true,
+      action: req.action,
+      requestId: req.id,
+      data: { summary: { closedTabs: 1, skippedTabs: 0 } },
+    };
+  });
+
+  const result = await runCli(["dedupe", "--confirm"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].action, "analyze");
+  assert.equal(requests[1].action, "close");
+  const closeParams = requests[1].params as { tabIds?: number[]; expectedUrls?: Record<string, string> } | undefined;
+  assert.deepEqual(closeParams?.tabIds, [12]);
+  assert.equal(closeParams?.expectedUrls?.["12"], "https://example.com");
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.action, "dedupe");
+  assert.equal(output.data?.summary?.closed, 1);
+});
+
 test("move-tab passes target options", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
     ok: true,
@@ -687,6 +784,12 @@ test("help supports json output", async () => {
   const options = output.data?.options as Record<string, string[]> | undefined;
   assert.ok(options);
   assert.ok(options?.analyze?.includes("--window-title (include active window title)"));
+  assert.ok(options?.analyze?.includes("--group <name>"));
+  assert.ok(options?.analyze?.includes("--group-id <id>"));
+  assert.ok(options?.analyze?.includes("--window <id>"));
+  assert.ok(options?.analyze?.includes("--all"));
+  assert.ok(options?.dedupe?.includes("--include-stale"));
+  assert.ok(options?.dedupe?.includes("--confirm"));
   assert.ok(options?.open?.includes("--url <url> (repeatable)"));
   assert.ok(options?.open?.includes("--after-group <name>"));
   assert.ok(options?.open?.includes("--new-window"));

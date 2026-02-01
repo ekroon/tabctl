@@ -37,7 +37,7 @@ function parseArgs(argv: string[]) {
     }
 
     const key = arg.slice(2);
-    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json", "window-title", "create", "collapsed", "expanded", "new-window", "close-source"].includes(key)) {
+    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json", "window-title", "create", "collapsed", "expanded", "new-window", "close-source", "include-stale"].includes(key)) {
       options[key] = true;
       continue;
     }
@@ -393,6 +393,7 @@ function buildHelpData() {
       "help",
       "list",
       "analyze",
+      "dedupe",
       "inspect",
       "focus",
       "open",
@@ -420,8 +421,27 @@ function buildHelpData() {
         "--github-concurrency <n>",
         "--github-timeout-ms <ms>",
         "--tab <id> (repeatable)",
+        "--group <name>",
+        "--group-id <id>",
+        "--window <id>",
+        "--all",
         "--window-title (include active window title)",
         "--progress",
+      ],
+      dedupe: [
+        "--stale-days <n>",
+        "--github",
+        "--github-concurrency <n>",
+        "--github-timeout-ms <ms>",
+        "--tab <id> (repeatable)",
+        "--group <name>",
+        "--group-id <id>",
+        "--window <id>",
+        "--all",
+        "--include-stale",
+        "--window-title (include active window title)",
+        "--progress",
+        "--confirm",
       ],
       inspect: [
         "--signal-config <path>",
@@ -594,6 +614,7 @@ async function main() {
   const policyEnabled = policyContext.policy !== null;
   const enforcePolicy = policyEnabled;
   const includeWindowTitle = options["window-title"] === true;
+  const includeStale = options["include-stale"] === true;
   let policySnapshot: Record<string, unknown> | null = null;
   const getPolicySnapshot = async () => {
     if (!policySnapshot) {
@@ -649,7 +670,12 @@ async function main() {
     return;
   }
 
+  let dedupeMode = false;
   if (command === "close" && options["dry-run"]) {
+    command = "analyze";
+  }
+  if (command === "dedupe") {
+    dedupeMode = true;
     command = "analyze";
   }
 
@@ -671,6 +697,10 @@ async function main() {
         staleDays: options["stale-days"] ? Number(options["stale-days"]) : undefined,
         checkGitHub: Boolean(options.github),
         tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
+        groupTitle: options.group,
+        groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
+        windowId: options.window ? Number(options.window) : undefined,
+        all: options.all === true,
         githubConcurrency: options["github-concurrency"] ? Number(options["github-concurrency"]) : undefined,
         githubTimeoutMs: options["github-timeout-ms"] ? Number(options["github-timeout-ms"]) : undefined,
         progress: Boolean(options.progress),
@@ -862,6 +892,18 @@ async function main() {
       break;
     default:
       errorOut(`Unknown command: ${command}`);
+  }
+
+  if (command === "analyze") {
+    const tabIds = (params as { tabIds?: number[] }).tabIds;
+    const hasScope = (Array.isArray(tabIds) && tabIds.length > 0)
+      || Boolean((params as { groupTitle?: string }).groupTitle)
+      || Number.isFinite((params as { groupId?: number }).groupId)
+      || Number.isFinite((params as { windowId?: number }).windowId)
+      || (params as { all?: boolean }).all === true;
+    if (!hasScope) {
+      params = { ...params, all: true };
+    }
   }
 
   if (command === "merge-window") {
@@ -1211,6 +1253,86 @@ async function main() {
     }
   } else if (response.ok) {
     response.policy = policySummary;
+  }
+
+  if (dedupeMode) {
+    if (!response.ok) {
+      printJson(response, prettyOutput);
+      return;
+    }
+
+    const data = (response.data as Record<string, unknown>) || {};
+    const candidates = Array.isArray(data.candidates) ? (data.candidates as Array<Record<string, unknown>>) : [];
+    const planned = candidates.filter((candidate) => {
+      const reasons = Array.isArray(candidate.reasons) ? (candidate.reasons as Array<Record<string, unknown>>) : [];
+      const hasDuplicate = reasons.some((reason) => reason.type === "duplicate" || reason.type === "closed_issue");
+      const hasStale = reasons.some((reason) => reason.type === "stale");
+      return hasDuplicate || (includeStale && hasStale);
+    });
+
+    const planTabIds: number[] = [];
+    const expectedUrls: Record<string, string> = {};
+    for (const candidate of planned) {
+      const tabId = candidate.tabId as number;
+      if (!Number.isFinite(tabId)) {
+        continue;
+      }
+      if (!planTabIds.includes(tabId)) {
+        planTabIds.push(tabId);
+      }
+      if (typeof candidate.url === "string") {
+        expectedUrls[String(tabId)] = candidate.url;
+      }
+    }
+
+    let closeData: Record<string, unknown> | null = null;
+    if (options.confirm === true && planTabIds.length > 0) {
+      const closeResponse = await sendRequest({
+        id: createId(),
+        action: "close",
+        params: {
+          mode: "direct",
+          confirmed: true,
+          tabIds: planTabIds,
+          expectedUrls,
+        },
+      });
+      if (!closeResponse.ok) {
+        printJson(closeResponse, prettyOutput);
+        return;
+      }
+      closeData = (closeResponse.data as Record<string, unknown>) || {};
+      closeData.policy = policySummary;
+      if (policyInfo) {
+        closeData.policyInfo = policyInfo;
+      }
+    }
+
+    const closeSummary = closeData?.summary as Record<string, unknown> | undefined;
+    const closedTabs = Number(closeSummary?.closedTabs ?? 0);
+    const skippedTabs = Number(closeSummary?.skippedTabs ?? 0);
+    const output = {
+      ok: true,
+      action: "dedupe",
+      data: {
+        analysisId: data.analysisId || null,
+        summary: {
+          candidates: candidates.length,
+          planned: planTabIds.length,
+          closed: Number.isFinite(closedTabs) ? closedTabs : 0,
+          skipped: Number.isFinite(skippedTabs) ? skippedTabs : 0,
+        },
+        plan: {
+          tabIds: planTabIds,
+          candidates: planned,
+        },
+        close: closeData,
+        policy: data.policy,
+        policyInfo: data.policyInfo,
+      },
+    };
+    printJson(output, prettyOutput);
+    return;
   }
 
   if (command === "report") {

@@ -46,8 +46,31 @@ Options:
 - `--github-concurrency <n>`
 - `--github-timeout-ms <ms>`
 - `--tab <id>` (repeatable)
+- `--group <name>`
+- `--group-id <id>`
+- `--window <id>`
+- `--all`
 - `--window-title` (include active window title in output)
 - `--progress`
+
+If no scope is provided, all eligible tabs are analyzed.
+
+### dedupe
+Plan (and optionally close) duplicate tabs.
+Options:
+- `--stale-days <n>`
+- `--github`
+- `--github-concurrency <n>`
+- `--github-timeout-ms <ms>`
+- `--tab <id>` (repeatable)
+- `--group <name>`
+- `--group-id <id>`
+- `--window <id>`
+- `--all`
+- `--include-stale`
+- `--window-title` (include active window title in output)
+- `--progress`
+- `--confirm`
 
 ### inspect
 Run signals to collect metadata (page-meta, github-state, selector).
