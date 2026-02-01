@@ -28,6 +28,8 @@ const GROUP_COLORS = new Set([
 const DEFAULT_PAGE_LIMIT = 100;
 const SKILL_NAME = "tabctl";
 const SKILL_REPO = process.env.TABCTL_SKILL_REPO || "https://github.com/ekroon/tabctl";
+const SUPPORTED_SIGNALS = ["page-meta", "github-state", "selector"] as const;
+const SUPPORTED_SIGNAL_SET = new Set<string>(SUPPORTED_SIGNALS);
 
 type Options = {
   _: string[];
@@ -50,6 +52,21 @@ function normalizeGroupColor(value: unknown) {
     errorOut(`Invalid color: ${value}. Use one of: ${Array.from(GROUP_COLORS).join(", ")}`);
   }
   return trimmed;
+}
+
+function normalizeSignals(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [] as string[];
+  }
+  return value.map((signal) => String(signal).trim()).filter(Boolean);
+}
+
+function validateSignals(signals: string[]) {
+  for (const signal of signals) {
+    if (!SUPPORTED_SIGNAL_SET.has(signal)) {
+      errorOut(`Unknown signal: ${signal}. Use one of: ${SUPPORTED_SIGNALS.join(", ")}`);
+    }
+  }
 }
 
 function parseArgs(argv: string[]) {
@@ -1217,6 +1234,22 @@ async function main() {
 
   if (command === "open" && options.color && !options.group) {
     errorOut("--color requires --group");
+  }
+
+  if (command === "inspect") {
+    const selectorCount = Array.isArray(options.selector) ? options.selector.length : 0;
+    if (selectorCount > 0) {
+      const signalList = normalizeSignals(options.signal);
+      if (!signalList.includes("selector")) {
+        signalList.push("selector");
+      }
+      options.signal = signalList;
+    }
+    const signalList = normalizeSignals(options.signal);
+    if (signalList.length > 0) {
+      validateSignals(signalList);
+      options.signal = signalList;
+    }
   }
 
   const policyContext = loadPolicy();

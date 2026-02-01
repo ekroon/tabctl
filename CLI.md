@@ -110,6 +110,10 @@ Signals:
 - `github-state` (PR/issue state when available)
 - `selector` (runtime-configured selectors)
 
+Notes:
+- `--selector` implies `--signal selector`.
+- Unknown signals are rejected; valid signals: `page-meta`, `github-state`, `selector`.
+
 ### focus
 Focus a tab by id.
 ```bash

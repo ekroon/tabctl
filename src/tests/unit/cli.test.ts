@@ -529,6 +529,36 @@ test("inspect passes signal options", async () => {
   assert.equal(output.data.page.total, 2);
 });
 
+test("inspect auto-adds selector signal", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { entries: [] },
+  }));
+
+  const result = await runCli([
+    "inspect",
+    "--tab",
+    "42",
+    "--selector",
+    "links=a",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const params = requests[0].params as { signals?: string[] } | undefined;
+  assert.ok(params?.signals?.includes("selector"));
+});
+
+test("inspect rejects unknown signal", async () => {
+  const result = await runCli(["inspect", "--signal", "links"]);
+  assert.equal(result.status, 1);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, false);
+  assert.match(output.error.message, /Unknown signal/);
+});
+
 test("report pagination includes next hint", async () => {
   const { socketPath, server, sockets } = await startMockSocket((req) => ({
     ok: true,

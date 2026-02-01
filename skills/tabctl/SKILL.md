@@ -21,6 +21,7 @@ Use tabctl to inspect and analyze tabs safely, then perform targeted actions onl
 - List ungrouped tabs: `tabctl list --ungrouped`
 - Generate a report: `tabctl report --format md` (add scope flags as needed)
 - Get page metadata: `tabctl inspect --tab <id> --signal page-meta`
+- Extract links (selector auto-enabled): `tabctl inspect --tab <id> --selector '{"name":"links","selector":"a[href]","attr":"href","all":true}'`
 
 ## Filter results (jq / node)
 

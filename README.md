@@ -108,6 +108,7 @@ tabctl inspect --tab 123 --limit 100
 tabctl inspect --tab 123 --signal github-state --signal-concurrency 4 --signal-timeout-ms 4000 --progress
 tabctl inspect --tab 123 --signal selector --selector "price=.price" --signal-timeout-ms 1500 --progress
 tabctl inspect --tab 123 --signal selector --signal-config ~/.config/tabctl/signals.json --progress
+tabctl inspect --tab 123 --selector "price=.price"
 tabctl focus --tab 123
 tabctl refresh --tab 123
 tabctl open --new-window --url https://example.com
@@ -191,6 +192,8 @@ Notes:
 - Reports include short descriptions from page metadata and a fallback snippet.
 - `list` and `group-list` paginate by default (limit 100); use `--limit`, `--offset`, or `--no-page`.
 - Use `--group-id -1` or `--ungrouped` to target ungrouped tabs.
+- `--selector` implies `--signal selector`.
+- Unknown inspect signals are rejected (valid: `page-meta`, `github-state`, `selector`).
 
 ## Runtime state
 - Socket: `$XDG_STATE_HOME/tabctl/tabctl.sock` (or `~/.local/state/tabctl/tabctl.sock`)
