@@ -26,6 +26,56 @@ function parseArgs(argv: string[]) {
   const args = [...argv];
   let command: string | undefined;
   const options: Options = { _: [] };
+  const allowedFlags = new Set([
+    "all",
+    "pretty",
+    "confirm",
+    "dry-run",
+    "github",
+    "progress",
+    "init",
+    "help",
+    "json",
+    "window-title",
+    "create",
+    "collapsed",
+    "expanded",
+    "new-window",
+    "close-source",
+    "include-stale",
+    "groups",
+    "stale-days",
+    "github-concurrency",
+    "github-timeout-ms",
+    "tab",
+    "group",
+    "group-id",
+    "window",
+    "signal",
+    "signal-config",
+    "signal-concurrency",
+    "signal-timeout-ms",
+    "selector",
+    "url",
+    "after-group",
+    "before-group",
+    "after-tab",
+    "before-tab",
+    "window-group",
+    "window-tab",
+    "window-url",
+    "title",
+    "color",
+    "from",
+    "to",
+    "browser",
+    "extension-id",
+    "node",
+    "apply",
+    "format",
+    "out",
+    "limit",
+  ]);
 
   while (args.length > 0) {
     const arg = args.shift() as string;
@@ -39,7 +89,10 @@ function parseArgs(argv: string[]) {
     }
 
     const key = arg.slice(2);
-    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json", "window-title", "create", "collapsed", "expanded", "new-window", "close-source", "include-stale"].includes(key)) {
+    if (!allowedFlags.has(key)) {
+      errorOut(`Unknown option: --${key}`);
+    }
+    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json", "window-title", "create", "collapsed", "expanded", "new-window", "close-source", "include-stale", "groups"].includes(key)) {
       options[key] = true;
       continue;
     }
@@ -462,6 +515,7 @@ function buildHelpData() {
       "focus",
       "open",
       "group-list",
+      "group",
       "group-update",
       "group-ungroup",
       "group-assign",
@@ -507,6 +561,9 @@ function buildHelpData() {
         "--progress",
         "--confirm",
       ],
+      list: [
+        "--groups (alias for group-list)",
+      ],
       inspect: [
         "--signal-config <path>",
         "--signal <id> (repeatable)",
@@ -534,6 +591,10 @@ function buildHelpData() {
         "--window-url <substring>",
       ],
       "group-list": [
+        "--window <id>",
+      ],
+      group: [
+        "(alias for group-list)",
         "--window <id>",
       ],
       "group-update": [
@@ -668,8 +729,14 @@ function errorOut(message: string): never {
 
 async function main() {
   let { command, options } = parseArgs(process.argv.slice(2));
+  if (command === "dedupe" && (options as Record<string, unknown>).close) {
+    errorOut("dedupe does not support --close; use --confirm or close --apply <analysisId>.");
+  }
   const prettyOutput = options.pretty !== false;
-  if (command === "groups") {
+  if (command === "groups" || command === "group") {
+    command = "group-list";
+  }
+  if (command === "list" && options.groups === true) {
     command = "group-list";
   }
   if (Object.prototype.hasOwnProperty.call(options, "policy")) {
@@ -1395,6 +1462,9 @@ async function main() {
           candidates: planned,
         },
         close: closeData,
+        nextCommand: options.confirm === true
+          ? null
+          : (planTabIds.length > 0 && data.analysisId ? `tabctl close --apply ${data.analysisId} --confirm` : null),
         policy: data.policy,
         policyInfo: data.policyInfo,
       },

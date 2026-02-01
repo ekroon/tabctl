@@ -5,7 +5,7 @@ import path from "path";
 import crypto from "crypto";
 
 export function createSocketPath(): string {
-  const name = `ta-${process.pid}-${Date.now()}-${crypto.randomBytes(3).toString("hex")}.sock`;
+  const name = `tabctl-${process.pid}-${Date.now()}-${crypto.randomBytes(3).toString("hex")}.sock`;
   return path.join(os.tmpdir(), name);
 }
 

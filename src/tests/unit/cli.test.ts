@@ -633,6 +633,53 @@ test("dedupe runs analyze then close on confirm", async () => {
   assert.equal(output.data?.summary?.closed, 1);
 });
 
+test("dedupe outputs nextCommand when not confirmed", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
+    if (req.action === "analyze") {
+      return {
+        ok: true,
+        action: req.action,
+        requestId: req.id,
+        data: {
+          generatedAt: Date.now(),
+          staleDays: 30,
+          totals: { tabs: 2, analyzed: 2, candidates: 1 },
+          meta: { durationMs: 0, githubChecked: 0, githubTotal: 0, githubMatched: 0, githubTimeoutMs: 4000 },
+          candidates: [
+            {
+              tabId: 12,
+              windowId: 1,
+              groupId: -1,
+              url: "https://example.com",
+              title: "Example",
+              lastFocusedAt: null,
+              reasons: [{ type: "duplicate", detail: "Matches tab 10" }],
+              severity: "high",
+            },
+          ],
+          analysisId: "analysis-1",
+        },
+      };
+    }
+    return {
+      ok: true,
+      action: req.action,
+      requestId: req.id,
+      data: { summary: { closedTabs: 1, skippedTabs: 0 } },
+    };
+  });
+
+  const result = await runCli(["dedupe"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].action, "analyze");
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.action, "dedupe");
+  assert.equal(output.data?.nextCommand, "tabctl close --apply analysis-1 --confirm");
+});
+
 test("move-tab passes target options", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
     ok: true,
@@ -790,6 +837,7 @@ test("help supports json output", async () => {
   assert.ok(options?.analyze?.includes("--all"));
   assert.ok(options?.dedupe?.includes("--include-stale"));
   assert.ok(options?.dedupe?.includes("--confirm"));
+  assert.ok(options?.list?.includes("--groups (alias for group-list)"));
   assert.ok(options?.open?.includes("--url <url> (repeatable)"));
   assert.ok(options?.open?.includes("--after-group <name>"));
   assert.ok(options?.open?.includes("--new-window"));
