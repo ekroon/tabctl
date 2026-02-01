@@ -6,6 +6,7 @@ npm link
 tabctl --help
 tabctl help --json
 tabctl policy --init
+tabctl skill
 ```
 
 ## Policy (enforced when present)
@@ -285,6 +286,16 @@ Options:
 - `--limit <n>`
 ```bash
 tabctl history --limit 20
+```
+
+### skill
+Install the tabctl agent skill for local agents (uses the Skills CLI under the hood).
+Options:
+- `--agent <name>` (repeatable, used for install hint)
+- `--global`
+
+```bash
+tabctl skill
 ```
 
 ### version

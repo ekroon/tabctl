@@ -9,7 +9,13 @@ import { startMockSocket, stopMockSocket } from "./socket";
 const cliPath = path.resolve(__dirname, "../../cli/tabctl.js");
 const testConfigHome = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-test-config-"));
 
-async function runCli(args: string[], socketPath?: string, extraEnv?: Record<string, string>) {
+async function runCli(
+  args: string[],
+  socketPath?: string,
+  extraEnv?: Record<string, string>,
+  cliOverride?: string,
+  npxOverride?: string,
+) {
   const env = { ...process.env };
   if (socketPath) {
     env.TABCTL_SOCKET = socketPath;
@@ -23,7 +29,12 @@ async function runCli(args: string[], socketPath?: string, extraEnv?: Record<str
   }
 
   return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn(process.execPath, [cliPath, ...args], { env });
+    const effectiveCli = cliOverride || cliPath;
+    const effectiveEnv = { ...env };
+    if (npxOverride) {
+      effectiveEnv.PATH = `${path.dirname(npxOverride)}${path.delimiter}${env.PATH || ""}`;
+    }
+    const child = spawn(process.execPath, [effectiveCli, ...args], { env: effectiveEnv });
     let stdout = "";
     let stderr = "";
 
@@ -1333,6 +1344,8 @@ test("help supports json output", async () => {
   assert.ok(options?.close?.includes("--dry-run"));
   assert.ok(options?.close?.includes("--ungrouped"));
   assert.ok(options?.history?.includes("--limit <n>"));
+  assert.ok(options?.skill?.includes("--agent <name> (repeatable)"));
+  assert.ok(options?.skill?.includes("--global"));
   assert.ok(options?.version);
 });
 
@@ -1345,6 +1358,91 @@ test("version outputs cli version", async () => {
   assert.equal(output.data?.component, "cli");
   assert.equal(output.data?.baseVersion, "0.1.0");
 });
+
+test("skill install creates project skill link", async () => {
+  const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-skill-"));
+  const originalCwd = process.cwd();
+  const installRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-install-"));
+  const repoRoot = path.resolve(__dirname, "../..");
+  const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-fakebin-"));
+  const npxFixture = path.join(__dirname, "fixtures", "npx");
+  const fakeNpx = path.join(fakeBin, "npx");
+  fs.copyFileSync(npxFixture, fakeNpx);
+  fs.chmodSync(fakeNpx, 0o755);
+  const npxCapture = path.join(testRoot, "npx-args.json");
+  fs.cpSync(path.join(repoRoot, "cli"), path.join(installRoot, "cli"), { recursive: true });
+  fs.cpSync(path.join(repoRoot, "shared"), path.join(installRoot, "shared"), { recursive: true });
+  const cliTarget = path.join(installRoot, "cli", "tabctl.js");
+  process.chdir(testRoot);
+  try {
+    const result = await runCli([
+      "skill",
+    ], undefined, {
+      XDG_CONFIG_HOME: path.join(testRoot, ".config"),
+      NPX_CAPTURE_PATH: npxCapture,
+    }, cliTarget, fakeNpx);
+    assert.equal(result.status, 0);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.ok, true);
+    const targetDir = output.data?.targetDir as string;
+    assert.ok(targetDir);
+    assert.equal(output.data?.scope, "project");
+    assert.ok(targetDir.includes(path.join(testRoot, ".opencode", "skills", "tabctl")));
+    const captured = JSON.parse(fs.readFileSync(npxCapture, "utf8"));
+    assert.deepEqual(captured.args, [
+      "skills",
+      "add",
+      "https://github.com/ekroon/tabctl",
+      "--skill",
+      "tabctl",
+    ]);
+  } finally {
+    process.chdir(originalCwd);
+  }
+});
+
+test("skill install supports global scope", async () => {
+  const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-skill-global-"));
+  const configHome = path.join(testRoot, "config");
+  const originalCwd = process.cwd();
+  const installRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-install-"));
+  const repoRoot = path.resolve(__dirname, "../..");
+  const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-fakebin-"));
+  const npxFixture = path.join(__dirname, "fixtures", "npx");
+  const fakeNpx = path.join(fakeBin, "npx");
+  fs.copyFileSync(npxFixture, fakeNpx);
+  fs.chmodSync(fakeNpx, 0o755);
+  const npxCapture = path.join(testRoot, "npx-args.json");
+  fs.cpSync(path.join(repoRoot, "cli"), path.join(installRoot, "cli"), { recursive: true });
+  fs.cpSync(path.join(repoRoot, "shared"), path.join(installRoot, "shared"), { recursive: true });
+  const cliTarget = path.join(installRoot, "cli", "tabctl.js");
+  process.chdir(testRoot);
+
+  try {
+    const result = await runCli(["skill", "--global"], undefined, {
+      XDG_CONFIG_HOME: configHome,
+      NPX_CAPTURE_PATH: npxCapture,
+    }, cliTarget, fakeNpx);
+    assert.equal(result.status, 0);
+    const output = JSON.parse(result.stdout.trim());
+    const targetDir = output.data?.targetDir as string;
+    assert.ok(targetDir);
+    assert.equal(output.data?.scope, "global");
+    assert.ok(targetDir.includes(path.join(configHome, "opencode", "skills", "tabctl")));
+    const captured = JSON.parse(fs.readFileSync(npxCapture, "utf8"));
+    assert.deepEqual(captured.args, [
+      "skills",
+      "add",
+      "https://github.com/ekroon/tabctl",
+      "--skill",
+      "tabctl",
+      "-g",
+    ]);
+  } finally {
+    process.chdir(originalCwd);
+  }
+});
+
 
 test("version includes dev sha when built", async () => {
   const result = await runCli(["version"]);

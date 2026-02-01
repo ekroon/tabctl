@@ -90,6 +90,7 @@ node /Users/<you>/develop/scripts/check-browser-tabs/cli/tabctl.js list
 ```bash
 tabctl --help
 tabctl help --json
+tabctl skill
 tabctl list
 tabctl list --limit 100
 tabctl list --group-id -1
@@ -127,6 +128,26 @@ tabctl report --format md --out /path/to/report.md
 tabctl report --limit 100
 tabctl undo <txid>
 tabctl history --limit 20
+```
+
+## Agent skills
+
+Install the tabctl skill for agents (OpenCode, Claude Code, Codex, etc.) via the bundled command (uses the Skills CLI under the hood):
+
+```bash
+tabctl skill
+```
+
+This writes a project-local skill to `.opencode/skills/tabctl/SKILL.md`. You can also install globally:
+
+```bash
+tabctl skill --global
+```
+
+To install into a specific agent toolchain with `skills`:
+
+```bash
+npx skills add https://github.com/ekroon/tabctl --skill tabctl -a opencode
 ```
 
 ## Policy (protect tabs)

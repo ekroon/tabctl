@@ -3,6 +3,7 @@ import fs from "fs";
 import net from "net";
 import os from "os";
 import path from "path";
+import { spawnSync } from "node:child_process";
 import { renderCsv, renderMarkdown } from "./lib/report";
 import { annotateEntry, defaultPolicyPath, defaultPolicyTemplate, evaluateTab, loadPolicy, summarizePolicy, type Policy } from "./lib/policy";
 import { VERSION, BASE_VERSION, GIT_SHA, DIRTY } from "../shared/version";
@@ -25,6 +26,8 @@ const GROUP_COLORS = new Set([
   "orange",
 ]);
 const DEFAULT_PAGE_LIMIT = 100;
+const SKILL_NAME = "tabctl";
+const SKILL_REPO = process.env.TABCTL_SKILL_REPO || "https://github.com/ekroon/tabctl";
 
 type Options = {
   _: string[];
@@ -71,6 +74,7 @@ function parseArgs(argv: string[]) {
     "close-source",
     "include-stale",
     "groups",
+    "global",
     "stale-days",
     "github-concurrency",
     "github-timeout-ms",
@@ -78,6 +82,7 @@ function parseArgs(argv: string[]) {
     "group",
     "group-id",
     "window",
+    "agent",
     "signal",
     "signal-config",
     "signal-concurrency",
@@ -122,13 +127,16 @@ function parseArgs(argv: string[]) {
     if (!allowedFlags.has(key)) {
       errorOut(`Unknown option: --${key}`);
     }
-    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json", "window-title", "create", "collapsed", "expanded", "new-window", "close-source", "include-stale", "groups", "no-page", "ungrouped"].includes(key)) {
+    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json", "window-title", "create", "collapsed", "expanded", "new-window", "close-source", "include-stale", "groups", "global", "no-page", "ungrouped"].includes(key)) {
       options[key] = true;
       continue;
     }
 
 
     const value = args.shift();
+    if (value == null) {
+      errorOut(`Missing value for --${key}`);
+    }
     if (key === "signal") {
       if (!options.signal) {
         options.signal = [];
@@ -141,6 +149,13 @@ function parseArgs(argv: string[]) {
         options.tab = [];
       }
       (options.tab as string[]).push(value as string);
+      continue;
+    }
+    if (key === "agent") {
+      if (!options.agent) {
+        options.agent = [];
+      }
+      (options.agent as string[]).push(value as string);
       continue;
     }
     if (key === "url") {
@@ -660,6 +675,85 @@ function resolveHostPath() {
   return hostPath;
 }
 
+function resolveProjectRoot() {
+  try {
+    return fs.realpathSync(process.cwd());
+  } catch {
+    return path.resolve(process.cwd());
+  }
+}
+
+function resolveConfigHome() {
+  return process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+}
+
+function resolveSkillTargetDir(globalInstall: boolean) {
+  if (globalInstall) {
+    return path.join(resolveConfigHome(), "opencode", "skills", SKILL_NAME);
+  }
+  return path.join(resolveProjectRoot(), ".opencode", "skills", SKILL_NAME);
+}
+
+function removeIfExists(targetPath: string) {
+  if (fs.existsSync(targetPath)) {
+    fs.rmSync(targetPath, { recursive: true, force: true });
+  }
+}
+
+function runSkillsCli(args: string[]) {
+  const result = spawnSync("npx", ["skills", ...args], { stdio: "pipe" });
+  if (result.error) {
+    errorOut(`Failed to run skills CLI: ${result.error.message}`);
+  }
+  if (typeof result.status === "number" && result.status !== 0) {
+    const stderr = result.stderr ? result.stderr.toString().trim() : "";
+    const stdout = result.stdout ? result.stdout.toString().trim() : "";
+    const detail = stderr || stdout;
+    const message = detail ? `skills CLI failed: ${detail}` : `skills CLI exited with status ${result.status}`;
+    errorOut(message);
+  }
+}
+
+function runSkillInstall(options: Options, prettyOutput: boolean) {
+  const globalInstall = options.global === true;
+  const installTarget = resolveSkillTargetDir(globalInstall);
+  removeIfExists(installTarget);
+  const agents = Array.isArray(options.agent)
+    ? (options.agent as string[]).filter((value) => typeof value === "string" && value.trim())
+    : [];
+  const args = ["add", SKILL_REPO, "--skill", SKILL_NAME];
+  if (agents.length > 0) {
+    for (const agent of agents) {
+      args.push("-a", agent);
+    }
+  }
+  if (globalInstall) {
+    args.push("-g");
+  }
+  const hintAgents = agents.length > 0 ? agents.map((agent) => `-a ${formatCliArgValue(agent)}`).join(" ") : "";
+  const installHintParts = ["npx skills add", formatCliArgValue(SKILL_REPO), "--skill", SKILL_NAME];
+  if (hintAgents) {
+    installHintParts.push(hintAgents);
+  }
+  if (globalInstall) {
+    installHintParts.push("-g");
+  }
+  const installHint = installHintParts.join(" ").trim();
+
+  runSkillsCli(args);
+
+  printJson({
+    ok: true,
+    data: {
+      name: SKILL_NAME,
+      targetDir: installTarget,
+      scope: globalInstall ? "global" : "project",
+      installHint,
+      tool: "skills",
+    },
+  }, prettyOutput);
+}
+
 function resolveManifestDir(browser: "edge" | "chrome") {
   const home = os.homedir();
   if (!home) {
@@ -755,6 +849,7 @@ function buildHelpData() {
       "undo",
       "history",
       "ping",
+      "skill",
       "version",
     ],
     usage: "tabctl <command> [options]",
@@ -938,6 +1033,10 @@ function buildHelpData() {
       history: [
         "--limit <n>",
       ],
+      skill: [
+        "--agent <name> (repeatable)",
+        "--global",
+      ],
       version: [],
       global: [
         "--help",
@@ -1048,6 +1147,11 @@ async function main() {
     return;
   }
 
+  if (command === "skill") {
+    runSkillInstall(options, prettyOutput);
+    return;
+  }
+
   if (command === "setup") {
     runSetup(options, prettyOutput);
     return;
@@ -1103,6 +1207,7 @@ async function main() {
     }, prettyOutput);
     return;
   }
+
 
   let dedupeMode = false;
   if (command === "close" && options["dry-run"]) {
