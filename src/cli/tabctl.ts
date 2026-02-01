@@ -396,6 +396,9 @@ function buildHelpData() {
       "inspect",
       "focus",
       "open",
+      "group-list",
+      "group-update",
+      "group-ungroup",
       "group-assign",
       "move-tab",
       "move-group",
@@ -443,6 +446,23 @@ function buildHelpData() {
         "--window-group <name>",
         "--window-tab <id>",
         "--window-url <substring>",
+      ],
+      "group-list": [
+        "--window <id>",
+      ],
+      "group-update": [
+        "--group <name>",
+        "--group-id <id>",
+        "--window <id>",
+        "--title <name>",
+        "--color <name>",
+        "--collapsed",
+        "--expanded",
+      ],
+      "group-ungroup": [
+        "--group <name>",
+        "--group-id <id>",
+        "--window <id>",
       ],
       "group-assign": [
         "--tab <id> (repeatable)",
@@ -552,6 +572,9 @@ function errorOut(message: string): never {
 async function main() {
   let { command, options } = parseArgs(process.argv.slice(2));
   const prettyOutput = options.pretty !== false;
+  if (command === "groups") {
+    command = "group-list";
+  }
   if (Object.prototype.hasOwnProperty.call(options, "policy")) {
     errorOut("Custom policy path is not supported. Use XDG_CONFIG_HOME/tabctl/policy.json.");
   }
@@ -707,6 +730,31 @@ async function main() {
         windowUrl: options["window-url"],
       };
       break;
+    case "group-list":
+      action = "group-list";
+      params = {
+        windowId: options.window ? Number(options.window) : undefined,
+      };
+      break;
+    case "group-update":
+      action = "group-update";
+      params = {
+        groupTitle: options.group,
+        groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
+        windowId: options.window ? Number(options.window) : undefined,
+        title: options.title,
+        color: options.color,
+        collapsed: options.collapsed === true ? true : options.expanded === true ? false : undefined,
+      };
+      break;
+    case "group-ungroup":
+      action = "group-ungroup";
+      params = {
+        groupTitle: options.group,
+        groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
+        windowId: options.window ? Number(options.window) : undefined,
+      };
+      break;
     case "group-assign":
       action = "group-assign";
       params = {
@@ -793,7 +841,7 @@ async function main() {
       errorOut(`Unknown command: ${command}`);
   }
 
-  if (enforcePolicy && ["analyze", "inspect", "report", "close", "archive", "focus", "move-tab", "move-group", "group-assign"].includes(command)) {
+  if (enforcePolicy && ["analyze", "inspect", "report", "close", "archive", "focus", "move-tab", "move-group", "group-assign", "group-update", "group-ungroup"].includes(command)) {
     if (command === "close" && options.apply) {
       errorOut("Policy blocks close --apply; use explicit tab targets.");
     }
@@ -887,6 +935,38 @@ async function main() {
           ...params,
           tabId: eligibleIds[0],
           tabIds: eligibleIds,
+        };
+      }
+
+      policyInfo = {
+        protected: protectedTabs.map((tab) => ({
+          tabId: tab.tabId,
+          windowId: tab.windowId,
+          groupId: tab.groupId,
+          groupTitle: tab.groupTitle,
+          title: tab.title,
+          url: tab.url,
+          pinned: tab.pinned,
+        })),
+      };
+    } else if (command === "group-update" || command === "group-ungroup") {
+      if (!eligibleIds.length || protectedTabs.length > 0) {
+        earlyResponse = {
+          ok: true,
+          action: command,
+          data: {
+            summary: { eligible: eligibleIds.length, protected: protectedTabs.length },
+            protected: protectedTabs.map((tab) => ({
+              tabId: tab.tabId,
+              windowId: tab.windowId,
+              groupId: tab.groupId,
+              groupTitle: tab.groupTitle,
+              title: tab.title,
+              url: tab.url,
+              pinned: tab.pinned,
+            })),
+            policy: policySummary,
+          },
         };
       }
 

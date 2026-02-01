@@ -88,6 +88,29 @@ Options:
 
 If no window selector is provided, the focused window is used.
 
+### group-list
+List groups with their window and tab counts.
+Options:
+- `--window <id>`
+
+### group-update
+Update group metadata (title, color, or collapsed state).
+Options:
+- `--group <name>`
+- `--group-id <id>`
+- `--window <id>` (disambiguate group titles)
+- `--title <name>`
+- `--color <name>`
+- `--collapsed`
+- `--expanded`
+
+### group-ungroup
+Remove all tabs from a group.
+Options:
+- `--group <name>`
+- `--group-id <id>`
+- `--window <id>` (disambiguate group titles)
+
 ### group-assign
 Move existing tabs into an existing group (or create one).
 Options:

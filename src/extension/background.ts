@@ -163,6 +163,12 @@ async function handleAction(action: string, params: Record<string, unknown>, req
       return await focusTab(params);
     case "open":
       return await openTabs(params);
+    case "group-list":
+      return await listGroups(params);
+    case "group-update":
+      return await groupUpdate(params);
+    case "group-ungroup":
+      return await groupUngroup(params);
     case "group-assign":
       return await groupAssign(params);
     case "move-tab":
@@ -1204,6 +1210,147 @@ async function moveGroup(params: Record<string, unknown>) {
     movedToWindowId: targetWindowId,
     newGroupId,
     summary: { movedTabs: tabIds.length },
+  };
+}
+
+async function listGroups(params: Record<string, unknown>) {
+  const snapshot = await getTabSnapshot();
+  const windows = snapshot.windows as WindowSnapshot[];
+  const windowIdParam = Number.isFinite(params.windowId as number) ? Number(params.windowId) : null;
+  if (windowIdParam && !windows.some((win) => win.windowId === windowIdParam)) {
+    throw new Error("Window not found");
+  }
+
+  const groups: Array<Record<string, unknown>> = [];
+  for (const win of windows) {
+    if (windowIdParam && win.windowId !== windowIdParam) {
+      continue;
+    }
+    const counts = new Map<number, number>();
+    for (const tab of win.tabs) {
+      const groupId = tab.groupId as number;
+      if (typeof groupId === "number" && groupId !== -1) {
+        counts.set(groupId, (counts.get(groupId) || 0) + 1);
+      }
+    }
+    for (const group of win.groups) {
+      const groupId = group.groupId as number;
+      groups.push({
+        windowId: win.windowId,
+        groupId,
+        title: group.title ?? null,
+        color: group.color ?? null,
+        collapsed: group.collapsed ?? null,
+        tabCount: counts.get(groupId) || 0,
+      });
+    }
+  }
+
+  return { groups };
+}
+
+async function groupUpdate(params: Record<string, unknown>) {
+  const groupId = Number.isFinite(params.groupId as number) ? Number(params.groupId) : null;
+  const groupTitle = typeof params.groupTitle === "string" ? params.groupTitle.trim() : "";
+  if (!groupId && !groupTitle) {
+    throw new Error("Missing group identifier");
+  }
+
+  const snapshot = await getTabSnapshot();
+  const windows = snapshot.windows as WindowSnapshot[];
+  const windowIdParam = Number.isFinite(params.windowId as number) ? Number(params.windowId) : null;
+  if (windowIdParam && !windows.some((win) => win.windowId === windowIdParam)) {
+    throw new Error("Window not found");
+  }
+
+  let match: GroupMatch;
+  if (groupId != null) {
+    const resolved = resolveGroupById(snapshot, groupId);
+    if ((resolved as { error?: Record<string, unknown> }).error) {
+      throw (resolved as { error: Record<string, unknown> }).error;
+    }
+    match = (resolved as { match: GroupMatch }).match;
+    if (windowIdParam && windowIdParam !== match.windowId) {
+      throw new Error("Group is not in the specified window");
+    }
+  } else {
+    const resolved = resolveGroupByTitle(snapshot, groupTitle, windowIdParam || undefined);
+    if ((resolved as { error?: Record<string, unknown> }).error) {
+      throw (resolved as { error: Record<string, unknown> }).error;
+    }
+    match = (resolved as { match: GroupMatch }).match;
+  }
+
+  const update: chrome.tabGroups.UpdateProperties = {};
+  if (typeof params.title === "string") {
+    update.title = params.title;
+  }
+  if (typeof params.color === "string" && params.color.trim()) {
+    update.color = params.color.trim() as chrome.tabGroups.ColorEnum;
+  }
+  if (typeof params.collapsed === "boolean") {
+    update.collapsed = params.collapsed;
+  }
+  if (!Object.keys(update).length) {
+    throw new Error("Missing group update fields");
+  }
+
+  const updated = await chrome.tabGroups.update(match.group.groupId as number, update);
+  return {
+    groupId: updated.id,
+    windowId: updated.windowId,
+    title: updated.title,
+    color: updated.color,
+    collapsed: updated.collapsed,
+  };
+}
+
+async function groupUngroup(params: Record<string, unknown>) {
+  const groupId = Number.isFinite(params.groupId as number) ? Number(params.groupId) : null;
+  const groupTitle = typeof params.groupTitle === "string" ? params.groupTitle.trim() : "";
+  if (!groupId && !groupTitle) {
+    throw new Error("Missing group identifier");
+  }
+
+  const snapshot = await getTabSnapshot();
+  const windows = snapshot.windows as WindowSnapshot[];
+  const windowIdParam = Number.isFinite(params.windowId as number) ? Number(params.windowId) : null;
+  if (windowIdParam && !windows.some((win) => win.windowId === windowIdParam)) {
+    throw new Error("Window not found");
+  }
+
+  let match: GroupMatch;
+  if (groupId != null) {
+    const resolved = resolveGroupById(snapshot, groupId);
+    if ((resolved as { error?: Record<string, unknown> }).error) {
+      throw (resolved as { error: Record<string, unknown> }).error;
+    }
+    match = (resolved as { match: GroupMatch }).match;
+    if (windowIdParam && windowIdParam !== match.windowId) {
+      throw new Error("Group is not in the specified window");
+    }
+  } else {
+    const resolved = resolveGroupByTitle(snapshot, groupTitle, windowIdParam || undefined);
+    if ((resolved as { error?: Record<string, unknown> }).error) {
+      throw (resolved as { error: Record<string, unknown> }).error;
+    }
+    match = (resolved as { match: GroupMatch }).match;
+  }
+
+  const tabIds = match.tabs
+    .map((tab) => tab.tabId)
+    .filter((tabId) => typeof tabId === "number") as number[];
+  if (tabIds.length) {
+    await chrome.tabs.ungroup(tabIds);
+  }
+
+  return {
+    groupId: match.group.groupId,
+    groupTitle: match.group.title || null,
+    windowId: match.windowId,
+    summary: {
+      ungroupedTabs: tabIds.length,
+    },
   };
 }
 

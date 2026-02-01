@@ -311,6 +311,86 @@ test("open passes urls and window selectors", async () => {
   assert.equal(params?.windowUrl, "mail.google.com");
 });
 
+test("group-list passes window option", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { groups: [] },
+  }));
+
+  const result = await runCli(["group-list", "--window", "3"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "group-list");
+  const params = requests[0].params as { windowId?: number } | undefined;
+  assert.equal(params?.windowId, 3);
+});
+
+test("group-update passes update options", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { groupId: 1 },
+  }));
+
+  const result = await runCli([
+    "group-update",
+    "--group",
+    "Work",
+    "--window",
+    "2",
+    "--title",
+    "Work Items",
+    "--color",
+    "red",
+    "--expanded",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "group-update");
+  const params = requests[0].params as {
+    groupTitle?: string;
+    groupId?: number;
+    windowId?: number;
+    title?: string;
+    color?: string;
+    collapsed?: boolean;
+  } | undefined;
+  assert.equal(params?.groupTitle, "Work");
+  assert.equal(params?.windowId, 2);
+  assert.equal(params?.title, "Work Items");
+  assert.equal(params?.color, "red");
+  assert.equal(params?.collapsed, false);
+});
+
+test("group-ungroup passes group selectors", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { summary: { ungroupedTabs: 2 } },
+  }));
+
+  const result = await runCli([
+    "group-ungroup",
+    "--group-id",
+    "99",
+    "--window",
+    "5",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "group-ungroup");
+  const params = requests[0].params as { groupId?: number; windowId?: number } | undefined;
+  assert.equal(params?.groupId, 99);
+  assert.equal(params?.windowId, 5);
+});
+
 test("group-assign passes grouping options", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
     ok: true,
@@ -508,6 +588,9 @@ test("help supports json output", async () => {
   assert.ok(options?.analyze?.includes("--window-title (include active window title)"));
   assert.ok(options?.open?.includes("--url <url> (repeatable)"));
   assert.ok(options?.open?.includes("--after-group <name>"));
+  assert.ok(options?.["group-list"]?.includes("--window <id>"));
+  assert.ok(options?.["group-update"]?.includes("--title <name>"));
+  assert.ok(options?.["group-ungroup"]?.includes("--group-id <id>"));
   assert.ok(options?.["group-assign"]?.includes("--create"));
   assert.ok(options?.["move-tab"]?.includes("--after-tab <id>"));
   assert.ok(options?.["move-group"]?.includes("--before-group <name>"));
