@@ -79,6 +79,8 @@ tabctl inspect --tab 123 --signal github-state --signal-concurrency 4 --signal-t
 tabctl inspect --tab 123 --signal selector --selector "price=.price" --signal-timeout-ms 1500 --progress
 tabctl inspect --tab 123 --signal selector --signal-config ~/.config/tabctl/signals.json --progress
 tabctl focus --tab 123
+tabctl open --new-window --url https://example.com
+tabctl move-tab --tab 123 --new-window
 tabctl group-list
 tabctl group-update --group "Work" --title "Work Items" --color red --collapsed
 tabctl group-ungroup --group "Work"

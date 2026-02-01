@@ -867,8 +867,94 @@ async function openTabs(params: Record<string, unknown>) {
   const urls = Array.isArray(params.urls)
     ? params.urls.map((url) => (typeof url === "string" ? url.trim() : "")).filter(Boolean)
     : [];
-  if (!urls.length) {
+  const groupTitle = typeof params.groupTitle === "string" ? params.groupTitle.trim() : "";
+  const afterGroupTitle = typeof params.afterGroupTitle === "string" ? params.afterGroupTitle.trim() : "";
+  const newWindow = params.newWindow === true;
+  if (!urls.length && !newWindow) {
     throw new Error("No URLs provided");
+  }
+
+  if (newWindow) {
+    if (afterGroupTitle) {
+      throw new Error("Cannot use --after-group with --new-window");
+    }
+    if (params.windowId != null || params.windowGroupTitle || params.windowTabId != null || params.windowUrl) {
+      throw new Error("Cannot combine --new-window with window selectors");
+    }
+
+    const created: Array<Record<string, unknown>> = [];
+    const skipped: Array<Record<string, unknown>> = [];
+
+    const createdWindow = await chrome.windows.create({ focused: false });
+    const windowId = createdWindow.id as number;
+    let seedTabs = createdWindow.tabs;
+    if (!seedTabs) {
+      seedTabs = await chrome.tabs.query({ windowId });
+    }
+    const seedTabId = seedTabs.find((tab) => typeof tab.id === "number")?.id ?? null;
+
+    for (const url of urls) {
+      try {
+        const tab = await chrome.tabs.create({ windowId, url, active: false });
+        created.push({
+          tabId: tab.id,
+          windowId: tab.windowId,
+          index: tab.index,
+          url: tab.url,
+          title: tab.title,
+        });
+      } catch (error) {
+        skipped.push({ url, reason: "create_failed" });
+      }
+    }
+
+    if (!urls.length && seedTabs.length) {
+      const tab = seedTabs[0];
+      created.push({
+        tabId: tab.id,
+        windowId: tab.windowId,
+        index: tab.index,
+        url: tab.url,
+        title: tab.title,
+      });
+    }
+
+    if (seedTabId && created.length > 0 && urls.length > 0) {
+      try {
+        await chrome.tabs.remove(seedTabId);
+      } catch (error) {
+        log("Failed to remove seed tab", error);
+      }
+    }
+
+    let groupId: number | null = null;
+    if (groupTitle && created.length > 0) {
+      try {
+        const tabIds = created.map((tab) => tab.tabId as number).filter((id) => typeof id === "number");
+        if (tabIds.length > 0) {
+          groupId = await chrome.tabs.group({ tabIds, createProperties: { windowId } });
+          await chrome.tabGroups.update(groupId, { title: groupTitle });
+        }
+      } catch (error) {
+        log("Failed to create group", error);
+        groupId = null;
+      }
+    }
+
+    return {
+      windowId,
+      groupId,
+      groupTitle: groupTitle || null,
+      afterGroupTitle: null,
+      insertIndex: null,
+      created,
+      skipped,
+      summary: {
+        createdTabs: created.length,
+        skippedUrls: skipped.length,
+        grouped: Boolean(groupId),
+      },
+    };
   }
 
   const snapshot = await getTabSnapshot();
@@ -882,8 +968,6 @@ async function openTabs(params: Record<string, unknown>) {
   if (!windowSnapshot) {
     throw new Error("Window snapshot unavailable");
   }
-  const groupTitle = typeof params.groupTitle === "string" ? params.groupTitle.trim() : "";
-  const afterGroupTitle = typeof params.afterGroupTitle === "string" ? params.afterGroupTitle.trim() : "";
   const created: Array<Record<string, unknown>> = [];
   const skipped: Array<Record<string, unknown>> = [];
   let insertIndex: number | null = null;
@@ -1106,10 +1190,6 @@ async function moveTab(params: Record<string, unknown>) {
   }
 
   const snapshot = await getTabSnapshot();
-  const target = resolveMoveTarget(snapshot, params);
-  if ((target as { error?: Record<string, unknown> }).error) {
-    throw (target as { error: Record<string, unknown> }).error;
-  }
 
   const windows = snapshot.windows as WindowSnapshot[];
   const sourceWindow = windows.find((win) => win.tabs.some((tab) => tab.tabId === tabId));
@@ -1119,6 +1199,42 @@ async function moveTab(params: Record<string, unknown>) {
   const sourceTab = sourceWindow.tabs.find((tab) => tab.tabId === tabId);
   if (!sourceTab) {
     throw new Error("Source tab not found");
+  }
+
+  const newWindow = params.newWindow === true;
+  const hasTarget = Number.isFinite(params.beforeTabId as number)
+    || Number.isFinite(params.afterTabId as number)
+    || (typeof params.beforeGroupTitle === "string" && params.beforeGroupTitle.trim())
+    || (typeof params.afterGroupTitle === "string" && params.afterGroupTitle.trim());
+  if (newWindow) {
+    if (hasTarget) {
+      throw new Error("Cannot combine --new-window with --before/--after");
+    }
+    const createdWindow = await chrome.windows.create({ tabId, focused: false });
+    const targetWindowId = createdWindow.id as number;
+    let targetIndex = 0;
+    const createdTab = createdWindow.tabs?.find((tab) => tab.id === tabId) || null;
+    if (createdTab && Number.isFinite(createdTab.index)) {
+      targetIndex = createdTab.index;
+    } else {
+      try {
+        const updated = await chrome.tabs.get(tabId);
+        targetIndex = updated.index;
+      } catch {
+        targetIndex = 0;
+      }
+    }
+    return {
+      tabId,
+      from: { windowId: sourceWindow.windowId, index: sourceTab.index },
+      to: { windowId: targetWindowId, index: targetIndex },
+      summary: { movedTabs: 1 },
+    };
+  }
+
+  const target = resolveMoveTarget(snapshot, params);
+  if ((target as { error?: Record<string, unknown> }).error) {
+    throw (target as { error: Record<string, unknown> }).error;
   }
 
   const targetWindowId = (target as { windowId: number }).windowId;
@@ -1154,6 +1270,48 @@ async function moveGroup(params: Record<string, unknown>) {
   const source = (resolvedGroup as { match: GroupMatch }).match;
   if (!source.tabs.length) {
     throw new Error("Group has no tabs to move");
+  }
+
+  const newWindow = params.newWindow === true;
+  const hasTarget = Number.isFinite(params.beforeTabId as number)
+    || Number.isFinite(params.afterTabId as number)
+    || (typeof params.beforeGroupTitle === "string" && params.beforeGroupTitle.trim())
+    || (typeof params.afterGroupTitle === "string" && params.afterGroupTitle.trim());
+  if (newWindow) {
+    if (hasTarget) {
+      throw new Error("Cannot combine --new-window with --before/--after");
+    }
+    const tabIds = source.tabs.map((tab) => tab.tabId).filter((id) => typeof id === "number") as number[];
+    const [firstTabId, ...restTabIds] = tabIds;
+    if (!firstTabId) {
+      throw new Error("Group has no tabs to move");
+    }
+    const createdWindow = await chrome.windows.create({ tabId: firstTabId, focused: false });
+    const targetWindowId = createdWindow.id as number;
+
+    if (restTabIds.length > 0) {
+      await chrome.tabs.move(restTabIds, { windowId: targetWindowId, index: -1 });
+    }
+
+    let newGroupId: number | null = null;
+    try {
+      newGroupId = await chrome.tabs.group({ tabIds, createProperties: { windowId: targetWindowId } });
+      await chrome.tabGroups.update(newGroupId, {
+        title: (source.group.title as string) || "",
+        color: (source.group.color as chrome.tabGroups.ColorEnum) || "grey",
+        collapsed: (source.group.collapsed as boolean | undefined) || false,
+      });
+    } catch (error) {
+      log("Failed to regroup tabs", error);
+    }
+
+    return {
+      groupId: source.group.groupId,
+      windowId: source.windowId,
+      movedToWindowId: targetWindowId,
+      newGroupId,
+      summary: { movedTabs: tabIds.length },
+    };
   }
 
   const target = resolveMoveTarget(snapshot, params);

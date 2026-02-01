@@ -37,7 +37,7 @@ function parseArgs(argv: string[]) {
     }
 
     const key = arg.slice(2);
-    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json", "window-title", "create", "collapsed", "expanded"].includes(key)) {
+    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json", "window-title", "create", "collapsed", "expanded", "new-window"].includes(key)) {
       options[key] = true;
       continue;
     }
@@ -443,6 +443,7 @@ function buildHelpData() {
         "--group <name>",
         "--after-group <name>",
         "--window <id>",
+        "--new-window",
         "--window-group <name>",
         "--window-tab <id>",
         "--window-url <substring>",
@@ -481,6 +482,7 @@ function buildHelpData() {
         "--before-group <name>",
         "--after-group <name>",
         "--window <id>",
+        "--new-window",
       ],
       "move-group": [
         "--group <name>",
@@ -490,6 +492,7 @@ function buildHelpData() {
         "--before-group <name>",
         "--after-group <name>",
         "--window <id>",
+        "--new-window",
       ],
       setup: [
         "--browser edge|chrome",
@@ -725,6 +728,7 @@ async function main() {
         groupTitle: options.group,
         afterGroupTitle: options["after-group"],
         windowId: options.window ? Number(options.window) : undefined,
+        newWindow: options["new-window"] === true,
         windowGroupTitle: options["window-group"],
         windowTabId: options["window-tab"] ? Number(options["window-tab"]) : undefined,
         windowUrl: options["window-url"],
@@ -777,6 +781,7 @@ async function main() {
         beforeGroupTitle: options["before-group"],
         afterGroupTitle: options["after-group"],
         windowId: options.window ? Number(options.window) : undefined,
+        newWindow: options["new-window"] === true,
       };
       break;
     case "move-group":
@@ -789,6 +794,7 @@ async function main() {
         beforeGroupTitle: options["before-group"],
         afterGroupTitle: options["after-group"],
         windowId: options.window ? Number(options.window) : undefined,
+        newWindow: options["new-window"] === true,
       };
       break;
     case "archive":

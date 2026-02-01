@@ -311,6 +311,28 @@ test("open passes urls and window selectors", async () => {
   assert.equal(params?.windowUrl, "mail.google.com");
 });
 
+test("open supports new window flag", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { summary: { createdTabs: 1 } },
+  }));
+
+  const result = await runCli([
+    "open",
+    "--new-window",
+    "--url",
+    "https://example.com",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "open");
+  const params = requests[0].params as { newWindow?: boolean } | undefined;
+  assert.equal(params?.newWindow, true);
+});
+
 test("group-list passes window option", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
     ok: true,
@@ -433,6 +455,50 @@ test("group-assign passes grouping options", async () => {
   assert.equal(params?.create, true);
   assert.equal(params?.color, "blue");
   assert.equal(params?.collapsed, true);
+});
+
+test("move-tab supports new window flag", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { summary: { movedTabs: 1 } },
+  }));
+
+  const result = await runCli([
+    "move-tab",
+    "--tab",
+    "12",
+    "--new-window",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "move-tab");
+  const params = requests[0].params as { newWindow?: boolean } | undefined;
+  assert.equal(params?.newWindow, true);
+});
+
+test("move-group supports new window flag", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { summary: { movedTabs: 2 } },
+  }));
+
+  const result = await runCli([
+    "move-group",
+    "--group-id",
+    "55",
+    "--new-window",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "move-group");
+  const params = requests[0].params as { newWindow?: boolean } | undefined;
+  assert.equal(params?.newWindow, true);
 });
 
 test("move-tab passes target options", async () => {
@@ -588,12 +654,15 @@ test("help supports json output", async () => {
   assert.ok(options?.analyze?.includes("--window-title (include active window title)"));
   assert.ok(options?.open?.includes("--url <url> (repeatable)"));
   assert.ok(options?.open?.includes("--after-group <name>"));
+  assert.ok(options?.open?.includes("--new-window"));
   assert.ok(options?.["group-list"]?.includes("--window <id>"));
   assert.ok(options?.["group-update"]?.includes("--title <name>"));
   assert.ok(options?.["group-ungroup"]?.includes("--group-id <id>"));
   assert.ok(options?.["group-assign"]?.includes("--create"));
   assert.ok(options?.["move-tab"]?.includes("--after-tab <id>"));
+  assert.ok(options?.["move-tab"]?.includes("--new-window"));
   assert.ok(options?.["move-group"]?.includes("--before-group <name>"));
+  assert.ok(options?.["move-group"]?.includes("--new-window"));
   assert.ok(options?.setup?.includes("--browser edge|chrome"));
   assert.ok(options?.report?.includes("--format json|md|csv"));
   assert.ok(options?.close?.includes("--dry-run"));

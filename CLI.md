@@ -82,6 +82,7 @@ Options:
 - `--group <name>` (new group title)
 - `--after-group <name>` (insert tabs after this group)
 - `--window <id>`
+- `--new-window`
 - `--window-group <name>` (window containing a group with this title)
 - `--window-tab <id>` (window containing this tab)
 - `--window-url <substring>` (window containing a tab whose URL includes this substring)
@@ -132,6 +133,7 @@ Options:
 - `--before-group <name>`
 - `--after-group <name>`
 - `--window <id>` (disambiguate group names)
+- `--new-window`
 
 ### move-group
 Move a group before/after a tab or group.
@@ -143,6 +145,7 @@ Options:
 - `--before-group <name>`
 - `--after-group <name>`
 - `--window <id>` (disambiguate group names)
+- `--new-window`
 
 ### setup
 Install the native host manifest (macOS only).
