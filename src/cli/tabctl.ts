@@ -24,6 +24,7 @@ const GROUP_COLORS = new Set([
   "cyan",
   "orange",
 ]);
+const DEFAULT_PAGE_LIMIT = 100;
 
 type Options = {
   _: string[];
@@ -101,6 +102,9 @@ function parseArgs(argv: string[]) {
     "format",
     "out",
     "limit",
+    "offset",
+    "no-page",
+    "ungrouped",
   ]);
 
   while (args.length > 0) {
@@ -118,7 +122,7 @@ function parseArgs(argv: string[]) {
     if (!allowedFlags.has(key)) {
       errorOut(`Unknown option: --${key}`);
     }
-    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json", "window-title", "create", "collapsed", "expanded", "new-window", "close-source", "include-stale", "groups"].includes(key)) {
+    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json", "window-title", "create", "collapsed", "expanded", "new-window", "close-source", "include-stale", "groups", "no-page", "ungrouped"].includes(key)) {
       options[key] = true;
       continue;
     }
@@ -264,6 +268,201 @@ function buildWindowLabelIndex(snapshot: Record<string, unknown>) {
     }
   });
   return windowLabels;
+}
+
+function formatCliArgValue(value: unknown) {
+  const raw = String(value);
+  if (!raw) {
+    return raw;
+  }
+  if (/[\s"]/g.test(raw)) {
+    const escaped = raw.replace(/"/g, "\\\"");
+    return `"${escaped}"`;
+  }
+  return raw;
+}
+
+function buildScopeArgs(options: Options, includeAll: boolean) {
+  const args: string[] = [];
+  if (includeAll) {
+    args.push("--all");
+    return args;
+  }
+  if (options.ungrouped === true) {
+    args.push("--ungrouped");
+  }
+  if (Array.isArray(options.tab)) {
+    for (const entry of options.tab as Array<unknown>) {
+      if (typeof entry === "string" && entry.trim()) {
+        args.push("--tab", formatCliArgValue(entry.trim()));
+      }
+    }
+  }
+  if (typeof options.group === "string" && options.group.trim()) {
+    args.push("--group", formatCliArgValue(options.group.trim()));
+  }
+  if (options["group-id"] != null && options.ungrouped !== true) {
+    args.push("--group-id", formatCliArgValue(options["group-id"]));
+  }
+  if (options.window != null) {
+    args.push("--window", formatCliArgValue(options.window));
+  }
+  return args;
+}
+
+function parseNumberOption(options: Options, key: string) {
+  if (!Object.prototype.hasOwnProperty.call(options, key)) {
+    return null;
+  }
+  const value = Number(options[key]);
+  if (!Number.isFinite(value)) {
+    errorOut(`Invalid --${key} value`);
+  }
+  return value;
+}
+
+function resolveScopeFlags(options: Options) {
+  const tabIds = Array.isArray(options.tab)
+    ? (options.tab as Array<unknown>).map(Number).filter(Number.isFinite)
+    : [];
+  const groupTitle = typeof options.group === "string" ? options.group.trim() : "";
+  const ungrouped = options.ungrouped === true;
+  const groupId = ungrouped ? -1 : (options["group-id"] != null ? Number(options["group-id"]) : null);
+  const windowId = options.window != null ? Number(options.window) : null;
+  if (options["group-id"] != null && !Number.isFinite(groupId)) {
+    errorOut("Invalid --group-id value");
+  }
+  if (ungrouped && options["group-id"] != null) {
+    errorOut("--ungrouped cannot be combined with --group-id");
+  }
+  if (options.window != null && !Number.isFinite(windowId)) {
+    errorOut("Invalid --window value");
+  }
+  const hasScope = tabIds.length > 0
+    || Boolean(groupTitle)
+    || Number.isFinite(groupId)
+    || Number.isFinite(windowId);
+  return { tabIds, groupTitle, groupId, windowId, hasScope, ungrouped };
+}
+
+function buildNextCommand(command: string, scopeArgs: string[], offset: number, limit: number) {
+  const parts = ["tabctl", command, ...scopeArgs, "--offset", String(offset), "--limit", String(limit)];
+  return parts.join(" ");
+}
+
+function resolvePagination(options: Options, total: number, command: string, scopeArgs: string[]) {
+  const noPage = options["no-page"] === true;
+  if (noPage) {
+    return { offset: 0, limit: total, page: null };
+  }
+  const limitRaw = parseNumberOption(options, "limit");
+  const offsetRaw = parseNumberOption(options, "offset");
+  const limit = limitRaw != null ? Math.floor(limitRaw) : DEFAULT_PAGE_LIMIT;
+  const offset = offsetRaw != null ? Math.floor(offsetRaw) : 0;
+  if (!Number.isFinite(limit) || limit <= 0) {
+    errorOut("--limit must be a positive number");
+  }
+  if (!Number.isFinite(offset) || offset < 0) {
+    errorOut("--offset must be a non-negative number");
+  }
+  const remaining = total - offset;
+  const returned = remaining > 0 ? Math.min(limit, remaining) : 0;
+  const hasMore = offset + limit < total;
+  const nextOffset = hasMore ? offset + limit : null;
+  const hint = hasMore ? `Partial results. Next: ${buildNextCommand(command, scopeArgs, nextOffset, limit)}` : null;
+  return {
+    offset,
+    limit,
+    page: {
+      offset,
+      limit,
+      returned,
+      total,
+      hasMore,
+      nextOffset,
+      hint,
+    },
+  };
+}
+
+function compareTabIndex(a: Record<string, unknown>, b: Record<string, unknown>) {
+  const aIndex = Number(a.index);
+  const bIndex = Number(b.index);
+  if (!Number.isFinite(aIndex) && !Number.isFinite(bIndex)) {
+    return 0;
+  }
+  if (!Number.isFinite(aIndex)) {
+    return 1;
+  }
+  if (!Number.isFinite(bIndex)) {
+    return -1;
+  }
+  if (aIndex === bIndex) {
+    const aId = Number(a.tabId);
+    const bId = Number(b.tabId);
+    if (Number.isFinite(aId) && Number.isFinite(bId)) {
+      return aId - bId;
+    }
+    return 0;
+  }
+  return aIndex - bIndex;
+}
+
+function orderTabs(snapshot: Record<string, unknown>, tabFilter: Set<number> | null) {
+  const windows = (snapshot.windows as Array<Record<string, unknown>>) || [];
+  const ordered: Array<Record<string, unknown>> = [];
+  for (const win of windows) {
+    const tabs = ((win.tabs as Array<Record<string, unknown>>) || []).slice().sort(compareTabIndex);
+    for (const tab of tabs) {
+      const tabId = tab.tabId as number;
+      if (!tabFilter || tabFilter.has(tabId)) {
+        ordered.push(tab);
+      }
+    }
+  }
+  return ordered;
+}
+
+function buildPagedSnapshot(snapshot: Record<string, unknown>, tabs: Array<Record<string, unknown>>) {
+  const tabsByWindow = new Map<number, Array<Record<string, unknown>>>();
+  const groupsByWindow = new Map<number, Set<number>>();
+  for (const tab of tabs) {
+    const windowId = tab.windowId as number;
+    if (!Number.isFinite(windowId)) {
+      continue;
+    }
+    if (!tabsByWindow.has(windowId)) {
+      tabsByWindow.set(windowId, []);
+      groupsByWindow.set(windowId, new Set());
+    }
+    tabsByWindow.get(windowId)?.push(tab);
+    const groupId = tab.groupId as number;
+    if (Number.isFinite(groupId) && groupId !== -1) {
+      groupsByWindow.get(windowId)?.add(groupId);
+    }
+  }
+
+  const windows = (snapshot.windows as Array<Record<string, unknown>>) || [];
+  const pagedWindows: Array<Record<string, unknown>> = [];
+  for (const win of windows) {
+    const windowId = win.windowId as number;
+    const windowTabs = tabsByWindow.get(windowId) || [];
+    if (windowTabs.length === 0) {
+      continue;
+    }
+    const allowedGroupIds = groupsByWindow.get(windowId) || new Set<number>();
+    const groups = ((win.groups as Array<Record<string, unknown>>) || []).filter((group) => allowedGroupIds.has(group.groupId as number));
+    pagedWindows.push({
+      ...win,
+      tabs: windowTabs,
+      groups,
+    });
+  }
+
+  return {
+    ...snapshot,
+    windows: pagedWindows,
+  };
 }
 
 function listGroupSummaries(snapshot: Record<string, unknown>, windowLabels: Map<number, string>) {
@@ -568,6 +767,7 @@ function buildHelpData() {
         "--tab <id> (repeatable)",
         "--group <name>",
         "--group-id <id>",
+        "--ungrouped",
         "--window <id>",
         "--all",
         "--window-title (include active window title)",
@@ -581,6 +781,7 @@ function buildHelpData() {
         "--tab <id> (repeatable)",
         "--group <name>",
         "--group-id <id>",
+        "--ungrouped",
         "--window <id>",
         "--all",
         "--include-stale",
@@ -589,6 +790,15 @@ function buildHelpData() {
         "--confirm",
       ],
       list: [
+        "--tab <id> (repeatable)",
+        "--group <name>",
+        "--group-id <id>",
+        "--ungrouped",
+        "--window <id>",
+        "--all",
+        "--limit <n>",
+        "--offset <n>",
+        "--no-page",
         "--groups (alias for group-list)",
       ],
       inspect: [
@@ -600,8 +810,12 @@ function buildHelpData() {
         "--tab <id> (repeatable)",
         "--group <name>",
         "--group-id <id>",
+        "--ungrouped",
         "--window <id>",
         "--all",
+        "--limit <n>",
+        "--offset <n>",
+        "--no-page",
         "--progress",
       ],
       focus: [
@@ -619,7 +833,15 @@ function buildHelpData() {
         "--window-url <substring>",
       ],
       "group-list": [
+        "--tab <id> (repeatable)",
+        "--group <name>",
+        "--group-id <id>",
+        "--ungrouped",
         "--window <id>",
+        "--all",
+        "--limit <n>",
+        "--offset <n>",
+        "--no-page",
       ],
       group: [
         "(alias for group-list)",
@@ -687,6 +909,7 @@ function buildHelpData() {
         "--window <id>",
         "--group <name>",
         "--group-id <id>",
+        "--ungrouped",
         "--tab <id> (repeatable)",
       ],
       close: [
@@ -694,6 +917,7 @@ function buildHelpData() {
         "--tab <id> (repeatable)",
         "--group <name>",
         "--group-id <id>",
+        "--ungrouped",
         "--window <id>",
         "--confirm",
         "--dry-run",
@@ -704,8 +928,12 @@ function buildHelpData() {
         "--tab <id> (repeatable)",
         "--group <name>",
         "--group-id <id>",
+        "--ungrouped",
         "--window <id>",
         "--all",
+        "--limit <n>",
+        "--offset <n>",
+        "--no-page",
       ],
       history: [
         "--limit <n>",
@@ -904,13 +1132,16 @@ async function main() {
         checkGitHub: Boolean(options.github),
         tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
         groupTitle: options.group,
-        groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
+        groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
         windowId: options.window ? Number(options.window) : undefined,
         all: options.all === true,
         githubConcurrency: options["github-concurrency"] ? Number(options["github-concurrency"]) : undefined,
         githubTimeoutMs: options["github-timeout-ms"] ? Number(options["github-timeout-ms"]) : undefined,
         progress: Boolean(options.progress),
       };
+      if (options.ungrouped && options["group-id"]) {
+        errorOut("--ungrouped cannot be combined with --group-id");
+      }
       break;
     case "inspect":
       action = "inspect";
@@ -947,7 +1178,7 @@ async function main() {
         all: Boolean(options.all),
         windowId: options.window ? Number(options.window) : undefined,
         groupTitle: options.group,
-        groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
+        groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
         tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
         signals: options.signal ? (options.signal as string[]) : undefined,
         selectorSpecs,
@@ -956,6 +1187,9 @@ async function main() {
         signalTimeoutMs: options["signal-timeout-ms"] ? Number(options["signal-timeout-ms"]) : undefined,
         progress: Boolean(options.progress),
       };
+      if (options.ungrouped && options["group-id"]) {
+        errorOut("--ungrouped cannot be combined with --group-id");
+      }
       break;
     case "focus":
       action = "focus";
@@ -1057,9 +1291,12 @@ async function main() {
         all: Boolean(options.all),
         windowId: options.window ? Number(options.window) : undefined,
         groupTitle: options.group,
-        groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
+        groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
         tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
       };
+      if (options.ungrouped && options["group-id"]) {
+        errorOut("--ungrouped cannot be combined with --group-id");
+      }
       break;
     case "close":
       action = "close";
@@ -1074,9 +1311,12 @@ async function main() {
           confirmed: true,
           windowId: options.window ? Number(options.window) : undefined,
           groupTitle: options.group,
-          groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
+          groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
           tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
         };
+        if (options.ungrouped && options["group-id"]) {
+          errorOut("--ungrouped cannot be combined with --group-id");
+        }
       }
       break;
     case "report":
@@ -1085,9 +1325,12 @@ async function main() {
         all: Boolean(options.all),
         windowId: options.window ? Number(options.window) : undefined,
         groupTitle: options.group,
-        groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
+        groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
         tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
       };
+      if (options.ungrouped && options["group-id"]) {
+        errorOut("--ungrouped cannot be combined with --group-id");
+      }
       break;
     case "undo":
       action = "undo";
@@ -1425,8 +1668,82 @@ async function main() {
   if (response.data && typeof response.data === "object") {
     const data = response.data as Record<string, unknown>;
     if (command === "list" && Array.isArray(data.windows)) {
-      const filtered = filterSnapshotByPolicy(data, policyContext.policy);
-      response.data = filtered;
+      const filtered = filterSnapshotByPolicy(data, policyContext.policy) as Record<string, unknown>;
+      const scope = resolveScopeFlags(options);
+      const allScope = options.all === true || !scope.hasScope;
+      const listParams: Record<string, unknown> = allScope
+        ? { all: true }
+        : {
+          tabIds: scope.tabIds.length ? scope.tabIds : undefined,
+          groupTitle: scope.groupTitle || undefined,
+          groupId: scope.groupId != null ? scope.groupId : undefined,
+          windowId: scope.windowId != null ? scope.windowId : undefined,
+        };
+      const selection = selectTabsFromSnapshot(filtered, listParams) as { tabs: Array<Record<string, unknown>>; error?: Record<string, unknown> };
+      if (selection.error) {
+        printJson({ ok: false, error: selection.error }, prettyOutput);
+        process.exit(1);
+      }
+      const selectedTabs = selection.tabs || [];
+      const tabIdSet = new Set(selectedTabs.map((tab) => tab.tabId).filter((id) => typeof id === "number") as number[]);
+      const ordered = listParams.all
+        ? orderTabs(filtered, null)
+        : (tabIdSet.size > 0 ? orderTabs(filtered, tabIdSet) : []);
+      const scopeArgs = buildScopeArgs(options, allScope);
+      const pagination = resolvePagination(options, ordered.length, "list", scopeArgs);
+      const start = pagination.offset;
+      const end = pagination.offset + pagination.limit;
+      const pagedTabs = ordered.slice(start, end);
+      const pagedSnapshot = buildPagedSnapshot(filtered, pagedTabs) as Record<string, unknown>;
+      data.windows = pagedSnapshot.windows as Array<Record<string, unknown>>;
+      if (pagination.page) {
+        data.page = pagination.page;
+      }
+    }
+
+    if (command === "group-list" && Array.isArray(data.groups)) {
+      let groups = data.groups as Array<Record<string, unknown>>;
+      const scope = resolveScopeFlags(options);
+      const allScope = options.all === true || !scope.hasScope;
+      if (!allScope) {
+        if (Number.isFinite(scope.windowId)) {
+          groups = groups.filter((group) => group.windowId === scope.windowId);
+        }
+        if (Number.isFinite(scope.groupId)) {
+          groups = groups.filter((group) => group.groupId === scope.groupId);
+        }
+        if (scope.groupTitle) {
+          groups = groups.filter((group) => group.title === scope.groupTitle);
+        }
+        if (scope.tabIds.length > 0) {
+          const snapshot = await getPolicySnapshot();
+          if (!snapshot) {
+            errorOut("Failed to load tabs for group-list filtering");
+          }
+          const tabIndex = buildTabIndex(snapshot);
+          const groupIds = new Set<number>();
+          for (const tabId of scope.tabIds) {
+            const tab = tabIndex.get(tabId);
+            if (!tab) {
+              continue;
+            }
+            const groupId = tab.groupId as number;
+            if (Number.isFinite(groupId) && groupId !== -1) {
+              groupIds.add(groupId);
+            }
+          }
+          groups = groups.filter((group) => groupIds.has(group.groupId as number));
+        }
+      }
+
+      const scopeArgs = buildScopeArgs(options, allScope);
+      const pagination = resolvePagination(options, groups.length, "group-list", scopeArgs);
+      const start = pagination.offset;
+      const end = pagination.offset + pagination.limit;
+      data.groups = groups.slice(start, end);
+      if (pagination.page) {
+        data.page = pagination.page;
+      }
     }
 
     if ((command === "inspect" || command === "report") && Array.isArray(data.entries)) {
@@ -1435,7 +1752,7 @@ async function main() {
         snapshot = await getPolicySnapshot();
       }
       const tabIndex = snapshot ? buildTabIndex(snapshot) : null;
-      data.entries = (data.entries as Array<Record<string, unknown>>).map((entry) => {
+      const annotated = (data.entries as Array<Record<string, unknown>>).map((entry) => {
         const tab = tabIndex?.get(entry.tabId as number) || entry;
         const { eligible, protectedReasons } = evaluateTab(tab, policyContext.policy);
         return {
@@ -1444,6 +1761,16 @@ async function main() {
           protectedReasons,
         };
       }).filter((entry) => entry.eligible !== false);
+      const scope = resolveScopeFlags(options);
+      const allScope = options.all === true || !scope.hasScope;
+      const scopeArgs = buildScopeArgs(options, allScope);
+      const pagination = resolvePagination(options, annotated.length, command, scopeArgs);
+      const start = pagination.offset;
+      const end = pagination.offset + pagination.limit;
+      data.entries = annotated.slice(start, end);
+      if (pagination.page) {
+        data.page = pagination.page;
+      }
     }
 
     if (command === "analyze" && Array.isArray(data.candidates)) {
@@ -1566,6 +1893,7 @@ async function main() {
     const data = response.data as { entries?: Array<Record<string, unknown>>; generatedAt?: number } | undefined;
     const entries = data?.entries || [];
     const generatedAt = data?.generatedAt;
+    const page = data && "page" in data ? (data.page as Record<string, unknown> | undefined) : undefined;
     let content = "";
 
     if (format === "json") {
@@ -1580,16 +1908,16 @@ async function main() {
 
     if (options.out) {
       fs.writeFileSync(String(options.out), content, "utf8");
-      printJson({ ok: true, data: { writtenTo: options.out, format, count: entries.length } }, prettyOutput);
+      printJson({ ok: true, data: { writtenTo: options.out, format, count: entries.length, ...(page ? { page } : {}) } }, prettyOutput);
       return;
     }
 
     if (format === "json") {
-      printJson({ ok: true, data: { format, entries } }, prettyOutput);
+      printJson({ ok: true, data: { format, entries, ...(page ? { page } : {}) } }, prettyOutput);
       return;
     }
 
-    printJson({ ok: true, data: { format, entries, content } }, prettyOutput);
+    printJson({ ok: true, data: { format, entries, content, ...(page ? { page } : {}) } }, prettyOutput);
     return;
   }
 

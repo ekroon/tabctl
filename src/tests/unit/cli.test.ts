@@ -79,12 +79,188 @@ test("list sends list action", async () => {
   assert.equal(requests[0].action, "list");
 });
 
+test("list paginates and filters by group", async () => {
+  const snapshot = {
+    windows: [
+      {
+        windowId: 1,
+        focused: true,
+        tabs: [
+          { tabId: 1, windowId: 1, index: 0, groupId: 10, groupTitle: "Work", title: "A", url: "https://a" },
+          { tabId: 2, windowId: 1, index: 1, groupId: 10, groupTitle: "Work", title: "B", url: "https://b" },
+          { tabId: 3, windowId: 1, index: 2, groupId: -1, groupTitle: null, title: "C", url: "https://c" },
+        ],
+        groups: [
+          { groupId: 10, title: "Work" },
+        ],
+      },
+      {
+        windowId: 2,
+        focused: false,
+        tabs: [
+          { tabId: 4, windowId: 2, index: 0, groupId: 11, groupTitle: "Home", title: "D", url: "https://d" },
+        ],
+        groups: [
+          { groupId: 11, title: "Home" },
+        ],
+      },
+    ],
+  };
+
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
+    if (req.action === "list") {
+      return { ok: true, action: req.action, requestId: req.id, data: snapshot };
+    }
+    return { ok: true, action: req.action, requestId: req.id, data: {} };
+  });
+
+  const result = await runCli(["list", "--group", "Work", "--limit", "1"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "list");
+  const output = JSON.parse(result.stdout.trim());
+  const data = output.data as { windows?: Array<Record<string, unknown>>; page?: Record<string, unknown> };
+  assert.ok(data.page);
+  assert.equal(data.page?.limit, 1);
+  assert.equal(data.page?.offset, 0);
+  assert.equal(data.page?.returned, 1);
+  assert.equal(data.page?.total, 2);
+  assert.equal(data.page?.hasMore, true);
+  assert.equal(data.page?.nextOffset, 1);
+  assert.match(data.page?.hint as string, /tabctl list/);
+  assert.match(data.page?.hint as string, /--group ("Work"|Work)/);
+  assert.equal(data.windows?.length, 1);
+  const tabs = (data.windows?.[0].tabs as Array<Record<string, unknown>>) || [];
+  assert.equal(tabs.length, 1);
+  assert.equal(tabs[0].tabId, 1);
+});
+
+test("list with --all ignores other scopes", async () => {
+  const snapshot = {
+    windows: [
+      {
+        windowId: 1,
+        focused: true,
+        tabs: [
+          { tabId: 1, windowId: 1, index: 0, groupId: 10, groupTitle: "Work", title: "A", url: "https://a" },
+          { tabId: 2, windowId: 1, index: 1, groupId: -1, groupTitle: null, title: "B", url: "https://b" },
+        ],
+        groups: [
+          { groupId: 10, title: "Work" },
+        ],
+      },
+    ],
+  };
+
+  const { socketPath, server, sockets } = await startMockSocket((req) => {
+    if (req.action === "list") {
+      return { ok: true, action: req.action, requestId: req.id, data: snapshot };
+    }
+    return { ok: true, action: req.action, requestId: req.id, data: {} };
+  });
+
+  const result = await runCli(["list", "--group", "Work", "--all", "--limit", "100"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim());
+  const data = output.data as { windows?: Array<Record<string, unknown>> };
+  const tabs = ((data.windows?.[0].tabs as Array<Record<string, unknown>>) || []);
+  assert.equal(tabs.length, 2);
+});
+
+test("list supports --ungrouped", async () => {
+  const snapshot = {
+    windows: [
+      {
+        windowId: 1,
+        focused: true,
+        tabs: [
+          { tabId: 1, windowId: 1, index: 0, groupId: -1, groupTitle: null, title: "A", url: "https://a" },
+          { tabId: 2, windowId: 1, index: 1, groupId: 10, groupTitle: "Work", title: "B", url: "https://b" },
+        ],
+        groups: [
+          { groupId: 10, title: "Work" },
+        ],
+      },
+    ],
+  };
+
+  const { socketPath, server, sockets } = await startMockSocket((req) => {
+    if (req.action === "list") {
+      return { ok: true, action: req.action, requestId: req.id, data: snapshot };
+    }
+    return { ok: true, action: req.action, requestId: req.id, data: {} };
+  });
+
+  const result = await runCli(["list", "--ungrouped", "--limit", "10"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim());
+  const data = output.data as { windows?: Array<Record<string, unknown>> };
+  const tabs = ((data.windows?.[0].tabs as Array<Record<string, unknown>>) || []);
+  assert.equal(tabs.length, 1);
+  assert.equal(tabs[0].tabId, 1);
+});
+
+test("report supports --ungrouped", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { entries: [] },
+  }));
+
+  const result = await runCli(["report", "--ungrouped"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "report");
+  const params = requests[0].params as { groupId?: number } | undefined;
+  assert.equal(params?.groupId, -1);
+});
+
+test("report rejects --ungrouped with --group-id", async () => {
+  const result = await runCli(["report", "--ungrouped", "--group-id", "3"]);
+  assert.equal(result.status, 1);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, false);
+  assert.equal(output.error.message, "--ungrouped cannot be combined with --group-id");
+});
+
 test("close without confirm fails", async () => {
   const result = await runCli(["close", "--tab", "123"]);
   assert.equal(result.status, 1);
   const output = JSON.parse(result.stdout.trim());
   assert.equal(output.ok, false);
   assert.equal(output.error.message, "Direct close requires --confirm");
+});
+
+test("close supports --ungrouped", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { summary: { closedTabs: 0, skippedTabs: 0 } },
+  }));
+
+  const result = await runCli(["close", "--ungrouped", "--confirm"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "close");
+  const params = requests[0].params as { groupId?: number } | undefined;
+  assert.equal(params?.groupId, -1);
+});
+
+test("close rejects --ungrouped with --group-id", async () => {
+  const result = await runCli(["close", "--ungrouped", "--group-id", "3", "--confirm"]);
+  assert.equal(result.status, 1);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, false);
+  assert.equal(output.error.message, "--ungrouped cannot be combined with --group-id");
 });
 
 test("close --dry-run maps to analyze", async () => {
@@ -181,6 +357,31 @@ test("analyze passes scope selectors", async () => {
   assert.equal(params?.all, true);
 });
 
+test("analyze supports --ungrouped", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { candidates: [], totals: { tabs: 0, candidates: 0 } },
+  }));
+
+  const result = await runCli(["analyze", "--ungrouped"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "analyze");
+  const params = requests[0].params as { groupId?: number } | undefined;
+  assert.equal(params?.groupId, -1);
+});
+
+test("analyze rejects --ungrouped with --group-id", async () => {
+  const result = await runCli(["analyze", "--ungrouped", "--group-id", "3"]);
+  assert.equal(result.status, 1);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, false);
+  assert.equal(output.error.message, "--ungrouped cannot be combined with --group-id");
+});
+
 test("analyze --window-title includes window title", async () => {
   const snapshot = {
     windows: [
@@ -247,11 +448,19 @@ test("report format md returns markdown content", async () => {
           url: "https://example.com",
           description: "Desc",
         },
+        {
+          windowId: 1,
+          windowLabel: "W1",
+          groupTitle: "Test",
+          title: "Example 2",
+          url: "https://example.org",
+          description: "Desc",
+        },
       ],
     },
   }));
 
-  const result = await runCli(["report", "--format", "md"], socketPath);
+  const result = await runCli(["report", "--format", "md", "--limit", "1"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
 
   assert.equal(result.status, 0);
@@ -259,6 +468,9 @@ test("report format md returns markdown content", async () => {
   assert.equal(output.ok, true);
   assert.equal(output.data.format, "md");
   assert.match(output.data.content, /# Tab Report/);
+  assert.ok(output.data.page);
+  assert.equal(output.data.page.limit, 1);
+  assert.equal(output.data.page.total, 2);
 });
 
 test("inspect passes signal options", async () => {
@@ -266,7 +478,7 @@ test("inspect passes signal options", async () => {
     ok: true,
     action: req.action,
     requestId: req.id,
-    data: { entries: [] },
+    data: { entries: [{ tabId: 42 }, { tabId: 43 }] },
   }));
 
   const result = await runCli([
@@ -285,6 +497,8 @@ test("inspect passes signal options", async () => {
     "2",
     "--signal-timeout-ms",
     "1500",
+    "--limit",
+    "100",
     "--progress",
   ], socketPath);
   await stopMockSocket(server, socketPath, sockets);
@@ -298,6 +512,58 @@ test("inspect passes signal options", async () => {
   assert.equal(params?.signalConcurrency, 2);
   assert.equal(params?.signalTimeoutMs, 1500);
   assert.equal(params?.progress, true);
+  const output = JSON.parse(result.stdout.trim());
+  assert.ok(output.data.page);
+  assert.equal(output.data.page.limit, 100);
+  assert.equal(output.data.page.total, 2);
+});
+
+test("report pagination includes next hint", async () => {
+  const { socketPath, server, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: {
+      generatedAt: 1700000000000,
+      entries: [
+        { tabId: 1, title: "One", url: "https://one" },
+        { tabId: 2, title: "Two", url: "https://two" },
+      ],
+    },
+  }));
+
+  const result = await runCli(["report", "--limit", "1"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.data.page.hasMore, true);
+  assert.match(output.data.page.hint, /tabctl report/);
+});
+
+test("inspect supports --ungrouped", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { entries: [] },
+  }));
+
+  const result = await runCli(["inspect", "--ungrouped"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "inspect");
+  const params = requests[0].params as { groupId?: number } | undefined;
+  assert.equal(params?.groupId, -1);
+});
+
+test("inspect rejects --ungrouped with --group-id", async () => {
+  const result = await runCli(["inspect", "--ungrouped", "--group-id", "3"]);
+  assert.equal(result.status, 1);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, false);
+  assert.equal(output.error.message, "--ungrouped cannot be combined with --group-id");
 });
 
 test("focus passes tab id", async () => {
@@ -415,6 +681,140 @@ test("group-list passes window option", async () => {
   assert.equal(requests[0].action, "group-list");
   const params = requests[0].params as { windowId?: number } | undefined;
   assert.equal(params?.windowId, 3);
+});
+
+test("group-list paginates and filters by tab", async () => {
+  const snapshot = {
+    windows: [
+      {
+        windowId: 1,
+        focused: true,
+        tabs: [
+          { tabId: 1, windowId: 1, index: 0, groupId: 10, groupTitle: "Work", title: "A", url: "https://a" },
+          { tabId: 2, windowId: 1, index: 1, groupId: -1, groupTitle: null, title: "B", url: "https://b" },
+        ],
+        groups: [
+          { groupId: 10, title: "Work" },
+        ],
+      },
+      {
+        windowId: 2,
+        focused: false,
+        tabs: [
+          { tabId: 3, windowId: 2, index: 0, groupId: 11, groupTitle: "Home", title: "C", url: "https://c" },
+        ],
+        groups: [
+          { groupId: 11, title: "Home" },
+        ],
+      },
+    ],
+  };
+
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
+    if (req.action === "list") {
+      return { ok: true, action: req.action, requestId: req.id, data: snapshot };
+    }
+    if (req.action === "group-list") {
+      return {
+        ok: true,
+        action: req.action,
+        requestId: req.id,
+        data: {
+          groups: [
+            { windowId: 1, groupId: 10, title: "Work", tabCount: 1 },
+            { windowId: 2, groupId: 11, title: "Home", tabCount: 1 },
+          ],
+        },
+      };
+    }
+    return { ok: true, action: req.action, requestId: req.id, data: {} };
+  });
+
+  const result = await runCli(["group-list", "--tab", "1", "--limit", "1"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "group-list");
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].action, "list");
+  const output = JSON.parse(result.stdout.trim());
+  const data = output.data as { groups?: Array<Record<string, unknown>>; page?: Record<string, unknown> };
+  assert.equal(data.groups?.length, 1);
+  assert.equal(data.groups?.[0].groupId, 10);
+  assert.equal(data.page?.total, 1);
+  assert.equal(data.page?.hasMore, false);
+});
+
+test("group-list with --all skips tab scoping", async () => {
+  const snapshot = {
+    windows: [
+      {
+        windowId: 1,
+        focused: true,
+        tabs: [
+          { tabId: 1, windowId: 1, index: 0, groupId: 10, groupTitle: "Work", title: "A", url: "https://a" },
+        ],
+        groups: [
+          { groupId: 10, title: "Work" },
+        ],
+      },
+    ],
+  };
+
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
+    if (req.action === "list") {
+      return { ok: true, action: req.action, requestId: req.id, data: snapshot };
+    }
+    if (req.action === "group-list") {
+      return {
+        ok: true,
+        action: req.action,
+        requestId: req.id,
+        data: {
+          groups: [
+            { windowId: 1, groupId: 10, title: "Work", tabCount: 1 },
+            { windowId: 1, groupId: 11, title: "Home", tabCount: 0 },
+          ],
+        },
+      };
+    }
+    return { ok: true, action: req.action, requestId: req.id, data: {} };
+  });
+
+  const result = await runCli(["group-list", "--tab", "999", "--all", "--limit", "100"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "group-list");
+  assert.equal(requests.length, 1);
+  const output = JSON.parse(result.stdout.trim());
+  const data = output.data as { groups?: Array<Record<string, unknown>> };
+  assert.equal(data.groups?.length, 2);
+});
+
+test("archive supports --ungrouped", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { summary: { movedTabs: 0 } },
+  }));
+
+  const result = await runCli(["archive", "--ungrouped"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "archive");
+  const params = requests[0].params as { groupId?: number } | undefined;
+  assert.equal(params?.groupId, -1);
+});
+
+test("archive rejects --ungrouped with --group-id", async () => {
+  const result = await runCli(["archive", "--ungrouped", "--group-id", "3"]);
+  assert.equal(result.status, 1);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, false);
+  assert.equal(output.error.message, "--ungrouped cannot be combined with --group-id");
 });
 
 test("group-update passes update options", async () => {
@@ -701,6 +1101,31 @@ test("dedupe outputs nextCommand when not confirmed", async () => {
   assert.equal(output.data?.nextCommand, "tabctl close --apply analysis-1 --confirm");
 });
 
+test("dedupe supports --ungrouped", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { candidates: [], totals: { tabs: 0, candidates: 0 } },
+  }));
+
+  const result = await runCli(["dedupe", "--ungrouped"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "analyze");
+  const params = requests[0].params as { groupId?: number } | undefined;
+  assert.equal(params?.groupId, -1);
+});
+
+test("dedupe rejects --ungrouped with --group-id", async () => {
+  const result = await runCli(["dedupe", "--ungrouped", "--group-id", "3"]);
+  assert.equal(result.status, 1);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, false);
+  assert.equal(output.error.message, "--ungrouped cannot be combined with --group-id");
+});
+
 test("move-tab passes target options", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
     ok: true,
@@ -855,16 +1280,45 @@ test("help supports json output", async () => {
   assert.ok(options?.analyze?.includes("--window-title (include active window title)"));
   assert.ok(options?.analyze?.includes("--group <name>"));
   assert.ok(options?.analyze?.includes("--group-id <id>"));
+  assert.ok(options?.analyze?.includes("--ungrouped"));
   assert.ok(options?.analyze?.includes("--window <id>"));
   assert.ok(options?.analyze?.includes("--all"));
   assert.ok(options?.dedupe?.includes("--include-stale"));
   assert.ok(options?.dedupe?.includes("--confirm"));
+  assert.ok(options?.dedupe?.includes("--ungrouped"));
   assert.ok(options?.list?.includes("--groups (alias for group-list)"));
+  assert.ok(options?.list?.includes("--tab <id> (repeatable)"));
+  assert.ok(options?.list?.includes("--group <name>"));
+  assert.ok(options?.list?.includes("--group-id <id>"));
+  assert.ok(options?.list?.includes("--window <id>"));
+  assert.ok(options?.list?.includes("--all"));
+  assert.ok(options?.list?.includes("--limit <n>"));
+  assert.ok(options?.list?.includes("--offset <n>"));
+  assert.ok(options?.list?.includes("--no-page"));
+  assert.ok(options?.list?.includes("--ungrouped"));
   assert.ok(options?.open?.includes("--url <url> (repeatable)"));
   assert.ok(options?.open?.includes("--color <name>"));
   assert.ok(options?.open?.includes("--after-group <name>"));
   assert.ok(options?.open?.includes("--new-window"));
   assert.ok(options?.["group-list"]?.includes("--window <id>"));
+  assert.ok(options?.["group-list"]?.includes("--tab <id> (repeatable)"));
+  assert.ok(options?.["group-list"]?.includes("--group <name>"));
+  assert.ok(options?.["group-list"]?.includes("--group-id <id>"));
+  assert.ok(options?.["group-list"]?.includes("--ungrouped"));
+  assert.ok(options?.["group-list"]?.includes("--window <id>"));
+  assert.ok(options?.["group-list"]?.includes("--all"));
+  assert.ok(options?.["group-list"]?.includes("--limit <n>"));
+  assert.ok(options?.["group-list"]?.includes("--offset <n>"));
+  assert.ok(options?.["group-list"]?.includes("--no-page"));
+  assert.ok(options?.inspect?.includes("--limit <n>"));
+  assert.ok(options?.inspect?.includes("--offset <n>"));
+  assert.ok(options?.inspect?.includes("--no-page"));
+  assert.ok(options?.inspect?.includes("--ungrouped"));
+  assert.ok(options?.report?.includes("--limit <n>"));
+  assert.ok(options?.report?.includes("--offset <n>"));
+  assert.ok(options?.report?.includes("--no-page"));
+  assert.ok(options?.report?.includes("--ungrouped"));
+  assert.ok(options?.archive?.includes("--ungrouped"));
   assert.ok(options?.["group-update"]?.includes("--title <name>"));
   assert.ok(options?.["group-ungroup"]?.includes("--group-id <id>"));
   assert.ok(options?.["group-assign"]?.includes("--create"));
@@ -877,6 +1331,7 @@ test("help supports json output", async () => {
   assert.ok(options?.setup?.includes("--browser edge|chrome"));
   assert.ok(options?.report?.includes("--format json|md|csv"));
   assert.ok(options?.close?.includes("--dry-run"));
+  assert.ok(options?.close?.includes("--ungrouped"));
   assert.ok(options?.history?.includes("--limit <n>"));
   assert.ok(options?.version);
 });

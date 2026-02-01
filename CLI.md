@@ -37,6 +37,17 @@ List eligible tabs and groups only.
 ```bash
 tabctl list
 ```
+Defaults to paging with `--limit 100`.
+Options:
+- `--tab <id>` (repeatable)
+- `--group <name>`
+- `--group-id <id>` (use `-1` for ungrouped)
+- `--ungrouped` (alias for `--group-id -1`)
+- `--window <id>`
+- `--all`
+- `--limit <n>`
+- `--offset <n>`
+- `--no-page`
 
 ### analyze
 Find duplicates and stale tabs (optional GitHub state checks).
@@ -48,6 +59,7 @@ Options:
 - `--tab <id>` (repeatable)
 - `--group <name>`
 - `--group-id <id>`
+- `--ungrouped` (alias for `--group-id -1`)
 - `--window <id>`
 - `--all`
 - `--window-title` (include active window title in output)
@@ -65,6 +77,7 @@ Options:
 - `--tab <id>` (repeatable)
 - `--group <name>`
 - `--group-id <id>`
+- `--ungrouped` (alias for `--group-id -1`)
 - `--window <id>`
 - `--all`
 - `--include-stale`
@@ -83,8 +96,12 @@ Options:
 - `--tab <id>` (repeatable)
 - `--group <name>`
 - `--group-id <id>`
+- `--ungrouped` (alias for `--group-id -1`)
 - `--window <id>`
 - `--all`
+- `--limit <n>`
+- `--offset <n>`
+- `--no-page`
 - `--progress`
 
 Signals:
@@ -122,8 +139,17 @@ If no window selector is provided, the focused window is used.
 
 ### group-list
 List groups with window ids/labels and tab counts.
+Defaults to paging with `--limit 100`.
 Options:
+- `--tab <id>` (repeatable)
+- `--group <name>`
+- `--group-id <id>`
+- `--ungrouped` (alias for `--group-id -1`)
 - `--window <id>`
+- `--all`
+- `--limit <n>`
+- `--offset <n>`
+- `--no-page`
 
 ### group-update
 Update group metadata (title, color, or collapsed state).
@@ -215,6 +241,7 @@ Options:
 - `--window <id>`
 - `--group <name>`
 - `--group-id <id>`
+- `--ungrouped` (alias for `--group-id -1`)
 - `--tab <id>` (repeatable)
 
 ### close
@@ -224,6 +251,7 @@ Options:
 - `--tab <id>` (repeatable)
 - `--group <name>`
 - `--group-id <id>`
+- `--ungrouped` (alias for `--group-id -1`)
 - `--window <id>`
 - `--confirm`
 - `--dry-run` (alias for `analyze`)
@@ -238,8 +266,12 @@ Options:
 - `--tab <id>` (repeatable)
 - `--group <name>`
 - `--group-id <id>`
+- `--ungrouped` (alias for `--group-id -1`)
 - `--window <id>`
 - `--all`
+- `--limit <n>`
+- `--offset <n>`
+- `--no-page`
 
 ### undo
 Restore the last action by transaction id.
@@ -269,6 +301,9 @@ Check host/extension connectivity.
 ```bash
 tabctl ping
 ```
+
+Notes:
+- Use `--group-id -1` or `--ungrouped` to target ungrouped tabs.
 ## Runtime state
 - Socket: `$XDG_STATE_HOME/tabctl/tabctl.sock` (or `~/.local/state/tabctl/tabctl.sock`)
 - Undo log: `$XDG_STATE_HOME/tabctl/undo.jsonl` (or `~/.local/state/tabctl/undo.jsonl`)

@@ -91,13 +91,19 @@ node /Users/<you>/develop/scripts/check-browser-tabs/cli/tabctl.js list
 tabctl --help
 tabctl help --json
 tabctl list
+tabctl list --limit 100
+tabctl list --group-id -1
+tabctl list --ungrouped
 tabctl analyze --stale-days 30
+tabctl analyze --ungrouped
 tabctl analyze --stale-days 30 --github
 tabctl analyze --stale-days 30 --tab 123 --github --progress
 tabctl analyze --stale-days 30 --github --github-concurrency 4 --progress
 tabctl analyze --stale-days 30 --github --github-concurrency 4 --github-timeout-ms 4000 --progress
 tabctl dedupe --stale-days 30 --github
+tabctl dedupe --ungrouped
 tabctl inspect --tab 123 --signal page-meta --progress
+tabctl inspect --tab 123 --limit 100
 tabctl inspect --tab 123 --signal github-state --signal-concurrency 4 --signal-timeout-ms 4000 --progress
 tabctl inspect --tab 123 --signal selector --selector "price=.price" --signal-timeout-ms 1500 --progress
 tabctl inspect --tab 123 --signal selector --signal-config ~/.config/tabctl/signals.json --progress
@@ -107,14 +113,18 @@ tabctl open --url https://example.com --group "Docs" --color blue
 tabctl move-tab --tab 123 --new-window
 tabctl merge-window --from 1 --to 2
 tabctl group-list
+tabctl group-list --limit 100
 tabctl group-update --group "Work" --title "Work Items" --color red --collapsed
 tabctl group-ungroup --group "Work"
 tabctl group-assign --tab 123 --group "Work" --create
 tabctl policy --init
 tabctl archive --all
 tabctl archive --window 3
+tabctl archive --ungrouped
 tabctl close --tab 123 --confirm
+tabctl close --ungrouped --confirm
 tabctl report --format md --out /path/to/report.md
+tabctl report --limit 100
 tabctl undo <txid>
 tabctl history --limit 20
 ```
@@ -157,6 +167,8 @@ Notes:
 - `close --apply` uses the most recent analysis by `analysisId`.
 - `close` without `--apply` requires `--confirm` to prevent accidental closure.
 - Reports include short descriptions from page metadata and a fallback snippet.
+- `list` and `group-list` paginate by default (limit 100); use `--limit`, `--offset`, or `--no-page`.
+- Use `--group-id -1` or `--ungrouped` to target ungrouped tabs.
 
 ## Runtime state
 - Socket: `$XDG_STATE_HOME/tabctl/tabctl.sock` (or `~/.local/state/tabctl/tabctl.sock`)
