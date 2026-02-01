@@ -8,6 +8,7 @@ This project controls a live Edge session. The testing approach must avoid touch
 - Use a unique, recognizable prefix for test groups and windows, e.g. `TEST-TabArchive-<timestamp>`.
 - Prefer `list`, `analyze`, and `report` for smoke tests; use `close` and `archive` only in a controlled test window.
 - Always add or update tests for new features.
+- Always end work by running unit tests and a minimal smoke test in a new window you create (see Required end-of-task checks).
 
 ## Undo is critical
 - Treat undo as a first-class safety feature for every mutating action.
@@ -30,6 +31,18 @@ Run:
 Notes:
 - Unit tests use the compiled JS in `tests/unit/`.
 - The mock socket avoids any browser interaction.
+
+## Required end-of-task checks
+Always finish with:
+1. `npm test`
+2. A minimal smoke test in a new window you create (safe URLs + unique `TEST-` prefix). Verify via `tabctl group-list` or `tabctl list`.
+
+Example:
+```bash
+ts=$(date +%s)
+tabctl open --new-window --url https://example.com --url https://example.org --group "TEST-Smoke-${ts}"
+tabctl group-list --window <windowId>
+```
 
 ## Safe smoke tests (no mutations)
 Run these anytime:
