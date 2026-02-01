@@ -1,5 +1,5 @@
 const HOST_NAME = "com.erwinkroon.tabctl";
-const KEEPALIVE_ALARM = "tabarchive-keepalive";
+const KEEPALIVE_ALARM = "tabctl-keepalive";
 const KEEPALIVE_INTERVAL_MINUTES = 1;
 const DEFAULT_STALE_DAYS = 30;
 const DESCRIPTION_MAX_LENGTH = 250;
@@ -258,6 +258,7 @@ async function getTabSnapshot() {
         groupId: tab.groupId,
         groupTitle: group ? group.title : null,
         groupColor: group ? group.color : null,
+        groupCollapsed: group ? group.collapsed : null,
         lastFocusedAt: state.lastFocused[String(tab.id)] || null,
       };
     });
@@ -983,7 +984,9 @@ async function openTabs(params: Record<string, unknown>) {
     if (!groupTabs.length) {
       throw new Error("Group has no tabs to anchor insertion");
     }
-    const indices = groupTabs.map((tab) => Number(tab.index)).filter((value) => Number.isFinite(value)) as number[];
+    const indices = groupTabs
+      .map((tab) => normalizeTabIndex(tab.index))
+      .filter((value): value is number => value != null);
     if (!indices.length) {
       throw new Error("Group tabs missing indices");
     }
@@ -1216,7 +1219,7 @@ function resolveMoveTarget(snapshot: { windows: Array<Record<string, unknown>> }
     if (!match) {
       return { error: { message: "Target tab not found" } };
     }
-    const index = Number(match.tab.index);
+    const index = normalizeTabIndex(match.tab.index);
     if (!Number.isFinite(index)) {
       return { error: { message: "Target tab index unavailable" } };
     }
@@ -1237,7 +1240,9 @@ function resolveMoveTarget(snapshot: { windows: Array<Record<string, unknown>> }
   if (!match.tabs.length) {
     return { error: { message: "Target group has no tabs" } };
   }
-  const indices = match.tabs.map((tab) => Number(tab.index)).filter((value) => Number.isFinite(value)) as number[];
+  const indices = match.tabs
+    .map((tab) => normalizeTabIndex(tab.index))
+    .filter((value): value is number => value != null);
   if (!indices.length) {
     return { error: { message: "Target group indices unavailable" } };
   }
@@ -1301,6 +1306,23 @@ async function moveTab(params: Record<string, unknown>) {
       from: { windowId: sourceWindow.windowId, index: sourceTab.index },
       to: { windowId: targetWindowId, index: targetIndex },
       summary: { movedTabs: 1 },
+      undo: {
+        action: "move-tab",
+        tabId,
+        from: {
+          windowId: sourceWindow.windowId,
+          index: sourceTab.index,
+          groupId: sourceTab.groupId,
+          groupTitle: sourceTab.groupTitle,
+          groupColor: sourceTab.groupColor,
+          groupCollapsed: sourceTab.groupCollapsed ?? null,
+        },
+        to: {
+          windowId: targetWindowId,
+          index: targetIndex,
+        },
+      },
+      txid: params.txid || null,
     };
   }
 
@@ -1311,7 +1333,7 @@ async function moveTab(params: Record<string, unknown>) {
 
   const targetWindowId = (target as { windowId: number }).windowId;
   let targetIndex = (target as { index: number }).index;
-  const sourceIndex = Number(sourceTab.index);
+  const sourceIndex = normalizeTabIndex(sourceTab.index);
   if (Number.isFinite(sourceIndex) && sourceWindow.windowId === targetWindowId && sourceIndex < targetIndex) {
     targetIndex -= 1;
   }
@@ -1322,6 +1344,23 @@ async function moveTab(params: Record<string, unknown>) {
     from: { windowId: sourceWindow.windowId, index: sourceTab.index },
     to: { windowId: targetWindowId, index: (moved as chrome.tabs.Tab).index },
     summary: { movedTabs: 1 },
+    undo: {
+      action: "move-tab",
+      tabId,
+      from: {
+        windowId: sourceWindow.windowId,
+        index: sourceTab.index,
+        groupId: sourceTab.groupId,
+        groupTitle: sourceTab.groupTitle,
+        groupColor: sourceTab.groupColor,
+        groupCollapsed: sourceTab.groupCollapsed ?? null,
+      },
+      to: {
+        windowId: targetWindowId,
+        index: (moved as chrome.tabs.Tab).index,
+      },
+    },
+    txid: params.txid || null,
   };
 }
 
@@ -1377,12 +1416,35 @@ async function moveGroup(params: Record<string, unknown>) {
       log("Failed to regroup tabs", error);
     }
 
+    const undoTabs = source.tabs
+      .map((tab) => ({
+        tabId: tab.tabId,
+        windowId: tab.windowId,
+        index: tab.index,
+        groupId: tab.groupId,
+        groupTitle: tab.groupTitle,
+        groupColor: tab.groupColor,
+        groupCollapsed: source.group.collapsed ?? null,
+      }))
+      .filter((tab) => typeof tab.tabId === "number") as Array<Record<string, unknown>>;
+
     return {
       groupId: source.group.groupId,
       windowId: source.windowId,
       movedToWindowId: targetWindowId,
       newGroupId,
       summary: { movedTabs: tabIds.length },
+      undo: {
+        action: "move-group",
+        groupId: source.group.groupId,
+        windowId: source.windowId,
+        movedToWindowId: targetWindowId,
+        groupTitle: source.group.title ?? null,
+        groupColor: source.group.color ?? null,
+        groupCollapsed: source.group.collapsed ?? null,
+        tabs: undoTabs,
+      },
+      txid: params.txid || null,
     };
   }
 
@@ -1405,7 +1467,9 @@ async function moveGroup(params: Record<string, unknown>) {
   }
 
   const tabIds = source.tabs.map((tab) => tab.tabId).filter((id) => typeof id === "number") as number[];
-  const indices = source.tabs.map((tab) => Number(tab.index)).filter((value) => Number.isFinite(value)) as number[];
+  const indices = source.tabs
+    .map((tab) => normalizeTabIndex(tab.index))
+    .filter((value): value is number => value != null);
   const minIndex = Math.min(...indices);
   const maxIndex = Math.max(...indices);
   const targetWindowId = (target as { windowId: number }).windowId;
@@ -1434,12 +1498,35 @@ async function moveGroup(params: Record<string, unknown>) {
     }
   }
 
+  const undoTabs = source.tabs
+    .map((tab) => ({
+      tabId: tab.tabId,
+      windowId: tab.windowId,
+      index: tab.index,
+      groupId: tab.groupId,
+      groupTitle: tab.groupTitle,
+      groupColor: tab.groupColor,
+      groupCollapsed: source.group.collapsed ?? null,
+    }))
+    .filter((tab) => typeof tab.tabId === "number") as Array<Record<string, unknown>>;
+
   return {
     groupId: source.group.groupId,
     windowId: source.windowId,
     movedToWindowId: targetWindowId,
     newGroupId,
     summary: { movedTabs: tabIds.length },
+    undo: {
+      action: "move-group",
+      groupId: source.group.groupId,
+      windowId: source.windowId,
+      movedToWindowId: targetWindowId,
+      groupTitle: source.group.title ?? null,
+      groupColor: source.group.color ?? null,
+      groupCollapsed: source.group.collapsed ?? null,
+      tabs: undoTabs,
+    },
+    txid: params.txid || null,
   };
 }
 
@@ -1490,6 +1577,13 @@ async function mergeWindow(params: Record<string, unknown>) {
       summary: { movedTabs: 0, movedGroups: 0, skippedTabs: skipped.length, closedSource: false },
       skipped,
       groups: [],
+      undo: {
+        action: "merge-window",
+        fromWindowId,
+        toWindowId,
+        closedSource: false,
+        tabs: [],
+      },
     };
   }
 
@@ -1528,6 +1622,7 @@ async function mergeWindow(params: Record<string, unknown>) {
   let movedTabs = 0;
   let movedGroups = 0;
   const groups: Array<Record<string, unknown>> = [];
+  const undoTabs: Array<Record<string, unknown>> = [];
 
   for (const plan of plans) {
     const tabIds = plan.tabs.map((tab) => tab.tabId).filter((id) => typeof id === "number") as number[];
@@ -1549,6 +1644,22 @@ async function mergeWindow(params: Record<string, unknown>) {
     const movedList = Array.isArray(moved) ? moved : [moved];
     const movedIds = movedList.map((tab) => tab.id as number).filter((id) => typeof id === "number");
     movedTabs += movedIds.length;
+
+    for (const entry of plan.tabs) {
+      if (typeof entry.tabId !== "number") {
+        continue;
+      }
+      const meta = groupById.get(entry.groupId as number);
+      undoTabs.push({
+        tabId: entry.tabId,
+        windowId: entry.windowId,
+        index: entry.index,
+        groupId: entry.groupId,
+        groupTitle: entry.groupTitle,
+        groupColor: entry.groupColor,
+        groupCollapsed: meta ? meta.collapsed : null,
+      });
+    }
 
     if (plan.groupId != null && movedIds.length > 0) {
       movedGroups += 1;
@@ -1589,6 +1700,14 @@ async function mergeWindow(params: Record<string, unknown>) {
     summary: { movedTabs, movedGroups, skippedTabs: skipped.length, closedSource },
     skipped,
     groups,
+    undo: {
+      action: "merge-window",
+      fromWindowId,
+      toWindowId,
+      closedSource,
+      tabs: undoTabs,
+    },
+    txid: params.txid || null,
   };
 }
 
@@ -1683,6 +1802,17 @@ async function groupUpdate(params: Record<string, unknown>) {
     title: updated.title,
     color: updated.color,
     collapsed: updated.collapsed,
+    undo: {
+      action: "group-update",
+      groupId: updated.id,
+      windowId: match.windowId,
+      previous: {
+        title: match.group.title ?? null,
+        color: match.group.color ?? null,
+        collapsed: match.group.collapsed ?? null,
+      },
+    },
+    txid: params.txid || null,
   };
 }
 
@@ -1718,6 +1848,18 @@ async function groupUngroup(params: Record<string, unknown>) {
     match = (resolved as { match: GroupMatch }).match;
   }
 
+  const undoTabs = match.tabs
+    .map((tab) => ({
+      tabId: tab.tabId,
+      windowId: tab.windowId,
+      index: tab.index,
+      groupId: tab.groupId,
+      groupTitle: tab.groupTitle,
+      groupColor: tab.groupColor,
+      groupCollapsed: match.group.collapsed ?? null,
+    }))
+    .filter((tab) => typeof tab.tabId === "number") as Array<Record<string, unknown>>;
+
   const tabIds = match.tabs
     .map((tab) => tab.tabId)
     .filter((tabId) => typeof tabId === "number") as number[];
@@ -1732,6 +1874,16 @@ async function groupUngroup(params: Record<string, unknown>) {
     summary: {
       ungroupedTabs: tabIds.length,
     },
+    undo: {
+      action: "group-ungroup",
+      groupId: match.group.groupId,
+      windowId: match.windowId,
+      groupTitle: match.group.title || null,
+      groupColor: match.group.color || null,
+      groupCollapsed: match.group.collapsed ?? null,
+      tabs: undoTabs,
+    },
+    txid: params.txid || null,
   };
 }
 
@@ -1767,6 +1919,7 @@ async function groupAssign(params: Record<string, unknown>) {
   const skipped: Array<Record<string, unknown>> = [];
   const resolvedTabIds: number[] = [];
   const sourceWindows = new Set<number>();
+  const undoTabs: Array<Record<string, unknown>> = [];
   for (const tabId of tabIds) {
     const entry = tabIndex.get(tabId);
     if (!entry) {
@@ -1775,6 +1928,16 @@ async function groupAssign(params: Record<string, unknown>) {
     }
     resolvedTabIds.push(tabId);
     sourceWindows.add(entry.windowId);
+    const tab = entry.tab;
+    undoTabs.push({
+      tabId,
+      windowId: entry.windowId,
+      index: tab.index,
+      groupId: tab.groupId,
+      groupTitle: tab.groupTitle,
+      groupColor: tab.groupColor,
+      groupCollapsed: tab.groupCollapsed ?? null,
+    });
   }
 
   if (!resolvedTabIds.length) {
@@ -1869,6 +2032,16 @@ async function groupAssign(params: Record<string, unknown>) {
       skippedTabs: skipped.length,
     },
     skipped,
+    undo: {
+      action: "group-assign",
+      groupId: assignedGroupId,
+      groupTitle: targetTitle || groupTitle || null,
+      groupColor: typeof params.color === "string" && params.color.trim() ? params.color.trim() : null,
+      groupCollapsed: typeof params.collapsed === "boolean" ? params.collapsed : null,
+      created,
+      tabs: undoTabs,
+    },
+    txid: params.txid || null,
   };
 }
 
@@ -1896,6 +2069,11 @@ function buildWindowLabels(snapshot: { windows: Array<{ windowId: number }> }) {
     labels.set(win.windowId, `W${index + 1}`);
   });
   return labels;
+}
+
+function normalizeTabIndex(value: unknown) {
+  const index = Number(value);
+  return Number.isFinite(index) ? index : null;
 }
 
 function selectTabsByScope(snapshot: { windows: Array<Record<string, unknown>> }, params: Record<string, unknown>) {
@@ -2314,6 +2492,223 @@ async function ensureWindow(windowId?: number) {
   return created.id as number;
 }
 
+async function restoreTabsFromUndo(entries: Array<AnyRecord>) {
+  const skipped: Array<AnyRecord> = [];
+  const restored: Array<{ tabId: number; entry: AnyRecord; targetWindowId: number }> = [];
+  const windowMap = new Map<number, number>();
+
+  for (const entry of entries) {
+    const tabId = Number(entry.tabId);
+    if (!Number.isFinite(tabId)) {
+      skipped.push({ tabId: entry.tabId, reason: "missing_tab" });
+      continue;
+    }
+
+    const sourceWindowId = Number(entry.windowId);
+    if (!Number.isFinite(sourceWindowId)) {
+      skipped.push({ tabId, reason: "missing_window" });
+      continue;
+    }
+
+    let targetWindowId = windowMap.get(sourceWindowId);
+    if (!targetWindowId) {
+      targetWindowId = await ensureWindow(sourceWindowId);
+      windowMap.set(sourceWindowId, targetWindowId);
+    }
+
+    try {
+      await chrome.tabs.move(tabId, { windowId: targetWindowId, index: -1 });
+      restored.push({ tabId, entry, targetWindowId });
+    } catch {
+      skipped.push({ tabId, reason: "move_failed" });
+    }
+  }
+
+  const groupsByWindow = new Map<string, {
+    windowId: number;
+    groupId: number | null;
+    groupTitle: string | null;
+    groupColor: string | null;
+    groupCollapsed: boolean | null;
+    tabIds: number[];
+  }>();
+
+  for (const item of restored) {
+    const entry = item.entry;
+    const rawGroupId = typeof entry.groupId === "number" ? entry.groupId : null;
+    const groupId = rawGroupId != null && rawGroupId !== -1 ? rawGroupId : null;
+    const groupTitle = typeof entry.groupTitle === "string" ? entry.groupTitle : null;
+    if (!groupId && !groupTitle) {
+      continue;
+    }
+
+    const groupKey = groupId != null ? `id:${groupId}` : `title:${groupTitle}`;
+    const key = `${item.targetWindowId}:${groupKey}`;
+    if (!groupsByWindow.has(key)) {
+      groupsByWindow.set(key, {
+        windowId: item.targetWindowId,
+        groupId,
+        groupTitle,
+        groupColor: typeof entry.groupColor === "string" ? entry.groupColor : null,
+        groupCollapsed: typeof entry.groupCollapsed === "boolean" ? entry.groupCollapsed : null,
+        tabIds: [],
+      });
+    }
+    groupsByWindow.get(key)?.tabIds.push(item.tabId);
+  }
+
+  for (const group of groupsByWindow.values()) {
+    if (group.tabIds.length === 0) {
+      continue;
+    }
+
+    let targetGroupId: number | null = null;
+    if (group.groupId != null) {
+      try {
+        targetGroupId = await chrome.tabs.group({ groupId: group.groupId, tabIds: group.tabIds });
+      } catch {
+        targetGroupId = null;
+      }
+    }
+
+    if (targetGroupId == null) {
+      try {
+        targetGroupId = await chrome.tabs.group({
+          tabIds: group.tabIds,
+          createProperties: { windowId: group.windowId },
+        });
+      } catch (error) {
+        log("Failed to regroup tabs", error);
+        continue;
+      }
+    }
+
+    const update: chrome.tabGroups.UpdateProperties = {};
+    if (typeof group.groupTitle === "string") {
+      update.title = group.groupTitle;
+    }
+    if (typeof group.groupColor === "string" && group.groupColor) {
+      update.color = group.groupColor as chrome.tabGroups.ColorEnum;
+    }
+    if (typeof group.groupCollapsed === "boolean") {
+      update.collapsed = group.groupCollapsed;
+    }
+    if (Object.keys(update).length > 0) {
+      try {
+        await chrome.tabGroups.update(targetGroupId, update);
+      } catch (error) {
+        log("Failed to update restored group", error);
+      }
+    }
+  }
+
+  const orderByWindow = new Map<number, Array<{ tabId: number; index: number }>>();
+  for (const item of restored) {
+    const index = Number(item.entry.index);
+    if (!Number.isFinite(index)) {
+      continue;
+    }
+    if (!orderByWindow.has(item.targetWindowId)) {
+      orderByWindow.set(item.targetWindowId, []);
+    }
+    orderByWindow.get(item.targetWindowId)?.push({ tabId: item.tabId, index });
+  }
+
+  for (const [targetWindowId, items] of orderByWindow.entries()) {
+    const ordered = [...items].sort((a, b) => a.index - b.index);
+    for (const item of ordered) {
+      try {
+        await chrome.tabs.move(item.tabId, { windowId: targetWindowId, index: item.index });
+      } catch {
+        // ignore ordering failures
+      }
+    }
+  }
+
+  return {
+    summary: {
+      restoredTabs: restored.length,
+      skippedTabs: skipped.length,
+    },
+    skipped,
+  };
+}
+
+async function undoGroupUpdate(undo: AnyRecord) {
+  const groupId = Number(undo.groupId);
+  if (!Number.isFinite(groupId)) {
+    return {
+      summary: { restoredGroups: 0, skippedGroups: 1 },
+      skipped: [{ groupId: undo.groupId, reason: "missing_group" }],
+    };
+  }
+
+  const previous = (undo.previous as AnyRecord) || {};
+  const update: chrome.tabGroups.UpdateProperties = {};
+  if (typeof previous.title === "string") {
+    update.title = previous.title;
+  }
+  if (typeof previous.color === "string" && previous.color) {
+    update.color = previous.color as chrome.tabGroups.ColorEnum;
+  }
+  if (typeof previous.collapsed === "boolean") {
+    update.collapsed = previous.collapsed;
+  }
+  if (!Object.keys(update).length) {
+    return {
+      summary: { restoredGroups: 0, skippedGroups: 1 },
+      skipped: [{ groupId, reason: "missing_values" }],
+    };
+  }
+
+  try {
+    await chrome.tabGroups.update(groupId, update);
+    return {
+      summary: { restoredGroups: 1, skippedGroups: 0 },
+      skipped: [],
+    };
+  } catch {
+    return {
+      summary: { restoredGroups: 0, skippedGroups: 1 },
+      skipped: [{ groupId, reason: "update_failed" }],
+    };
+  }
+}
+
+async function undoGroupUngroup(undo: AnyRecord) {
+  const tabs = (undo.tabs as Array<AnyRecord>) || [];
+  return await restoreTabsFromUndo(tabs);
+}
+
+async function undoGroupAssign(undo: AnyRecord) {
+  const tabs = (undo.tabs as Array<AnyRecord>) || [];
+  return await restoreTabsFromUndo(tabs);
+}
+
+async function undoMoveTab(undo: AnyRecord) {
+  const from = (undo.from as AnyRecord) || {};
+  const entry = {
+    tabId: undo.tabId,
+    windowId: from.windowId,
+    index: from.index,
+    groupId: from.groupId,
+    groupTitle: from.groupTitle,
+    groupColor: from.groupColor,
+    groupCollapsed: from.groupCollapsed,
+  };
+  return await restoreTabsFromUndo([entry]);
+}
+
+async function undoMoveGroup(undo: AnyRecord) {
+  const tabs = (undo.tabs as Array<AnyRecord>) || [];
+  return await restoreTabsFromUndo(tabs);
+}
+
+async function undoMergeWindow(undo: AnyRecord) {
+  const tabs = (undo.tabs as Array<AnyRecord>) || [];
+  return await restoreTabsFromUndo(tabs);
+}
+
 async function undoArchive(undo: AnyRecord) {
   const tabs = (undo.tabs as Array<AnyRecord>) || [];
   const restored: Array<{ tabId: number; targetWindowId: number }> = [];
@@ -2524,6 +2919,24 @@ async function undoTransaction(params: Record<string, unknown>) {
   }
   if (undo.action === "close") {
     return await undoClose(undo);
+  }
+  if (undo.action === "group-update") {
+    return await undoGroupUpdate(undo);
+  }
+  if (undo.action === "group-ungroup") {
+    return await undoGroupUngroup(undo);
+  }
+  if (undo.action === "group-assign") {
+    return await undoGroupAssign(undo);
+  }
+  if (undo.action === "move-tab") {
+    return await undoMoveTab(undo);
+  }
+  if (undo.action === "move-group") {
+    return await undoMoveGroup(undo);
+  }
+  if (undo.action === "merge-window") {
+    return await undoMergeWindow(undo);
   }
 
   throw new Error(`Unknown undo action: ${undo.action}`);

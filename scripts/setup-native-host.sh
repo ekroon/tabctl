@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-EXT_ID="${1:-${TABARCHIVE_EXTENSION_ID:-}}"
+EXT_ID="${1:-${TABCTL_EXTENSION_ID:-}}"
 if [[ -z "$EXT_ID" ]]; then
   echo "Usage: $0 <extension-id>"
-  echo "Or set TABARCHIVE_EXTENSION_ID in the environment."
+  echo "Or set TABCTL_EXTENSION_ID in the environment."
   exit 1
 fi
 
@@ -23,9 +23,9 @@ if [[ ! -f "$HOST_JS" ]]; then
   exit 1
 fi
 
-NODE_BIN="${TABARCHIVE_NODE:-$(command -v node || true)}"
+NODE_BIN="${TABCTL_NODE:-$(command -v node || true)}"
 if [[ -z "$NODE_BIN" ]]; then
-  echo "Node binary not found. Set TABARCHIVE_NODE to an absolute path."
+  echo "Node binary not found. Set TABCTL_NODE to an absolute path."
   exit 1
 fi
 
@@ -34,8 +34,9 @@ if [[ ! -x "$NODE_BIN" ]]; then
   exit 1
 fi
 
-WRAPPER_DIR="$HOME/.tabarchive"
-WRAPPER_PATH="$WRAPPER_DIR/tabarchive-host.sh"
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+WRAPPER_DIR="$STATE_HOME/tabctl"
+WRAPPER_PATH="$WRAPPER_DIR/tabctl-host.sh"
 
 mkdir -p "$WRAPPER_DIR"
 cat > "$WRAPPER_PATH" <<EOF

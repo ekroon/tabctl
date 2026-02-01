@@ -6,7 +6,7 @@ import test from "node:test";
 import { appendUndoRecord, readUndoRecords, filterByRetention, findUndoRecord } from "../../host/lib/undo";
 
 test("appendUndoRecord and readUndoRecords roundtrip", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabarchive-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-"));
   const filePath = path.join(dir, "undo.jsonl");
   const record = { txid: "tx-1", createdAt: Date.now(), action: "close" };
 
@@ -30,7 +30,7 @@ test("filterByRetention removes old records", () => {
 });
 
 test("findUndoRecord respects retention", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabarchive-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-"));
   const filePath = path.join(dir, "undo.jsonl");
   const now = Date.now();
   appendUndoRecord(filePath, { txid: "old", createdAt: now - 40 * 24 * 60 * 60 * 1000 });

@@ -6,7 +6,9 @@ import path from "path";
 import { renderCsv, renderMarkdown } from "./lib/report";
 import { annotateEntry, defaultPolicyPath, defaultPolicyTemplate, evaluateTab, loadPolicy, summarizePolicy, type Policy } from "./lib/policy";
 
-const SOCKET_PATH = process.env.TABARCHIVE_SOCKET || path.join(os.homedir(), ".tabarchive", "tabarchive.sock");
+const STATE_HOME = process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
+const SOCKET_PATH = process.env.TABCTL_SOCKET || path.join(STATE_HOME, "tabctl", "tabctl.sock");
+const LEGACY_SOCKET_PATH = path.join(os.homedir(), ".tabarchive", "tabarchive.sock");
 const HOST_NAME = "com.erwinkroon.tabctl";
 const HOST_DESCRIPTION = "Tab archive native host";
 const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
@@ -80,7 +82,9 @@ function parseArgs(argv: string[]) {
 
 function sendRequest(payload: Record<string, unknown>, onProgress?: (data: Record<string, unknown>) => void) {
   return new Promise<Record<string, unknown>>((resolve, reject) => {
-    const client = net.createConnection(SOCKET_PATH);
+    const socketPath = process.env.TABCTL_SOCKET
+      || (fs.existsSync(SOCKET_PATH) ? SOCKET_PATH : LEGACY_SOCKET_PATH);
+    const client = net.createConnection(socketPath);
     let buffer = "";
 
     client.on("connect", () => {
@@ -339,10 +343,10 @@ function resolveBrowser(value: unknown): "edge" | "chrome" | null {
 function resolveExtensionId(options: Options) {
   const raw = typeof options["extension-id"] === "string"
     ? String(options["extension-id"])
-    : (process.env.TABARCHIVE_EXTENSION_ID || "");
+    : (process.env.TABCTL_EXTENSION_ID || "");
   const value = raw.trim().toLowerCase();
   if (!value) {
-    errorOut("Missing --extension-id (or TABARCHIVE_EXTENSION_ID)");
+    errorOut("Missing --extension-id (or TABCTL_EXTENSION_ID)");
   }
   if (!EXTENSION_ID_PATTERN.test(value)) {
     errorOut(`Extension ID looks unusual: ${raw}`);
@@ -353,10 +357,10 @@ function resolveExtensionId(options: Options) {
 function resolveNodePath(options: Options) {
   const raw = typeof options.node === "string"
     ? String(options.node)
-    : (process.env.TABARCHIVE_NODE || process.execPath || "");
+    : (process.env.TABCTL_NODE || process.execPath || "");
   const value = raw.trim();
   if (!value) {
-    errorOut("Node binary not found. Set --node or TABARCHIVE_NODE.");
+    errorOut("Node binary not found. Set --node or TABCTL_NODE.");
   }
   if (!path.isAbsolute(value)) {
     errorOut(`Node path must be absolute: ${value}`);
@@ -390,9 +394,10 @@ function resolveManifestDir(browser: "edge" | "chrome") {
 }
 
 function writeWrapper(nodePath: string, hostPath: string) {
-  const wrapperDir = path.join(os.homedir(), ".tabarchive");
+  const stateHome = process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
+  const wrapperDir = path.join(stateHome, "tabctl");
   fs.mkdirSync(wrapperDir, { recursive: true, mode: 0o700 });
-  const wrapperPath = path.join(wrapperDir, "tabarchive-host.sh");
+  const wrapperPath = path.join(wrapperDir, "tabctl-host.sh");
   const escapedNode = nodePath.replace(/"/g, "\\\"");
   const escapedHost = hostPath.replace(/"/g, "\\\"");
   const wrapper = [

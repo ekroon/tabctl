@@ -12,7 +12,7 @@ const testConfigHome = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-test-config
 async function runCli(args: string[], socketPath?: string, extraEnv?: Record<string, string>) {
   const env = { ...process.env };
   if (socketPath) {
-    env.TABARCHIVE_SOCKET = socketPath;
+    env.TABCTL_SOCKET = socketPath;
   }
   if (extraEnv) {
     Object.assign(env, extraEnv);
@@ -719,13 +719,13 @@ test("setup writes native host manifest", async () => {
     extensionId,
     "--node",
     nodePath,
-  ], undefined, { HOME: homeDir });
+  ], undefined, { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state") });
 
   assert.equal(result.status, 0);
   const output = JSON.parse(result.stdout.trim()) as { ok: boolean; data: Record<string, unknown> };
   assert.equal(output.ok, true);
 
-  const wrapperPath = path.join(homeDir, ".tabarchive", "tabarchive-host.sh");
+  const wrapperPath = path.join(homeDir, ".local", "state", "tabctl", "tabctl-host.sh");
   const manifestPath = path.join(
     homeDir,
     "Library",
@@ -751,7 +751,7 @@ test("setup writes native host manifest", async () => {
 });
 
 test("policy init creates default file", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabarchive-policy-init-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-policy-init-"));
   const result = await runCli(["policy", "--init"], undefined, { XDG_CONFIG_HOME: dir });
 
   assert.equal(result.status, 0);
@@ -807,4 +807,56 @@ test("help supports json output", async () => {
   assert.ok(options?.report?.includes("--format json|md|csv"));
   assert.ok(options?.close?.includes("--dry-run"));
   assert.ok(options?.history?.includes("--limit <n>"));
+});
+
+test("undo sends undo action with txid", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { summary: { restoredTabs: 1 } },
+  }));
+
+  const result = await runCli(["undo", "tx-123"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].action, "undo");
+  const params = requests[0].params as { txid?: string } | undefined;
+  assert.equal(params?.txid, "tx-123");
+});
+
+test("group-assign returns txid", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { txid: "tx-group-assign", summary: { groupedTabs: 1 } },
+  }));
+
+  const result = await runCli(["group-assign", "--tab", "42", "--group", "Work"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "group-assign");
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.data?.txid, "tx-group-assign");
+});
+
+test("move-tab returns txid", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { txid: "tx-move-tab", summary: { movedTabs: 1 } },
+  }));
+
+  const result = await runCli(["move-tab", "--tab", "12", "--after-tab", "13"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "move-tab");
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.data?.txid, "tx-move-tab");
 });

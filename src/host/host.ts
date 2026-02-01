@@ -11,8 +11,9 @@ import {
   findUndoRecord,
 } from "./lib/undo";
 
-const SOCKET_DIR = path.join(os.homedir(), ".tabarchive");
-const SOCKET_PATH = path.join(SOCKET_DIR, "tabarchive.sock");
+const STATE_HOME = process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
+const SOCKET_DIR = path.join(STATE_HOME, "tabctl");
+const SOCKET_PATH = path.join(SOCKET_DIR, "tabctl.sock");
 const UNDO_LOG = path.join(SOCKET_DIR, "undo.jsonl");
 const REQUEST_TIMEOUT_MS = 30000;
 const HISTORY_LIMIT_DEFAULT = 20;
@@ -27,9 +28,19 @@ type PendingRequest = {
 
 const pending = new Map<string, PendingRequest>();
 const analyses = new Map<string, { createdAt: number; data: Record<string, unknown> }>();
+const UNDO_ACTIONS = new Set([
+  "archive",
+  "close",
+  "group-update",
+  "group-ungroup",
+  "group-assign",
+  "move-tab",
+  "move-group",
+  "merge-window",
+]);
 
 function log(...args: string[]) {
-  process.stderr.write(`[tabarchive-host] ${args.join(" ")}\n`);
+  process.stderr.write(`[tabctl-host] ${args.join(" ")}\n`);
 }
 
 function ensureDir() {
@@ -131,7 +142,7 @@ function handleNativeMessage(payload: string) {
     return;
   }
 
-  if (pendingRequest.action === "archive" || pendingRequest.action === "close") {
+  if (UNDO_ACTIONS.has(pendingRequest.action)) {
     const record = {
       txid: pendingRequest.txid,
       createdAt: Date.now(),
@@ -301,7 +312,7 @@ function handleCliRequest(socket: net.Socket, request: Record<string, unknown>) 
     return;
   }
 
-  if (action === "archive" || action === "close") {
+  if (UNDO_ACTIONS.has(action)) {
     const txid = createId("tx");
     forwardToExtension(socket, request, { txid });
     return;

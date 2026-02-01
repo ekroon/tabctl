@@ -186,8 +186,8 @@ Options:
 Install the native host manifest (macOS only).
 Options:
 - `--browser edge|chrome` (required)
-- `--extension-id <id>` (required; or `TABARCHIVE_EXTENSION_ID`)
-- `--node <path>` (optional; or `TABARCHIVE_NODE`)
+- `--extension-id <id>` (required; or `TABCTL_EXTENSION_ID`)
+- `--node <path>` (optional; or `TABCTL_NODE`)
 
 Run once per browser:
 ```bash
@@ -252,3 +252,6 @@ Check host/extension connectivity.
 ```bash
 tabctl ping
 ```
+## Runtime state
+- Socket: `$XDG_STATE_HOME/tabctl/tabctl.sock` (or `~/.local/state/tabctl/tabctl.sock`)
+- Undo log: `$XDG_STATE_HOME/tabctl/undo.jsonl` (or `~/.local/state/tabctl/undo.jsonl`)

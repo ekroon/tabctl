@@ -6,7 +6,7 @@ import test from "node:test";
 import { evaluateTab, loadPolicy } from "../../cli/lib/policy";
 
 test("loadPolicy returns null when file missing", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabarchive-policy-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-policy-"));
   const previous = process.env.XDG_CONFIG_HOME;
   process.env.XDG_CONFIG_HOME = dir;
   const policyPath = path.join(dir, "tabctl", "policy.json");
@@ -21,7 +21,7 @@ test("loadPolicy returns null when file missing", () => {
 });
 
 test("loadPolicy parses policy file", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabarchive-policy-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-policy-"));
   const previous = process.env.XDG_CONFIG_HOME;
   process.env.XDG_CONFIG_HOME = dir;
   const policyDir = path.join(dir, "tabctl");

@@ -48,12 +48,12 @@ This writes the manifest to:
 `~/Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.erwinkroon.tabctl.json`
 
 The manifest points to a wrapper script at:
-`~/.tabarchive/tabarchive-host.sh`
+`$XDG_STATE_HOME/tabctl/tabctl-host.sh` (or `~/.local/state/tabctl/tabctl-host.sh`)
 
 If `node` is not on PATH for Edge, pass an explicit path:
 
 ```bash
-TABARCHIVE_NODE=/usr/local/bin/node bash scripts/setup-native-host.sh <YOUR_EXTENSION_ID>
+TABCTL_NODE=/usr/local/bin/node bash scripts/setup-native-host.sh <YOUR_EXTENSION_ID>
 ```
 
 ## 3) Run the CLI
@@ -135,9 +135,9 @@ Notes:
 - `close` without `--apply` requires `--confirm` to prevent accidental closure.
 - Reports include short descriptions from page metadata and a fallback snippet.
 
-## Undo log
-Undo records are stored at:
-`~/.tabarchive/undo.jsonl`
+## Runtime state
+- Socket: `$XDG_STATE_HOME/tabctl/tabctl.sock` (or `~/.local/state/tabctl/tabctl.sock`)
+- Undo log: `$XDG_STATE_HOME/tabctl/undo.jsonl` (or `~/.local/state/tabctl/undo.jsonl`)
 
 ## Security
 - The native host is locked to your extension ID.

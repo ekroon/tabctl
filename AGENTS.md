@@ -9,6 +9,11 @@ This project controls a live Edge session. The testing approach must avoid touch
 - Prefer `list`, `analyze`, and `report` for smoke tests; use `close` and `archive` only in a controlled test window.
 - Always add or update tests for new features.
 
+## Undo is critical
+- Treat undo as a first-class safety feature for every mutating action.
+- Any new mutating command must record a complete undo payload and include tests.
+- Undo should restore window placement, group metadata, and tab ordering whenever possible.
+
 ## Preconditions
 - Edge is open.
 - The extension is loaded (`extension/`) and connected to the native host.
@@ -79,7 +84,7 @@ Recommended safe pattern:
 ## Undo history sanity checks (synthetic)
 You can validate undo with a single safe tab by inserting a synthetic record.
 
-1. Append a single JSON line to `~/.tabarchive/undo.jsonl` (manual or via a tiny script).
+1. Append a single JSON line to `$XDG_STATE_HOME/tabctl/undo.jsonl` (or `~/.local/state/tabctl/undo.jsonl`) (manual or via a tiny script).
 2. Use a unique `txid` and a safe URL (`https://example.com`).
 
 Example line (single tab, forces a new window):
@@ -98,7 +103,7 @@ When testing `archive --all` or `close --apply` behavior, use a mocked host inst
 
 Suggested approach:
 - Start a local UNIX socket server that returns canned JSON responses.
-- Point the CLI at it with `TABARCHIVE_SOCKET=/path/to/mock.sock`.
+- Point the CLI at it with `TABCTL_SOCKET=/path/to/mock.sock`.
 - Verify CLI formatting and error handling without touching Edge.
 
 Minimal Node mock example:
@@ -108,7 +113,7 @@ Minimal Node mock example:
 const net = require("net");
 const fs = require("fs");
 const path = require("path");
-const sock = "/tmp/tabarchive-mock.sock";
+const sock = "/tmp/tabctl-mock.sock";
 if (fs.existsSync(sock)) fs.unlinkSync(sock);
 net.createServer((socket) => {
   socket.on("data", (buf) => {
@@ -120,7 +125,7 @@ net.createServer((socket) => {
 ```
 
 Then:
-- `TABARCHIVE_SOCKET=/tmp/tabarchive-mock.sock tabctl archive --all`
+- `TABCTL_SOCKET=/tmp/tabctl-mock.sock tabctl archive --all`
 
 ## Hard stop rules
 - Never run `tabctl archive --all` or `tabctl close --apply` in a normal profile.
