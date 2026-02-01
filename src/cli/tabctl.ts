@@ -37,7 +37,7 @@ function parseArgs(argv: string[]) {
     }
 
     const key = arg.slice(2);
-    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json", "window-title", "create", "collapsed", "expanded", "new-window"].includes(key)) {
+    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json", "window-title", "create", "collapsed", "expanded", "new-window", "close-source"].includes(key)) {
       options[key] = true;
       continue;
     }
@@ -402,6 +402,7 @@ function buildHelpData() {
       "group-assign",
       "move-tab",
       "move-group",
+      "merge-window",
       "setup",
       "policy",
       "archive",
@@ -493,6 +494,12 @@ function buildHelpData() {
         "--after-group <name>",
         "--window <id>",
         "--new-window",
+      ],
+      "merge-window": [
+        "--from <id>",
+        "--to <id>",
+        "--close-source",
+        "--confirm",
       ],
       setup: [
         "--browser edge|chrome",
@@ -797,6 +804,16 @@ async function main() {
         newWindow: options["new-window"] === true,
       };
       break;
+    case "merge-window":
+      action = "merge-window";
+      params = {
+        fromWindowId: options.from ? Number(options.from) : undefined,
+        toWindowId: options.to ? Number(options.to) : undefined,
+        windowId: options.from ? Number(options.from) : undefined,
+        closeSource: options["close-source"] === true,
+        confirmed: options.confirm === true,
+      };
+      break;
     case "archive":
       action = "archive";
       params = {
@@ -847,7 +864,21 @@ async function main() {
       errorOut(`Unknown command: ${command}`);
   }
 
-  if (enforcePolicy && ["analyze", "inspect", "report", "close", "archive", "focus", "move-tab", "move-group", "group-assign", "group-update", "group-ungroup"].includes(command)) {
+  if (command === "merge-window") {
+    const fromWindowId = (params as { fromWindowId?: number }).fromWindowId;
+    const toWindowId = (params as { toWindowId?: number }).toWindowId;
+    if (!Number.isFinite(fromWindowId) || !Number.isFinite(toWindowId)) {
+      errorOut("merge-window requires --from and --to window ids");
+    }
+    if (fromWindowId === toWindowId) {
+      errorOut("merge-window --from and --to cannot be the same window");
+    }
+    if ((params as { closeSource?: boolean }).closeSource && !(params as { confirmed?: boolean }).confirmed) {
+      errorOut("merge-window --close-source requires --confirm");
+    }
+  }
+
+  if (enforcePolicy && ["analyze", "inspect", "report", "close", "archive", "focus", "move-tab", "move-group", "group-assign", "group-update", "group-ungroup", "merge-window"].includes(command)) {
     if (command === "close" && options.apply) {
       errorOut("Policy blocks close --apply; use explicit tab targets.");
     }
@@ -943,6 +974,43 @@ async function main() {
           tabIds: eligibleIds,
         };
       }
+
+      policyInfo = {
+        protected: protectedTabs.map((tab) => ({
+          tabId: tab.tabId,
+          windowId: tab.windowId,
+          groupId: tab.groupId,
+          groupTitle: tab.groupTitle,
+          title: tab.title,
+          url: tab.url,
+          pinned: tab.pinned,
+        })),
+      };
+    } else if (command === "merge-window") {
+      if (!eligibleIds.length) {
+        earlyResponse = {
+          ok: true,
+          action: command,
+          data: {
+            summary: { eligible: 0, protected: protectedTabs.length },
+            protected: protectedTabs.map((tab) => ({
+              tabId: tab.tabId,
+              windowId: tab.windowId,
+              groupId: tab.groupId,
+              groupTitle: tab.groupTitle,
+              title: tab.title,
+              url: tab.url,
+              pinned: tab.pinned,
+            })),
+            policy: policySummary,
+          },
+        };
+      }
+
+      params = {
+        ...params,
+        tabIds: eligibleIds,
+      };
 
       policyInfo = {
         protected: protectedTabs.map((tab) => ({

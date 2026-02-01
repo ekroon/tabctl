@@ -81,6 +81,7 @@ tabctl inspect --tab 123 --signal selector --signal-config ~/.config/tabctl/sign
 tabctl focus --tab 123
 tabctl open --new-window --url https://example.com
 tabctl move-tab --tab 123 --new-window
+tabctl merge-window --from 1 --to 2
 tabctl group-list
 tabctl group-update --group "Work" --title "Work Items" --color red --collapsed
 tabctl group-ungroup --group "Work"

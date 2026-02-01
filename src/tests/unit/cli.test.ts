@@ -501,6 +501,41 @@ test("move-group supports new window flag", async () => {
   assert.equal(params?.newWindow, true);
 });
 
+test("merge-window passes window ids and close source", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { summary: { movedTabs: 3 } },
+  }));
+
+  const result = await runCli([
+    "merge-window",
+    "--from",
+    "1",
+    "--to",
+    "2",
+    "--close-source",
+    "--confirm",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "merge-window");
+  const params = requests[0].params as {
+    fromWindowId?: number;
+    toWindowId?: number;
+    windowId?: number;
+    closeSource?: boolean;
+    confirmed?: boolean;
+  } | undefined;
+  assert.equal(params?.fromWindowId, 1);
+  assert.equal(params?.toWindowId, 2);
+  assert.equal(params?.windowId, 1);
+  assert.equal(params?.closeSource, true);
+  assert.equal(params?.confirmed, true);
+});
+
 test("move-tab passes target options", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
     ok: true,
@@ -663,6 +698,8 @@ test("help supports json output", async () => {
   assert.ok(options?.["move-tab"]?.includes("--new-window"));
   assert.ok(options?.["move-group"]?.includes("--before-group <name>"));
   assert.ok(options?.["move-group"]?.includes("--new-window"));
+  assert.ok(options?.["merge-window"]?.includes("--from <id>"));
+  assert.ok(options?.["merge-window"]?.includes("--close-source"));
   assert.ok(options?.setup?.includes("--browser edge|chrome"));
   assert.ok(options?.report?.includes("--format json|md|csv"));
   assert.ok(options?.close?.includes("--dry-run"));

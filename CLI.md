@@ -147,6 +147,14 @@ Options:
 - `--window <id>` (disambiguate group names)
 - `--new-window`
 
+### merge-window
+Move tabs from one window into another (policy-filtered).
+Options:
+- `--from <id>`
+- `--to <id>`
+- `--close-source` (requires `--confirm`)
+- `--confirm`
+
 ### setup
 Install the native host manifest (macOS only).
 Options:

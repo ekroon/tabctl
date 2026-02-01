@@ -175,6 +175,8 @@ async function handleAction(action: string, params: Record<string, unknown>, req
       return await moveTab(params);
     case "move-group":
       return await moveGroup(params);
+    case "merge-window":
+      return await mergeWindow(params);
     case "archive":
       return await archiveTabs(params);
     case "close":
@@ -1368,6 +1370,155 @@ async function moveGroup(params: Record<string, unknown>) {
     movedToWindowId: targetWindowId,
     newGroupId,
     summary: { movedTabs: tabIds.length },
+  };
+}
+
+async function mergeWindow(params: Record<string, unknown>) {
+  const fromWindowId = Number.isFinite(params.fromWindowId as number)
+    ? Number(params.fromWindowId)
+    : Number(params.windowId);
+  const toWindowId = Number.isFinite(params.toWindowId as number) ? Number(params.toWindowId) : null;
+  if (!Number.isFinite(fromWindowId) || !Number.isFinite(toWindowId)) {
+    throw new Error("Missing source or target window id");
+  }
+  if (fromWindowId === toWindowId) {
+    throw new Error("Source and target windows must differ");
+  }
+
+  const snapshot = await getTabSnapshot();
+  const windows = snapshot.windows as WindowSnapshot[];
+  const sourceWindow = windows.find((win) => win.windowId === fromWindowId);
+  if (!sourceWindow) {
+    throw new Error("Source window not found");
+  }
+  const targetWindow = windows.find((win) => win.windowId === toWindowId);
+  if (!targetWindow) {
+    throw new Error("Target window not found");
+  }
+
+  const rawTabIds = Array.isArray(params.tabIds) ? params.tabIds.map(Number) : [];
+  const tabIdSet = new Set(rawTabIds.filter((id) => Number.isFinite(id)) as number[]);
+  const skipped: Array<Record<string, unknown>> = [];
+  let selectedTabs = sourceWindow.tabs;
+
+  if (tabIdSet.size > 0) {
+    const sourceTabIds = new Set(
+      sourceWindow.tabs.map((tab) => tab.tabId).filter((id) => typeof id === "number") as number[],
+    );
+    for (const tabId of tabIdSet) {
+      if (!sourceTabIds.has(tabId)) {
+        skipped.push({ tabId, reason: "not_in_source" });
+      }
+    }
+    selectedTabs = sourceWindow.tabs.filter((tab) => tabIdSet.has(tab.tabId as number));
+  }
+
+  if (selectedTabs.length === 0) {
+    return {
+      fromWindowId,
+      toWindowId,
+      summary: { movedTabs: 0, movedGroups: 0, skippedTabs: skipped.length, closedSource: false },
+      skipped,
+      groups: [],
+    };
+  }
+
+  const orderedTabs = [...selectedTabs].sort((a, b) => {
+    const aIndex = Number(a.index);
+    const bIndex = Number(b.index);
+    if (!Number.isFinite(aIndex) && !Number.isFinite(bIndex)) {
+      return 0;
+    }
+    if (!Number.isFinite(aIndex)) {
+      return 1;
+    }
+    if (!Number.isFinite(bIndex)) {
+      return -1;
+    }
+    return aIndex - bIndex;
+  });
+
+  const groupById = new Map<number, Record<string, unknown>>();
+  for (const group of sourceWindow.groups) {
+    groupById.set(group.groupId as number, group);
+  }
+
+  const plans: Array<{ groupId: number | null; tabs: Array<Record<string, unknown>> }> = [];
+  let currentPlan: { groupId: number | null; tabs: Array<Record<string, unknown>> } | null = null;
+  for (const tab of orderedTabs) {
+    const rawGroupId = tab.groupId as number;
+    const groupId = typeof rawGroupId === "number" && rawGroupId !== -1 ? rawGroupId : null;
+    if (!currentPlan || currentPlan.groupId !== groupId) {
+      currentPlan = { groupId, tabs: [] };
+      plans.push(currentPlan);
+    }
+    currentPlan.tabs.push(tab);
+  }
+
+  let movedTabs = 0;
+  let movedGroups = 0;
+  const groups: Array<Record<string, unknown>> = [];
+
+  for (const plan of plans) {
+    const tabIds = plan.tabs.map((tab) => tab.tabId).filter((id) => typeof id === "number") as number[];
+    if (!tabIds.length) {
+      continue;
+    }
+
+    let moved: chrome.tabs.Tab[] | chrome.tabs.Tab;
+    try {
+      moved = await chrome.tabs.move(tabIds, { windowId: toWindowId, index: -1 });
+    } catch (error) {
+      for (const tabId of tabIds) {
+        skipped.push({ tabId, reason: "move_failed" });
+      }
+      log("Failed to move tabs", error);
+      continue;
+    }
+
+    const movedList = Array.isArray(moved) ? moved : [moved];
+    const movedIds = movedList.map((tab) => tab.id as number).filter((id) => typeof id === "number");
+    movedTabs += movedIds.length;
+
+    if (plan.groupId != null && movedIds.length > 0) {
+      movedGroups += 1;
+      let newGroupId: number | null = null;
+      try {
+        newGroupId = await chrome.tabs.group({ tabIds: movedIds, createProperties: { windowId: toWindowId } });
+        const meta = groupById.get(plan.groupId);
+        if (meta) {
+          await chrome.tabGroups.update(newGroupId, {
+            title: (meta.title as string) || "",
+            color: (meta.color as chrome.tabGroups.ColorEnum) || "grey",
+            collapsed: (meta.collapsed as boolean | undefined) || false,
+          });
+        }
+      } catch (error) {
+        log("Failed to regroup tabs", error);
+      }
+      groups.push({ sourceGroupId: plan.groupId, newGroupId });
+    }
+  }
+
+  let closedSource = false;
+  if (params.closeSource === true) {
+    try {
+      const remainingTabs = await chrome.tabs.query({ windowId: fromWindowId });
+      if (remainingTabs.length === 0) {
+        await chrome.windows.remove(fromWindowId);
+        closedSource = true;
+      }
+    } catch (error) {
+      log("Failed to close source window", error);
+    }
+  }
+
+  return {
+    fromWindowId,
+    toWindowId,
+    summary: { movedTabs, movedGroups, skippedTabs: skipped.length, closedSource },
+    skipped,
+    groups,
   };
 }
 
