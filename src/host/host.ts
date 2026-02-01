@@ -223,6 +223,8 @@ function refreshTimeout(pendingRequest: PendingRequest, requestId: string) {
       ok: false,
       action: pendingRequest.action,
       requestId,
+      component: "host",
+      version: VERSION,
       error: { message: "Request timed out" },
     });
   }, REQUEST_TIMEOUT_MS);
@@ -257,6 +259,8 @@ function forwardToExtension(
         ok: false,
         action: request.action,
         requestId,
+        component: "host",
+        version: VERSION,
         error: { message: "Request timed out" },
       });
     }, REQUEST_TIMEOUT_MS),
