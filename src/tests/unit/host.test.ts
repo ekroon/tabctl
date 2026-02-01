@@ -180,6 +180,57 @@ test("host records undo for move-tab", async () => {
   }
 });
 
+test("host responds to version", async () => {
+  const stateHome = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-host-"));
+  const { child, socketPath } = await startHost(stateHome);
+
+  try {
+    const response = await sendSocketRequest(socketPath, {
+      id: "req-version",
+      action: "version",
+      params: {},
+    });
+
+    assert.equal(response.ok, true);
+    assert.equal(response.action, "version");
+    const data = response.data as Record<string, unknown> | undefined;
+    assert.equal(data?.version, "0.1.0");
+    assert.equal(data?.component, "host");
+    assert.equal(response.version, "0.1.0");
+    assert.equal(data?.baseVersion, "0.1.0");
+    assert.equal(data?.gitSha, null);
+    assert.equal(data?.dirty, false);
+  } finally {
+    await stopHost(child);
+  }
+});
+
+test("host responds to version (dev when built)", async () => {
+  const stateHome = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-host-"));
+  const { child, socketPath } = await startHost(stateHome);
+
+  try {
+    const response = await sendSocketRequest(socketPath, {
+      id: "req-version-dev",
+      action: "version",
+      params: {},
+    });
+
+    assert.equal(response.ok, true);
+    const data = response.data as Record<string, unknown> | undefined;
+    const version = data?.version as string | undefined;
+    assert.ok(version);
+    if (version && version.includes("-dev.")) {
+      assert.match(version, /^0\.1\.0-dev\.[0-9a-f]{8}(\.dirty)?$/);
+    } else {
+      assert.equal(version, "0.1.0");
+    }
+    assert.equal(data?.baseVersion, "0.1.0");
+  } finally {
+    await stopHost(child);
+  }
+});
+
 test("host skips undo when payload missing", async () => {
   const stateHome = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-host-"));
   const { child, socketPath, undoPath } = await startHost(stateHome);

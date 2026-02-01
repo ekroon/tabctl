@@ -247,6 +247,15 @@ Options:
 tabctl history --limit 20
 ```
 
+### version
+Show CLI version information.
+```bash
+tabctl version
+```
+Environment:
+- `TABCTL_VERSION_MODE=release` (force release version without git sha)
+- `TABCTL_VERSION_MODE=dev` (force dev version with git sha)
+
 ### ping
 Check host/extension connectivity.
 ```bash

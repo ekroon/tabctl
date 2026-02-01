@@ -1,0 +1,91 @@
+#!/usr/bin/env node
+"use strict";
+
+const fs = require("fs");
+const path = require("path");
+const { execSync } = require("node:child_process");
+
+const root = path.resolve(__dirname, "..");
+const pkgPath = path.join(root, "package.json");
+const targetPath = path.join(root, "src", "shared", "version.ts");
+const manifestPath = path.join(root, "extension", "manifest.json");
+
+function readPackageVersion() {
+  const raw = fs.readFileSync(pkgPath, "utf8");
+  const pkg = JSON.parse(raw);
+  return typeof pkg.version === "string" ? pkg.version : "0.0.0";
+}
+
+function readGitSha() {
+  try {
+    return execSync("git rev-parse --short=8 HEAD", {
+      cwd: root,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).toString().trim();
+  } catch {
+    return null;
+  }
+}
+
+function isDirty() {
+  try {
+    const out = execSync("git status --porcelain", {
+      cwd: root,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).toString().trim();
+    return out.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+const baseVersion = readPackageVersion();
+const mode = (() => {
+  if (process.env.TABCTL_VERSION_MODE) {
+    return process.env.TABCTL_VERSION_MODE;
+  }
+  if (process.env.TABCTL_DEV_VERSION) {
+    return "dev";
+  }
+  const gitDir = path.join(root, ".git");
+  return fs.existsSync(gitDir) ? "dev" : "release";
+})();
+
+let gitSha = null;
+let dirty = false;
+let version = baseVersion;
+
+if (mode === "dev") {
+  gitSha = readGitSha();
+  if (gitSha) {
+    dirty = isDirty();
+    version = `${baseVersion}-dev.${gitSha}${dirty ? ".dirty" : ""}`;
+  }
+}
+
+const content = [
+  `export const BASE_VERSION = "${baseVersion}";`,
+  `export const VERSION = "${version}";`,
+  `export const GIT_SHA = ${gitSha ? `"${gitSha}"` : "null"};`,
+  `export const DIRTY = ${dirty};`,
+  "",
+].join("\n");
+
+
+fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+if (!fs.existsSync(targetPath) || fs.readFileSync(targetPath, "utf8") !== content) {
+  fs.writeFileSync(targetPath, content, "utf8");
+}
+
+try {
+  const manifestRaw = fs.readFileSync(manifestPath, "utf8");
+  const manifest = JSON.parse(manifestRaw);
+  manifest.version = baseVersion;
+  manifest.version_name = version;
+  const nextManifest = JSON.stringify(manifest, null, 2) + "\n";
+  if (manifestRaw !== nextManifest) {
+    fs.writeFileSync(manifestPath, nextManifest, "utf8");
+  }
+} catch (error) {
+  process.stderr.write(`[tabctl] failed to update manifest version: ${error}\n`);
+}

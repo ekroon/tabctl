@@ -4,6 +4,7 @@ import net from "net";
 import os from "os";
 import path from "path";
 import crypto from "crypto";
+import { VERSION, BASE_VERSION, GIT_SHA, DIRTY } from "../shared/version";
 import {
   appendUndoRecord,
   readUndoRecords,
@@ -38,6 +39,7 @@ const UNDO_ACTIONS = new Set([
   "move-group",
   "merge-window",
 ]);
+const LOCAL_ACTIONS = new Set(["history", "undo", "version"]);
 
 function log(...args: string[]) {
   process.stderr.write(`[tabctl-host] ${args.join(" ")}\n`);
@@ -106,9 +108,18 @@ function handleNativeMessage(payload: string) {
       action: pendingRequest.action,
       requestId: messageId,
       progress: true,
+      component: "host",
+      version: VERSION,
       data: message.data || {},
     });
     return;
+  }
+
+  const messageData = (message.data as Record<string, unknown>) || {};
+  const extensionVersion = typeof messageData.version === "string" ? messageData.version : null;
+  const extensionComponent = typeof messageData.component === "string" ? messageData.component : null;
+  if (extensionVersion && extensionVersion !== VERSION) {
+    log(`Version mismatch: host ${VERSION}, extension ${extensionVersion}`);
   }
 
   clearTimeout(pendingRequest.timeout);
@@ -119,6 +130,8 @@ function handleNativeMessage(payload: string) {
       ok: false,
       action: pendingRequest.action,
       requestId: messageId,
+      component: "host",
+      version: VERSION,
       error: message.error || { message: "Unknown error" },
     });
     return;
@@ -128,14 +141,21 @@ function handleNativeMessage(payload: string) {
     const analysisId = createId("analysis");
     analyses.set(analysisId, {
       createdAt: Date.now(),
-      data: message.data as Record<string, unknown>,
+      data: messageData,
     });
     respond(pendingRequest.socket, {
       ok: true,
       action: "analyze",
       requestId: messageId,
+      component: "host",
+      version: VERSION,
       data: {
-        ...(message.data as Record<string, unknown>),
+        ...messageData,
+        extensionVersion,
+        extensionComponent,
+        hostBaseVersion: BASE_VERSION,
+        hostGitSha: GIT_SHA,
+        hostDirty: DIRTY,
         analysisId,
       },
     });
@@ -147,8 +167,8 @@ function handleNativeMessage(payload: string) {
       txid: pendingRequest.txid,
       createdAt: Date.now(),
       action: pendingRequest.action,
-      summary: (message.data as Record<string, unknown>)?.summary || {},
-      undo: (message.data as Record<string, unknown>)?.undo || null,
+      summary: messageData.summary || {},
+      undo: messageData.undo || null,
     };
 
     if (record.undo) {
@@ -159,8 +179,15 @@ function handleNativeMessage(payload: string) {
       ok: true,
       action: pendingRequest.action,
       requestId: messageId,
+      component: "host",
+      version: VERSION,
       data: {
-        ...(message.data as Record<string, unknown>),
+        ...messageData,
+        extensionVersion,
+        extensionComponent,
+        hostBaseVersion: BASE_VERSION,
+        hostGitSha: GIT_SHA,
+        hostDirty: DIRTY,
         txid: pendingRequest.txid,
       },
     });
@@ -171,7 +198,16 @@ function handleNativeMessage(payload: string) {
     ok: true,
     action: pendingRequest.action,
     requestId: messageId,
-    data: message.data,
+    component: "host",
+    version: VERSION,
+    data: {
+      ...messageData,
+      extensionVersion,
+      extensionComponent,
+      hostBaseVersion: BASE_VERSION,
+      hostGitSha: GIT_SHA,
+      hostDirty: DIRTY,
+    },
   });
 }
 
@@ -202,6 +238,13 @@ function forwardToExtension(
   const params = { ...((request.params as Record<string, unknown>) || {}) };
   if (txid) {
     params.txid = txid;
+  }
+
+  if (!LOCAL_ACTIONS.has(request.action as string)) {
+    params.client = {
+      component: "host",
+      version: VERSION,
+    };
   }
 
   pending.set(requestId, {
@@ -244,7 +287,27 @@ function handleCliRequest(socket: net.Socket, request: Record<string, unknown>) 
       ok: true,
       action,
       requestId: request.id || null,
+      component: "host",
+      version: VERSION,
       data: filtered.slice(-limit),
+    });
+    return;
+  }
+
+  if (action === "version") {
+    respond(socket, {
+      ok: true,
+      action,
+      requestId: request.id || null,
+      component: "host",
+      version: VERSION,
+      data: {
+        version: VERSION,
+        baseVersion: BASE_VERSION,
+        gitSha: GIT_SHA,
+        dirty: DIRTY,
+        component: "host",
+      },
     });
     return;
   }
@@ -252,12 +315,12 @@ function handleCliRequest(socket: net.Socket, request: Record<string, unknown>) 
   if (action === "undo") {
     const txid = (request.params as Record<string, unknown>)?.txid as string | undefined;
     if (!txid) {
-      respond(socket, { ok: false, action, error: { message: "Missing txid" } });
+      respond(socket, { ok: false, action, component: "host", version: VERSION, error: { message: "Missing txid" } });
       return;
     }
     const record = findUndoRecord(UNDO_LOG, txid, RETENTION_DAYS);
     if (!record) {
-      respond(socket, { ok: false, action, error: { message: "Undo record not found" } });
+      respond(socket, { ok: false, action, component: "host", version: VERSION, error: { message: "Undo record not found" } });
       return;
     }
     forwardToExtension(socket, {
@@ -272,7 +335,7 @@ function handleCliRequest(socket: net.Socket, request: Record<string, unknown>) 
     const analysisId = (request.params as Record<string, unknown>).analysisId as string | undefined;
     const analysis = analysisId ? analyses.get(analysisId) : undefined;
     if (!analysis) {
-      respond(socket, { ok: false, action, error: { message: "Unknown analysisId" } });
+      respond(socket, { ok: false, action, component: "host", version: VERSION, error: { message: "Unknown analysisId" } });
       return;
     }
 
@@ -290,6 +353,8 @@ function handleCliRequest(socket: net.Socket, request: Record<string, unknown>) 
         ok: true,
         action,
         requestId: request.id || null,
+        component: "host",
+        version: VERSION,
         data: {
           txid: null,
           summary: { closedTabs: 0, skippedTabs: 0 },

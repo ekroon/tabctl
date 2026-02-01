@@ -7,7 +7,7 @@ const path = require("path");
 const root = process.cwd();
 const buildRoot = path.join(root, "build");
 
-const targets = ["extension", "cli", "host", "tests"];
+const targets = ["extension", "cli", "host", "tests", "shared"];
 
 function copyDir(src, dest) {
   if (!fs.existsSync(src)) {

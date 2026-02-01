@@ -1,4 +1,24 @@
 const HOST_NAME = "com.erwinkroon.tabctl";
+const manifest = chrome.runtime.getManifest();
+const MANIFEST_VERSION = manifest.version || "0.0.0";
+const MANIFEST_VERSION_NAME = manifest.version_name || MANIFEST_VERSION;
+
+function parseVersionName(versionName: string) {
+  const match = versionName.match(/-dev\.([0-9a-f]+)(\.dirty)?$/i);
+  if (!match) {
+    return { gitSha: null as string | null, dirty: false };
+  }
+  return { gitSha: match[1] || null, dirty: Boolean(match[2]) };
+}
+
+const parsed = parseVersionName(MANIFEST_VERSION_NAME);
+const VERSION_INFO = {
+  version: MANIFEST_VERSION_NAME,
+  baseVersion: MANIFEST_VERSION,
+  gitSha: parsed.gitSha,
+  dirty: parsed.dirty,
+};
+
 const KEEPALIVE_ALARM = "tabctl-keepalive";
 const KEEPALIVE_INTERVAL_MINUTES = 1;
 const DEFAULT_STALE_DAYS = 30;
@@ -25,7 +45,10 @@ function sendResponse(id: string, ok: boolean, payload: unknown) {
   }
 
   if (ok) {
-    state.port.postMessage({ id, ok: true, data: payload });
+    const data = typeof payload === "object" && payload !== null
+      ? { ...(payload as Record<string, unknown>), component: "extension", version: VERSION_INFO.version, baseVersion: VERSION_INFO.baseVersion }
+      : { payload, component: "extension", version: VERSION_INFO.version, baseVersion: VERSION_INFO.baseVersion };
+    state.port.postMessage({ id, ok: true, data });
     return;
   }
 
@@ -152,7 +175,22 @@ function sendProgress(id: string, payload: Record<string, unknown>) {
 async function handleAction(action: string, params: Record<string, unknown>, requestId: string) {
   switch (action) {
     case "ping":
-      return { now: Date.now() };
+      return {
+        now: Date.now(),
+        version: VERSION_INFO.version,
+        baseVersion: VERSION_INFO.baseVersion,
+        gitSha: VERSION_INFO.gitSha,
+        dirty: VERSION_INFO.dirty,
+        component: "extension",
+      };
+    case "version":
+      return {
+        version: VERSION_INFO.version,
+        baseVersion: VERSION_INFO.baseVersion,
+        gitSha: VERSION_INFO.gitSha,
+        dirty: VERSION_INFO.dirty,
+        component: "extension",
+      };
     case "list":
       return await getTabSnapshot();
     case "analyze":

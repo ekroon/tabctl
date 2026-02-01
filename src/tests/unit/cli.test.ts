@@ -828,6 +828,7 @@ test("help supports json output", async () => {
   const output = JSON.parse(result.stdout.trim());
   assert.equal(output.ok, true);
   assert.ok(output.data?.commands);
+  assert.equal(output.data?.version, "0.1.0");
   const options = output.data?.options as Record<string, string[]> | undefined;
   assert.ok(options);
   assert.ok(options?.analyze?.includes("--window-title (include active window title)"));
@@ -855,6 +856,32 @@ test("help supports json output", async () => {
   assert.ok(options?.report?.includes("--format json|md|csv"));
   assert.ok(options?.close?.includes("--dry-run"));
   assert.ok(options?.history?.includes("--limit <n>"));
+  assert.ok(options?.version);
+});
+
+test("version outputs cli version", async () => {
+  const result = await runCli(["version"]);
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, true);
+  assert.equal(output.data?.version, "0.1.0");
+  assert.equal(output.data?.component, "cli");
+  assert.equal(output.data?.baseVersion, "0.1.0");
+});
+
+test("version includes dev sha when built", async () => {
+  const result = await runCli(["version"]);
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, true);
+  const version = output.data?.version as string | undefined;
+  assert.ok(version);
+  if (version && version.includes("-dev.")) {
+    assert.match(version, /^0\.1\.0-dev\.[0-9a-f]{8}(\.dirty)?$/);
+  } else {
+    assert.equal(version, "0.1.0");
+  }
+  assert.equal(output.data?.baseVersion, "0.1.0");
 });
 
 test("undo sends undo action with txid", async () => {
@@ -880,7 +907,15 @@ test("group-assign returns txid", async () => {
     ok: true,
     action: req.action,
     requestId: req.id,
-    data: { txid: "tx-group-assign", summary: { groupedTabs: 1 } },
+    version: "0.1.0",
+    component: "host",
+    data: {
+      txid: "tx-group-assign",
+      summary: { groupedTabs: 1 },
+      extensionVersion: "0.1.0",
+      extensionComponent: "extension",
+      hostBaseVersion: "0.1.0",
+    },
   }));
 
   const result = await runCli(["group-assign", "--tab", "42", "--group", "Work"], socketPath);
@@ -890,6 +925,10 @@ test("group-assign returns txid", async () => {
   assert.equal(requests[0].action, "group-assign");
   const output = JSON.parse(result.stdout.trim());
   assert.equal(output.data?.txid, "tx-group-assign");
+  assert.equal(output.version, "0.1.0");
+  assert.equal(output.component, "host");
+  assert.equal(output.data?.extensionVersion, "0.1.0");
+  assert.equal(output.data?.hostBaseVersion, "0.1.0");
 });
 
 test("move-tab returns txid", async () => {
@@ -897,7 +936,15 @@ test("move-tab returns txid", async () => {
     ok: true,
     action: req.action,
     requestId: req.id,
-    data: { txid: "tx-move-tab", summary: { movedTabs: 1 } },
+    version: "0.1.0",
+    component: "host",
+    data: {
+      txid: "tx-move-tab",
+      summary: { movedTabs: 1 },
+      extensionVersion: "0.1.0",
+      extensionComponent: "extension",
+      hostBaseVersion: "0.1.0",
+    },
   }));
 
   const result = await runCli(["move-tab", "--tab", "12", "--after-tab", "13"], socketPath);
@@ -907,4 +954,8 @@ test("move-tab returns txid", async () => {
   assert.equal(requests[0].action, "move-tab");
   const output = JSON.parse(result.stdout.trim());
   assert.equal(output.data?.txid, "tx-move-tab");
+  assert.equal(output.version, "0.1.0");
+  assert.equal(output.component, "host");
+  assert.equal(output.data?.extensionVersion, "0.1.0");
+  assert.equal(output.data?.hostBaseVersion, "0.1.0");
 });

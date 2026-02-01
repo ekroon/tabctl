@@ -5,6 +5,7 @@ import os from "os";
 import path from "path";
 import { renderCsv, renderMarkdown } from "./lib/report";
 import { annotateEntry, defaultPolicyPath, defaultPolicyTemplate, evaluateTab, loadPolicy, summarizePolicy, type Policy } from "./lib/policy";
+import { VERSION, BASE_VERSION, GIT_SHA, DIRTY } from "../shared/version";
 
 const STATE_HOME = process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
 const SOCKET_PATH = process.env.TABCTL_SOCKET || path.join(STATE_HOME, "tabctl", "tabctl.sock");
@@ -530,6 +531,7 @@ function buildHelpData() {
       "undo",
       "history",
       "ping",
+      "version",
     ],
     usage: "tabctl <command> [options]",
     options: {
@@ -682,11 +684,13 @@ function buildHelpData() {
       history: [
         "--limit <n>",
       ],
+      version: [],
       global: [
         "--help",
         "--json",
       ],
     },
+    version: VERSION,
   };
 }
 
@@ -699,6 +703,7 @@ function printHelp(jsonOutput: boolean) {
 
   const lines: string[] = [];
   lines.push("tabctl - Edge tab management CLI");
+  lines.push(`Version: ${data.version}`);
   lines.push("");
   lines.push(`Usage: ${data.usage}`);
   lines.push("");
@@ -725,6 +730,29 @@ function errorOut(message: string): never {
   printJson({ ok: false, error: { message } });
   process.exit(1);
   throw new Error(message);
+}
+
+function emitVersionWarnings(response: Record<string, unknown>, fallbackAction: string) {
+  const hostVersion = typeof response.version === "string" ? response.version : null;
+  if (hostVersion && hostVersion !== VERSION) {
+    process.stderr.write(`[tabctl] version mismatch: cli ${VERSION}, host ${hostVersion}\n`);
+  }
+
+  const data = response.data as Record<string, unknown> | undefined;
+  const extensionVersion = data && typeof data.extensionVersion === "string" ? (data.extensionVersion as string) : null;
+  const extensionComponent = data && typeof data.extensionComponent === "string" ? (data.extensionComponent as string) : null;
+  if (extensionVersion && hostVersion && extensionVersion !== hostVersion) {
+    process.stderr.write(`[tabctl] version mismatch: host ${hostVersion}, extension ${extensionVersion}\n`);
+  }
+  if (extensionComponent && extensionComponent !== "extension") {
+    process.stderr.write(`[tabctl] unexpected extension component: ${extensionComponent}\n`);
+  }
+
+  const action = (response.action as string | undefined) || fallbackAction;
+  const extensionExpected = !["history", "version"].includes(action);
+  if (extensionExpected && !extensionVersion) {
+    process.stderr.write("[tabctl] extension version unavailable; reload the extension to validate version match\n");
+  }
 }
 
 async function main() {
@@ -764,6 +792,20 @@ async function main() {
 
   if (command === "setup") {
     runSetup(options, prettyOutput);
+    return;
+  }
+
+  if (command === "version") {
+    printJson({
+      ok: true,
+      data: {
+        version: VERSION,
+        baseVersion: BASE_VERSION,
+        gitSha: GIT_SHA,
+        dirty: DIRTY,
+        component: "cli",
+      },
+    }, prettyOutput);
     return;
   }
 
@@ -1024,6 +1066,10 @@ async function main() {
       action = "history";
       params = { limit: options.limit ? Number(options.limit) : undefined };
       break;
+    case "version":
+      action = "version";
+      params = {};
+      break;
     default:
       errorOut(`Unknown command: ${command}`);
   }
@@ -1271,7 +1317,18 @@ async function main() {
     }
   }
 
-  const request = { id: createId(), action, params };
+  const request = {
+    id: createId(),
+    action,
+    params,
+    client: {
+      component: "cli",
+      version: VERSION,
+      baseVersion: BASE_VERSION,
+      gitSha: GIT_SHA,
+      dirty: DIRTY,
+    },
+  };
 
   let response: Record<string, unknown>;
   const showProgress = options.progress === true;
@@ -1504,6 +1561,8 @@ async function main() {
     printJson({ ok: true, data: { format, entries, content } }, prettyOutput);
     return;
   }
+
+  emitVersionWarnings(response, command);
 
   printJson(response, prettyOutput);
 }

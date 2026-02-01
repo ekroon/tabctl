@@ -26,6 +26,28 @@ npm run build
 npm test
 ```
 
+## Versioning
+The base version lives in `package.json` and is embedded into the CLI, host, and extension at build time.
+
+Commands:
+```bash
+npm run bump:patch
+npm run bump:minor
+npm run bump:major
+```
+
+Local builds default to a dev version when a `.git` directory is present, appending the short SHA.
+```bash
+npm run build
+```
+
+This produces versions like `0.1.0-dev.abc12345` (and appends `.dirty` when the repo has uncommitted changes).
+
+For release builds without SHA, set:
+```bash
+TABCTL_VERSION_MODE=release npm run build
+```
+
 ## 1) Load the extension
 1. Open `edge://extensions` and enable **Developer mode**.
 2. Click **Load unpacked** and select `extension`.
