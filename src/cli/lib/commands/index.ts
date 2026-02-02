@@ -36,6 +36,7 @@ export {
   buildArchiveParams,
   buildCloseParams,
   buildReportParams,
+  buildScreenshotParams,
   buildHistoryParams,
   buildUndoParams,
 } from "./params";

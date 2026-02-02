@@ -5,7 +5,7 @@
  */
 
 import { VERSION } from "./constants";
-import { OPTION_GROUPS, COMMANDS, type OptionDef } from "./options";
+import { OPTION_GROUPS, COMMANDS, SCREENSHOT_OPTIONS, type OptionDef } from "./options";
 import { printJson } from "./output";
 
 // ============================================================================
@@ -57,6 +57,11 @@ export function buildHelpData(): HelpData {
       options: group.options.map(formatOption),
     })
   );
+  optionGroups.push({
+    name: SCREENSHOT_OPTIONS.name,
+    description: SCREENSHOT_OPTIONS.description,
+    options: SCREENSHOT_OPTIONS.options.map(formatOption),
+  });
 
   // Build commands list with their groups and specific options
   const commands: HelpCommand[] = Object.entries(COMMANDS)
@@ -84,6 +89,8 @@ export function buildHelpData(): HelpData {
   const notes = [
     "--before-group/--after-group only position tabs; use group-assign to move tabs into a group.",
     "undo accepts a txid as a positional arg (or --txid) and supports --latest.",
+    "screenshot uses --out to write per-tab folders under the target directory.",
+    "Use selector attr href-url/src-url to resolve absolute http(s) links.",
   ];
 
   return {

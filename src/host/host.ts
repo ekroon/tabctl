@@ -18,6 +18,7 @@ const SOCKET_DIR = path.join(STATE_HOME, "tabctl");
 const SOCKET_PATH = path.join(SOCKET_DIR, "tabctl.sock");
 const UNDO_LOG = path.join(SOCKET_DIR, "undo.jsonl");
 const REQUEST_TIMEOUT_MS = 30000;
+const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 const HISTORY_LIMIT_DEFAULT = 20;
 const RETENTION_DAYS = 30;
 
@@ -213,7 +214,19 @@ function handleNativeMessage(payload: string) {
 }
 
 function respond(socket: net.Socket, payload: Record<string, unknown>) {
-  socket.write(`${JSON.stringify(payload)}\n`);
+  const serialized = JSON.stringify(payload);
+  if (Buffer.byteLength(serialized, "utf8") > MAX_RESPONSE_BYTES) {
+    socket.write(`${JSON.stringify({
+      ok: false,
+      action: payload.action,
+      requestId: payload.requestId,
+      component: "host",
+      version: VERSION,
+      error: { message: "Response too large", hint: "Reduce scope or use --out to write files." },
+    })}\n`);
+    return;
+  }
+  socket.write(`${serialized}\n`);
 }
 
 function refreshTimeout(pendingRequest: PendingRequest, requestId: string) {

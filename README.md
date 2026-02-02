@@ -109,6 +109,9 @@ tabctl inspect --tab 123 --signal github-state --signal-concurrency 4 --signal-t
 tabctl inspect --tab 123 --signal selector --selector "price=.price" --signal-timeout-ms 1500 --progress
 tabctl inspect --tab 123 --signal selector --signal-config ~/.config/tabctl/signals.json --progress
 tabctl inspect --tab 123 --selector "price=.price"
+tabctl inspect --tab 123 --selector '{"name":"cta","selector":"a.cta","attr":"href-url"}'
+tabctl screenshot --tab 123 --mode viewport
+tabctl screenshot --tab 123 --mode full --tile-max-dim 1500 --max-bytes 2000000 --out /tmp/tabctl-shots
 tabctl focus --tab 123
 tabctl refresh --tab 123
 tabctl open --new-window --url https://example.com
@@ -131,6 +134,25 @@ tabctl report --limit 100
 tabctl undo <txid>
 tabctl undo --latest
 tabctl history --limit 20
+```
+
+## Agent workflow (context -> selector)
+Use screenshots to pick the right element, then extract selectors with `inspect`.
+
+1) Capture context (full page tiles):
+```bash
+tabctl screenshot --tab <id> --mode full --out /tmp/tabctl-shots
+```
+
+2) Identify the element visually, then extract its selector:
+```bash
+tabctl inspect --tab <id> --signal selector --selector '{"name":"target","selector":".your-selector"}'
+```
+
+3) If you need an absolute URL, set `--selector-attr href-url` or set `attr` to `href-url`/`src-url`:
+```bash
+tabctl inspect --tab <id> --signal selector --selector '{"name":"link","selector":"a[href]","attr":"href-url"}'
+tabctl inspect --tab <id> --signal selector --selector "link=a[href]" --selector-attr href-url
 ```
 
 ## Agent skills
@@ -195,6 +217,8 @@ Notes:
 - Use `--group-id -1` or `--ungrouped` to target ungrouped tabs.
 - `--selector` implies `--signal selector`.
 - Unknown inspect signals are rejected (valid: `page-meta`, `github-state`, `selector`).
+- Selector `attr` supports `href-url`/`src-url` to return absolute http(s) URLs.
+- `screenshot --out` writes per-tab folders into the target directory.
 - `tabctl undo` accepts a positional txid, `--txid`, or `--latest`.
 - `tabctl history --json` returns a JSON array in `data`.
 - `--format` is only supported by `report` (use `--json` elsewhere).

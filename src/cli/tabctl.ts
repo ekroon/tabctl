@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from "fs";
+import path from "path";
 import { renderCsv, renderMarkdown } from "./lib/report";
 import { evaluateTab, loadPolicy, summarizePolicy } from "./lib/policy";
 import { VERSION, BASE_VERSION, GIT_SHA, DIRTY } from "./lib/constants";
@@ -26,6 +27,7 @@ import {
   buildArchiveParams,
   buildCloseParams,
   buildReportParams,
+  buildScreenshotParams,
 } from "./lib/commands";
 import type { Options } from "./lib/types";
 
@@ -44,7 +46,7 @@ async function main() {
   if (command === "list" && options.groups === true) {
     command = "group-list";
   }
-  if (options.format && command !== "report") {
+  if (options.format && command !== "report" && command !== "screenshot") {
     errorOut("Unknown option: --format");
   }
   if (Object.prototype.hasOwnProperty.call(options, "policy")) {
@@ -95,6 +97,47 @@ async function main() {
     if (signalList.length > 0) {
       validateSignals(signalList);
       options.signal = signalList;
+    }
+  }
+
+  if (command === "screenshot") {
+    const mode = options.mode != null ? String(options.mode).trim().toLowerCase() : "viewport";
+    const format = options.format != null ? String(options.format).trim().toLowerCase() : "png";
+    if (mode !== "viewport" && mode !== "full") {
+      errorOut("Invalid --mode value (use viewport or full)");
+    }
+    if (format !== "png" && format !== "jpeg") {
+      errorOut("Invalid --format value (use png or jpeg)");
+    }
+    if (format === "jpeg" && options.quality == null) {
+      options.quality = 80;
+    }
+    const qualityRaw = options.quality != null ? Number(options.quality) : null;
+    if (qualityRaw != null && (!Number.isFinite(qualityRaw) || qualityRaw < 0 || qualityRaw > 100)) {
+      errorOut("Invalid --quality value (use 0-100)");
+    }
+    if (qualityRaw != null && format !== "jpeg") {
+      errorOut("--quality requires --format jpeg");
+    }
+    const tileMaxDimRaw = options["tile-max-dim"] != null ? Number(options["tile-max-dim"]) : null;
+    if (tileMaxDimRaw != null && (!Number.isFinite(tileMaxDimRaw) || tileMaxDimRaw <= 0)) {
+      errorOut("Invalid --tile-max-dim value");
+    }
+    const maxBytesRaw = options["max-bytes"] != null ? Number(options["max-bytes"]) : null;
+    if (maxBytesRaw != null && (!Number.isFinite(maxBytesRaw) || maxBytesRaw <= 0)) {
+      errorOut("Invalid --max-bytes value");
+    }
+    if (mode === "viewport" && options["tile-max-dim"] != null) {
+      errorOut("--tile-max-dim requires --mode full");
+    }
+    if (mode === "viewport" && options["max-bytes"] != null) {
+      errorOut("--max-bytes requires --mode full");
+    }
+    if (options.mode == null) {
+      options.mode = "viewport";
+    }
+    if (options.format == null) {
+      options.format = "png";
     }
   }
 
@@ -240,6 +283,10 @@ async function main() {
       action = "report";
       params = buildReportParams(options);
       break;
+    case "screenshot":
+      action = "screenshot";
+      params = buildScreenshotParams(options);
+      break;
     default:
       errorOut(`Unknown command: ${command}`);
   }
@@ -270,7 +317,7 @@ async function main() {
     }
   }
 
-  if (enforcePolicy && ["analyze", "inspect", "report", "close", "archive", "focus", "refresh", "move-tab", "move-group", "group-assign", "group-update", "group-ungroup", "merge-window"].includes(command)) {
+  if (enforcePolicy && ["analyze", "inspect", "report", "screenshot", "close", "archive", "focus", "refresh", "move-tab", "move-group", "group-assign", "group-update", "group-ungroup", "merge-window"].includes(command)) {
     if (command === "close" && options.apply) {
       errorOut("Policy blocks close --apply; use explicit tab targets.");
     }
@@ -464,6 +511,24 @@ async function main() {
               policy: policySummary,
             },
           };
+        } else if (command === "screenshot") {
+          earlyResponse = {
+            ok: true,
+            action: command,
+            data: {
+              generatedAt,
+              entries: [],
+              totals: { tabs: 0, tiles: 0 },
+              meta: {
+                durationMs: 0,
+                mode: params.mode || "viewport",
+                format: params.format || "png",
+                tileMaxDim: params.tileMaxDim || null,
+                maxBytes: params.maxBytes || null,
+              },
+              policy: policySummary,
+            },
+          };
         } else {
           earlyResponse = {
             ok: true,
@@ -525,6 +590,11 @@ async function main() {
         const signalId = data.signalId as string;
         process.stderr.write(`[tabctl] inspect ${processed}/${total} (${signalId})\n`);
       }
+      if (data?.phase === "screenshot") {
+        const processed = data.processed as number;
+        const total = data.total as number;
+        process.stderr.write(`[tabctl] screenshot ${processed}/${total}\n`);
+      }
     }
     : undefined;
 
@@ -562,7 +632,7 @@ async function main() {
 
   if (response.data && typeof response.data === "object") {
     const data = response.data as Record<string, unknown>;
-    if ((command === "inspect" || command === "report") && Array.isArray(data.entries)) {
+    if ((command === "inspect" || command === "report" || command === "screenshot") && Array.isArray(data.entries)) {
       let snapshot: Record<string, unknown> | null = null;
       if (policyEnabled) {
         snapshot = await getPolicySnapshot();
@@ -734,6 +804,58 @@ async function main() {
     }
 
     printJson({ ok: true, data: { format, entries, content, ...(page ? { page } : {}) } }, prettyOutput);
+    return;
+  }
+
+  if (command === "screenshot") {
+    const data = response.data as { entries?: Array<Record<string, unknown>> } | undefined;
+    const entries = data?.entries || [];
+    const page = data && "page" in data ? (data.page as Record<string, unknown> | undefined) : undefined;
+    if (options.out) {
+      const outDir = String(options.out);
+      fs.mkdirSync(outDir, { recursive: true });
+      let filesWritten = 0;
+      const sanitized = entries.map((entry) => {
+        const tabId = entry.tabId as number | string | undefined;
+        const tabDir = path.join(outDir, String(tabId ?? "unknown"));
+        fs.mkdirSync(tabDir, { recursive: true });
+        const tiles = Array.isArray(entry.tiles) ? (entry.tiles as Array<Record<string, unknown>>) : [];
+        const sanitizedTiles = tiles.map((tile) => {
+          const rawUrl = tile.dataUrl as string | undefined;
+          const { dataUrl: _ignored, ...rest } = tile as Record<string, unknown>;
+          if (!rawUrl) {
+            return { ...rest, path: null, error: "missing_data" };
+          }
+          const match = rawUrl.match(/^data:(image\/png|image\/jpeg);base64,(.+)$/);
+          if (!match) {
+            return { ...rest, path: null, error: "invalid_data_url" };
+          }
+          const mime = match[1];
+          const base64 = match[2];
+          const ext = mime === "image/jpeg" ? "jpg" : "png";
+          const index = Number.isFinite(tile.index as number) ? Number(tile.index) + 1 : filesWritten + 1;
+          const total = Number.isFinite(tile.total as number) ? Number(tile.total) : null;
+          const suffix = total && total > 1 ? `-of-${total}` : "";
+          const filename = `screenshot-${index}${suffix}.${ext}`;
+          const filePath = path.join(tabDir, filename);
+          const buffer = Buffer.from(base64, "base64");
+          fs.writeFileSync(filePath, buffer);
+          filesWritten += 1;
+          return {
+            ...rest,
+            path: filePath,
+            bytes: buffer.length,
+          };
+        });
+        return {
+          ...entry,
+          tiles: sanitizedTiles,
+        };
+      });
+      printJson({ ok: true, data: { writtenTo: outDir, files: filesWritten, entries: sanitized, ...(page ? { page } : {}) } }, prettyOutput);
+      return;
+    }
+    printJson({ ok: true, data: { entries, ...(page ? { page } : {}) } }, prettyOutput);
     return;
   }
 

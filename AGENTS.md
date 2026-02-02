@@ -83,12 +83,19 @@ Notes:
 Always finish with:
 1. `npm test`
 2. A minimal smoke test in a new window you create (safe URLs + unique `TEST-` prefix). Verify via `tabctl group-list` or `tabctl list`.
+3. A screenshot-first smoke step: capture a screenshot before running selector-based extraction.
 
 Example:
 ```bash
 ts=$(date +%s)
 tabctl open --new-window --url https://example.com --url https://example.org --group "TEST-Smoke-${ts}"
 tabctl group-list --window <windowId>
+```
+
+Screenshot-first example:
+```bash
+tabctl screenshot --tab <tabId> --mode viewport --out /tmp/tabctl-shots
+tabctl inspect --tab <tabId> --signal selector --selector "link=a[href]" --selector-attr href-url
 ```
 
 ## Safe smoke tests (no mutations)

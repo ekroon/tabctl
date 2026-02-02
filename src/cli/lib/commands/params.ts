@@ -40,22 +40,32 @@ export function buildInspectParams(options: Options): Record<string, unknown> {
     errorOut("--ungrouped cannot be combined with --group-id");
   }
 
+  const selectorAttr = options["selector-attr"] ? String(options["selector-attr"]).trim() : "";
+  const allowedSelectorAttrs = new Set(["text", "href", "src", "href-url", "src-url"]);
+  if (options["selector-attr"] && (!selectorAttr || !allowedSelectorAttrs.has(selectorAttr))) {
+    errorOut("Invalid --selector-attr value (use text|href|src|href-url|src-url)");
+  }
+
   let selectorSpecs: Array<Record<string, unknown>> | undefined;
   if (options.selector) {
     selectorSpecs = (options.selector as string[]).map((value) => {
       const trimmed = value.trim();
       if (trimmed.startsWith("{")) {
         try {
-          return JSON.parse(trimmed) as Record<string, unknown>;
+          const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+          if (selectorAttr && parsed && typeof parsed === "object" && !Object.prototype.hasOwnProperty.call(parsed, "attr")) {
+            return { ...parsed, attr: selectorAttr };
+          }
+          return parsed;
         } catch {
           errorOut(`Invalid selector JSON: ${trimmed}`);
         }
       }
       if (trimmed.includes("=")) {
         const [name, selector] = trimmed.split(/=(.+)/);
-        return { name, selector };
+        return selectorAttr ? { name, selector, attr: selectorAttr } : { name, selector };
       }
-      return { selector: trimmed };
+      return selectorAttr ? { selector: trimmed, attr: selectorAttr } : { selector: trimmed };
     }).filter(Boolean) as Array<Record<string, unknown>>;
   }
 
@@ -251,6 +261,36 @@ export function buildReportParams(options: Options): Record<string, unknown> {
     groupTitle: options.group,
     groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
     tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
+  };
+}
+
+// ============================================================================
+// Screenshot Command Parameters
+// ============================================================================
+
+export function buildScreenshotParams(options: Options): Record<string, unknown> {
+  if (options.ungrouped && options["group-id"]) {
+    errorOut("--ungrouped cannot be combined with --group-id");
+  }
+
+  const outDir = options.out != null ? String(options.out).trim() : "";
+  if (options.out && !outDir) {
+    errorOut("--out requires a directory path");
+  }
+
+  return {
+    all: Boolean(options.all),
+    windowId: options.window ? Number(options.window) : undefined,
+    groupTitle: options.group,
+    groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
+    tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
+    mode: options.mode,
+    format: options.format,
+    quality: options.quality != null ? Number(options.quality) : undefined,
+    tileMaxDim: options["tile-max-dim"] != null ? Number(options["tile-max-dim"]) : undefined,
+    maxBytes: options["max-bytes"] != null ? Number(options["max-bytes"]) : undefined,
+    outDir: outDir || undefined,
+    progress: Boolean(options.progress),
   };
 }
 

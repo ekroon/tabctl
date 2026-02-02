@@ -13,6 +13,7 @@ Use tabctl to inspect and analyze tabs safely, then perform targeted actions onl
 - Never run `archive --all` or `close --apply` in a normal session.
 - Only mutate explicit targets (`--tab`, `--group`, `--window`) and use `--confirm` for close.
 - Respect policy: protected tabs are excluded.
+- For selector-based extraction, capture a screenshot first.
 
 ## Common tasks
 
@@ -22,7 +23,15 @@ Use tabctl to inspect and analyze tabs safely, then perform targeted actions onl
 - Refresh a tab: `tabctl refresh --tab <id>`
 - Generate a report: `tabctl report --format md` (add scope flags as needed)
 - Get page metadata: `tabctl inspect --tab <id> --signal page-meta`
-- Extract links (selector auto-enabled): `tabctl inspect --tab <id> --selector '{"name":"links","selector":"a[href]","attr":"href","all":true}'`
+- Extract links safely (absolute http(s) only): `tabctl inspect --tab <id> --selector '{"name":"links","selector":"a[href]","attr":"href-url","all":true}'`
+- Capture visual context: `tabctl screenshot --tab <id> --mode full --out /tmp/tabctl-shots`
+- Use screenshot -> selector flow: capture, identify element, then `tabctl inspect --tab <id> --signal selector --selector '{"name":"target","selector":".your-selector"}'`
+
+Example (Wikipedia -> main logo link):
+```bash
+tabctl screenshot --tab <id> --mode viewport --out /tmp/tabctl-shots
+tabctl inspect --tab <id> --signal selector --selector "logo=a.mw-wiki-logo" --selector-attr href-url
+```
 - Undo most recent change: `tabctl undo --latest`
 - Undo by txid: `tabctl undo <txid>` (from `tabctl history --json | jq -r '.data[] | .txid'`)
 

@@ -56,6 +56,20 @@ export const OPTION_GROUPS: Record<string, OptionGroup> = {
   },
 } as const;
 
+export const SCREENSHOT_OPTIONS: OptionGroup = {
+  name: "Screenshot Options",
+  description: "Control screenshot capture",
+  options: [
+    { flag: "--mode viewport|full", desc: "Capture mode" },
+    { flag: "--format png|jpeg", desc: "Image format" },
+    { flag: "--quality <n>", desc: "JPEG quality (0-100)" },
+    { flag: "--tile-max-dim <px>", desc: "Max tile dimension in pixels" },
+    { flag: "--max-bytes <n>", desc: "Max bytes per tile" },
+    { flag: "--out <dir>", desc: "Write files to directory" },
+    { flag: "--progress", desc: "Show progress during capture" },
+  ],
+};
+
 // ============================================================================
 // Command Metadata
 // ============================================================================
@@ -103,11 +117,17 @@ export const COMMANDS: Record<string, CommandMeta> = {
     options: [
       { flag: "--signal-config <path>", desc: "Path to signal configuration file" },
       { flag: "--signal <id>", desc: "Signal ID to extract", repeatable: true },
-      { flag: "--selector <name=css|json>", desc: "Custom selector definition", repeatable: true },
+      { flag: "--selector <name=css|json>", desc: "Custom selector definition (attr: href-url/src-url supported)", repeatable: true },
+      { flag: "--selector-attr <attr>", desc: "Default selector attr (text|href|src|href-url|src-url)" },
       { flag: "--signal-concurrency <n>", desc: "Max concurrent signal extractions" },
       { flag: "--signal-timeout-ms <ms>", desc: "Timeout for signal extraction" },
       { flag: "--progress", desc: "Show progress during inspection" },
     ],
+  },
+  screenshot: {
+    description: "Capture screenshots from tabs",
+    groups: ["scope"],
+    options: SCREENSHOT_OPTIONS.options,
   },
   focus: {
     description: "Focus a specific tab",

@@ -113,6 +113,7 @@ Additional options:
 - `--signal-config <path>`
 - `--signal <id>` (repeatable)
 - `--selector <name=css|json>` (repeatable)
+- `--selector-attr <attr>` (default attr for selectors)
 - `--signal-concurrency <n>`
 - `--signal-timeout-ms <ms>`
 - `--progress`
@@ -125,6 +126,34 @@ Signals:
 Notes:
 - `--selector` implies `--signal selector`.
 - Unknown signals are rejected; valid signals: `page-meta`, `github-state`, `selector`.
+- Selector `attr` supports `href-url`/`src-url` to return absolute http(s) URLs.
+
+Suggested flow for agents:
+1. `tabctl screenshot --tab <id> --mode full --out /tmp/tabctl-shots`
+2. Identify the element visually.
+3. `tabctl inspect --tab <id> --signal selector --selector '{"name":"target","selector":".your-selector"}'`
+4. For links, set `--selector-attr href-url` (or per-selector `attr: "href-url"`).
+
+### screenshot
+Capture screenshots for tabs (viewport or full-page tiles).
+
+**Uses:** [Scope Options](#scope-options)
+
+Additional options:
+- `--mode viewport|full`
+- `--format png|jpeg`
+- `--quality <n>` (jpeg only)
+- `--tile-max-dim <px>` (full mode only)
+- `--max-bytes <n>`
+- `--out <dir>` (writes per-tab folders)
+- `--progress`
+
+Examples:
+```bash
+tabctl screenshot --tab 123 --mode viewport
+tabctl screenshot --tab 123 --mode full --tile-max-dim 1500 --max-bytes 2000000 --out /tmp/tabctl-shots
+```
+
 
 ### focus
 Focus a tab by id.
@@ -336,6 +365,7 @@ tabctl ping
 
 Notes:
 - Use `--group-id -1` or `--ungrouped` to target ungrouped tabs.
+ - `screenshot --out` writes per-tab folders into the target directory.
 ## Runtime state
 - Socket: `$XDG_STATE_HOME/tabctl/tabctl.sock` (or `~/.local/state/tabctl/tabctl.sock`)
 - Undo log: `$XDG_STATE_HOME/tabctl/undo.jsonl` (or `~/.local/state/tabctl/undo.jsonl`)
