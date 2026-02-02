@@ -22,8 +22,36 @@ tabctl policy --init
 
 ## Global flags
 - `--help`: human-readable help
-- `--json`: JSON help output (use with `tabctl help --json`)
+- `--json`: JSON output
+- `--pretty`: pretty-print JSON (default: true)
 - `--format` is only supported by `report` (use `--json` elsewhere)
+
+## Option Groups
+
+Commands reference these reusable option groups to avoid documentation duplication.
+
+### Scope Options
+Filter which tabs/groups to operate on.
+
+| Option | Description |
+|--------|-------------|
+| `--tab <id>` | Target specific tab(s) by ID (repeatable) |
+| `--group <name>` | Target tabs in group by title |
+| `--group-id <id>` | Target group by ID (use `-1` for ungrouped) |
+| `--ungrouped` | Alias for `--group-id -1` |
+| `--window <id>` | Target tabs in specific window |
+| `--all` | Target all eligible tabs |
+
+### Pagination Options
+Control result paging (default limit: 100).
+
+| Option | Description |
+|--------|-------------|
+| `--limit <n>` | Maximum items to return |
+| `--offset <n>` | Skip first n items |
+| `--no-page` | Disable pagination, return all results |
+
+These option groups apply anywhere referenced; they are not repeated under every command.
 
 ## Commands
 
@@ -35,36 +63,27 @@ tabctl help --json
 ```
 
 ### list
-List eligible tabs and groups only.
+List browser tabs.
 ```bash
 tabctl list
 ```
 JSON output is nested under `data.windows[].tabs[]` when using `--json`.
-Defaults to paging with `--limit 100`.
-Options:
-- `--tab <id>` (repeatable)
-- `--group <name>`
-- `--group-id <id>` (use `-1` for ungrouped)
-- `--ungrouped` (alias for `--group-id -1`)
-- `--window <id>`
-- `--all`
-- `--limit <n>`
-- `--offset <n>`
-- `--no-page`
+
+**Uses:** [Scope Options](#scope-options), [Pagination Options](#pagination-options)
+
+Additional options:
+- `--groups` (alias for group-list command)
 
 ### analyze
 Find duplicates and stale tabs (optional GitHub state checks).
-Options:
+
+**Uses:** [Scope Options](#scope-options)
+
+Additional options:
 - `--stale-days <n>`
 - `--github`
 - `--github-concurrency <n>`
 - `--github-timeout-ms <ms>`
-- `--tab <id>` (repeatable)
-- `--group <name>`
-- `--group-id <id>`
-- `--ungrouped` (alias for `--group-id -1`)
-- `--window <id>`
-- `--all`
 - `--window-title` (include active window title in output)
 - `--progress`
 
@@ -72,17 +91,14 @@ If no scope is provided, all eligible tabs are analyzed.
 
 ### dedupe
 Plan (and optionally close) duplicate tabs.
-Options:
+
+**Uses:** [Scope Options](#scope-options)
+
+Additional options:
 - `--stale-days <n>`
 - `--github`
 - `--github-concurrency <n>`
 - `--github-timeout-ms <ms>`
-- `--tab <id>` (repeatable)
-- `--group <name>`
-- `--group-id <id>`
-- `--ungrouped` (alias for `--group-id -1`)
-- `--window <id>`
-- `--all`
 - `--include-stale`
 - `--window-title` (include active window title in output)
 - `--progress`
@@ -90,21 +106,15 @@ Options:
 
 ### inspect
 Run signals to collect metadata (page-meta, github-state, selector).
-Options:
+
+**Uses:** [Scope Options](#scope-options), [Pagination Options](#pagination-options)
+
+Additional options:
 - `--signal-config <path>`
 - `--signal <id>` (repeatable)
 - `--selector <name=css|json>` (repeatable)
 - `--signal-concurrency <n>`
 - `--signal-timeout-ms <ms>`
-- `--tab <id>` (repeatable)
-- `--group <name>`
-- `--group-id <id>`
-- `--ungrouped` (alias for `--group-id -1`)
-- `--window <id>`
-- `--all`
-- `--limit <n>`
-- `--offset <n>`
-- `--no-page`
 - `--progress`
 
 Signals:
@@ -120,6 +130,12 @@ Notes:
 Focus a tab by id.
 ```bash
 tabctl focus --tab <id>
+```
+
+### refresh
+Refresh a tab by id.
+```bash
+tabctl refresh --tab <id>
 ```
 
 ### open
@@ -146,17 +162,13 @@ If no window selector is provided, the focused window is used.
 
 ### group-list
 List groups with window ids/labels and tab counts.
-Defaults to paging with `--limit 100`.
-Options:
-- `--tab <id>` (repeatable)
-- `--group <name>`
-- `--group-id <id>`
-- `--ungrouped` (alias for `--group-id -1`)
-- `--window <id>`
-- `--all`
-- `--limit <n>`
-- `--offset <n>`
-- `--no-page`
+
+**Uses:** [Scope Options](#scope-options), [Pagination Options](#pagination-options)
+
+### group
+Alias for `group-list`.
+
+**Uses:** [Scope Options](#scope-options), [Pagination Options](#pagination-options)
 
 ### group-update
 Update group metadata (title, color, or collapsed state).
@@ -243,23 +255,16 @@ Options:
 
 ### archive
 Move tabs/groups into the Archive window.
-Options:
-- `--all`
-- `--window <id>`
-- `--group <name>`
-- `--group-id <id>`
-- `--ungrouped` (alias for `--group-id -1`)
-- `--tab <id>` (repeatable)
+
+**Uses:** [Scope Options](#scope-options)
 
 ### close
 Close explicit targets only (policy-filtered). Requires confirmation for direct close.
-Options:
+
+**Uses:** [Scope Options](#scope-options) (except `--all`)
+
+Additional options:
 - `--apply <analysisId>`
-- `--tab <id>` (repeatable)
-- `--group <name>`
-- `--group-id <id>`
-- `--ungrouped` (alias for `--group-id -1`)
-- `--window <id>`
 - `--confirm`
 - `--dry-run` (alias for `analyze`)
 
@@ -267,18 +272,12 @@ Note: policy enforcement blocks `close --apply`; use explicit tab targets.
 
 ### report
 Generate a report for eligible tabs.
-Options:
+
+**Uses:** [Scope Options](#scope-options), [Pagination Options](#pagination-options)
+
+Additional options:
 - `--format json|md|csv`
 - `--out <path>`
-- `--tab <id>` (repeatable)
-- `--group <name>`
-- `--group-id <id>`
-- `--ungrouped` (alias for `--group-id -1`)
-- `--window <id>`
-- `--all`
-- `--limit <n>`
-- `--offset <n>`
-- `--no-page`
 
 ### undo
 Restore the last action by transaction id.

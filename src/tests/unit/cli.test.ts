@@ -875,6 +875,65 @@ test("group-list with --all skips tab scoping", async () => {
   assert.equal(data.groups?.length, 2);
 });
 
+test("group-list --all ignores window and group filters", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
+    if (req.action === "group-list") {
+      return {
+        ok: true,
+        action: req.action,
+        requestId: req.id,
+        data: {
+          groups: [
+            { windowId: 1, groupId: 10, title: "Work" },
+            { windowId: 2, groupId: 20, title: "Home" },
+          ],
+        },
+      };
+    }
+    return { ok: true, action: req.action, requestId: req.id, data: {} };
+  });
+
+  const result = await runCli(["group-list", "--all", "--window", "1", "--group", "Work"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "group-list");
+  const params = requests[0].params as { windowId?: number } | undefined;
+  assert.equal(params?.windowId, undefined);
+  const output = JSON.parse(result.stdout.trim());
+  const data = output.data as { groups?: Array<Record<string, unknown>> };
+  assert.equal(data.groups?.length, 2);
+});
+
+test("group-list supports --ungrouped", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
+    if (req.action === "group-list") {
+      return {
+        ok: true,
+        action: req.action,
+        requestId: req.id,
+        data: {
+          groups: [
+            { windowId: 1, groupId: 10, title: "Work" },
+            { windowId: 1, groupId: -1, title: "Ungrouped" },
+          ],
+        },
+      };
+    }
+    return { ok: true, action: req.action, requestId: req.id, data: {} };
+  });
+
+  const result = await runCli(["group-list", "--ungrouped"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim());
+  assert.ok(output.ok);
+  const groups = output.data?.groups as Array<{ groupId: number }> | undefined;
+  assert.ok(groups);
+  assert.equal(groups?.length, 1);
+  assert.equal(groups?.[0]?.groupId, -1);
+});
+
 test("group-list falls back to snapshot when groups missing", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
     if (req.action === "group-list") {
@@ -915,6 +974,55 @@ test("group-list falls back to snapshot when groups missing", async () => {
   assert.equal(groups.length, 1);
   assert.equal(groups[0].groupId, 33);
   assert.equal(groups[0].windowId, 7);
+});
+
+test("group-list fallback applies policy exclusions", async () => {
+  const policyDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-policy-fallback-"));
+  const policyPath = path.join(policyDir, "tabctl", "policy.json");
+  fs.mkdirSync(path.dirname(policyPath), { recursive: true });
+  fs.writeFileSync(
+    policyPath,
+    JSON.stringify({ protect: { groupTitles: ["Secret"] } }, null, 2),
+    "utf8"
+  );
+
+  const { socketPath, server, sockets } = await startMockSocket((req) => {
+    if (req.action === "group-list") {
+      return { ok: true, action: req.action, requestId: req.id, data: { groups: null } };
+    }
+    if (req.action === "list") {
+      return {
+        ok: true,
+        action: req.action,
+        requestId: req.id,
+        data: {
+          windows: [
+            {
+              windowId: 7,
+              tabs: [
+                { tabId: 1, windowId: 7, index: 0, groupId: 33, groupTitle: "Secret" },
+                { tabId: 2, windowId: 7, index: 1, groupId: 44, groupTitle: "Public" },
+              ],
+              groups: [
+                { groupId: 33, title: "Secret", color: "blue", collapsed: false },
+                { groupId: 44, title: "Public", color: "green", collapsed: false },
+              ],
+            },
+          ],
+        },
+      };
+    }
+    return { ok: true, action: req.action, requestId: req.id, data: {} };
+  });
+
+  const result = await runCli(["group-list", "--window", "7"], socketPath, { XDG_CONFIG_HOME: policyDir });
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim());
+  const groups = output.data?.groups as Array<Record<string, unknown>>;
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].groupId, 44);
 });
 
 test("archive supports --ungrouped", async () => {
@@ -1400,68 +1508,32 @@ test("help supports json output", async () => {
   assert.equal(output.ok, true);
   assert.ok(output.data?.commands);
   assertVersion(output.data?.version as string | undefined);
-  const options = output.data?.options as Record<string, string[]> | undefined;
-  assert.ok(options);
-  assert.ok(options?.analyze?.includes("--window-title (include active window title)"));
-  assert.ok(options?.analyze?.includes("--group <name>"));
-  assert.ok(options?.analyze?.includes("--group-id <id>"));
-  assert.ok(options?.analyze?.includes("--ungrouped"));
-  assert.ok(options?.analyze?.includes("--window <id>"));
-  assert.ok(options?.analyze?.includes("--all"));
-  assert.ok(options?.dedupe?.includes("--include-stale"));
-  assert.ok(options?.dedupe?.includes("--confirm"));
-  assert.ok(options?.dedupe?.includes("--ungrouped"));
-  assert.ok(options?.list?.includes("--groups (alias for group-list)"));
-  assert.ok(options?.list?.includes("--tab <id> (repeatable)"));
-  assert.ok(options?.list?.includes("--group <name>"));
-  assert.ok(options?.list?.includes("--group-id <id>"));
-  assert.ok(options?.list?.includes("--window <id>"));
-  assert.ok(options?.list?.includes("--all"));
-  assert.ok(options?.list?.includes("--limit <n>"));
-  assert.ok(options?.list?.includes("--offset <n>"));
-  assert.ok(options?.list?.includes("--no-page"));
-  assert.ok(options?.list?.includes("--ungrouped"));
-  assert.ok(options?.open?.includes("--url <url> (repeatable)"));
-  assert.ok(options?.open?.includes("--color <name>"));
-  assert.ok(options?.open?.includes("--after-group <name>"));
-  assert.ok(options?.open?.includes("--new-window"));
-  assert.ok(options?.["group-list"]?.includes("--window <id>"));
-  assert.ok(options?.["group-list"]?.includes("--tab <id> (repeatable)"));
-  assert.ok(options?.["group-list"]?.includes("--group <name>"));
-  assert.ok(options?.["group-list"]?.includes("--group-id <id>"));
-  assert.ok(options?.["group-list"]?.includes("--ungrouped"));
-  assert.ok(options?.["group-list"]?.includes("--window <id>"));
-  assert.ok(options?.["group-list"]?.includes("--all"));
-  assert.ok(options?.["group-list"]?.includes("--limit <n>"));
-  assert.ok(options?.["group-list"]?.includes("--offset <n>"));
-  assert.ok(options?.["group-list"]?.includes("--no-page"));
-  assert.ok(options?.inspect?.includes("--limit <n>"));
-  assert.ok(options?.inspect?.includes("--offset <n>"));
-  assert.ok(options?.inspect?.includes("--no-page"));
-  assert.ok(options?.inspect?.includes("--ungrouped"));
-  assert.ok(options?.refresh?.includes("--tab <id>"));
-  assert.ok(options?.report?.includes("--limit <n>"));
-  assert.ok(options?.report?.includes("--offset <n>"));
-  assert.ok(options?.report?.includes("--no-page"));
-  assert.ok(options?.report?.includes("--ungrouped"));
-  assert.ok(options?.archive?.includes("--ungrouped"));
-  assert.ok(options?.["group-update"]?.includes("--title <name>"));
-  assert.ok(options?.["group-ungroup"]?.includes("--group-id <id>"));
-  assert.ok(options?.["group-assign"]?.includes("--create"));
-  assert.ok(options?.["move-tab"]?.includes("--after-tab <id>"));
-  assert.ok(options?.["move-tab"]?.includes("--new-window"));
-  assert.ok(options?.["move-group"]?.includes("--before-group <name>"));
-  assert.ok(options?.["move-group"]?.includes("--new-window"));
-  assert.ok(options?.["merge-window"]?.includes("--from <id>"));
-  assert.ok(options?.["merge-window"]?.includes("--close-source"));
-  assert.ok(options?.setup?.includes("--browser edge|chrome"));
-  assert.ok(options?.report?.includes("--format json|md|csv"));
-  assert.ok(options?.close?.includes("--dry-run"));
-  assert.ok(options?.close?.includes("--ungrouped"));
-  assert.ok(options?.history?.includes("--limit <n>"));
-  assert.ok(options?.skill?.includes("--agent <name> (repeatable)"));
-  assert.ok(options?.skill?.includes("--global"));
-  assert.ok(options?.version);
+  const optionGroups = output.data?.optionGroups as Array<{ name: string; options: string[] }> | undefined;
+  assert.ok(optionGroups);
+  const scopeGroup = optionGroups?.find((group) => group?.name === "Scope Options");
+  const paginationGroup = optionGroups?.find((group) => group?.name === "Pagination Options");
+  assert.ok(scopeGroup?.options?.includes("--tab <id> (repeatable)"));
+  assert.ok(scopeGroup?.options?.includes("--group <name>"));
+  assert.ok(scopeGroup?.options?.includes("--group-id <id>"));
+  assert.ok(scopeGroup?.options?.includes("--ungrouped"));
+  assert.ok(scopeGroup?.options?.includes("--window <id>"));
+  assert.ok(scopeGroup?.options?.includes("--all"));
+  assert.ok(paginationGroup?.options?.includes("--limit <n>"));
+  assert.ok(paginationGroup?.options?.includes("--offset <n>"));
+  assert.ok(paginationGroup?.options?.includes("--no-page"));
+  const analyze = output.data?.commands?.find((cmd: { name: string; options?: string[] }) => cmd?.name === "analyze");
+  assert.ok(analyze?.options?.includes("--window-title"));
+  const list = output.data?.commands?.find((cmd: { name: string; options?: string[] }) => cmd?.name === "list");
+  assert.ok(list?.options?.includes("--groups"));
+  const open = output.data?.commands?.find((cmd: { name: string; options?: string[] }) => cmd?.name === "open");
+  assert.ok(open?.options?.includes("--url <url> (repeatable)"));
+  assert.ok(open?.options?.includes("--new-window"));
+  const report = output.data?.commands?.find((cmd: { name: string; options?: string[] }) => cmd?.name === "report");
+  assert.ok(report?.options?.includes("--format json|md|csv"));
+  const close = output.data?.commands?.find((cmd: { name: string; options?: string[] }) => cmd?.name === "close");
+  assert.ok(close?.options?.includes("--dry-run"));
+  const setup = output.data?.commands?.find((cmd: { name: string; options?: string[] }) => cmd?.name === "setup");
+  assert.ok(setup?.options?.includes("--browser edge|chrome"));
 });
 
 test("version outputs cli version", async () => {

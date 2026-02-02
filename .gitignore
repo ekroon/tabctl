@@ -4,6 +4,7 @@ build/
 *.log
 *.sock
 .DS_Store
+/cli/
 /cli/*.js
 /cli/lib/*.js
 /host/*.js

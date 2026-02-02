@@ -2,6 +2,53 @@
 
 This project controls a live Edge session. The testing approach must avoid touching real tabs the user cares about.
 
+## CLI Usage Rules for Agents
+
+### Scope-First Rule
+Always specify scope options **before** running any query or mutation command. This ensures predictable results and avoids accidental broad operations.
+
+**Required scoping pattern:**
+```bash
+# Good: Explicit scope
+tabctl list --window 123
+tabctl list --group "Work"
+tabctl list --tab 456 --tab 789
+tabctl close --tab 456 --confirm
+
+# Bad: No scope (defaults to all, risky for mutations)
+tabctl close --confirm  # NEVER do this
+```
+
+**Scope options (in order of specificity):**
+1. `--tab <id>` - Most specific, target individual tabs
+2. `--group <name>` or `--group-id <id>` - Target a group
+3. `--window <id>` - Target a window
+4. `--all` - Explicit "all" (only for read operations)
+
+### Required Scope Usage
+Always include an explicit scope option when running commands that accept scope (list, analyze, dedupe, inspect, report, close, archive, group-list). Use `--all` when you truly intend to target everything.
+
+### Confirmation Rule for Destructive Commands
+Destructive commands (`close`, `archive`, `dedupe --confirm`) require explicit confirmation AND explicit scope:
+
+```bash
+# Pattern: scope first, then --confirm
+tabctl close --tab 456 --confirm
+tabctl close --group "Temp" --window 123 --confirm
+tabctl archive --window 123
+
+# For dedupe, always preview first:
+tabctl dedupe --window 123           # Preview plan
+tabctl dedupe --window 123 --confirm # Execute after review
+```
+
+### Command Workflow
+1. **List first** - Use `tabctl list` with scope to see what will be affected
+2. **Verify IDs** - Confirm window/group/tab IDs before mutations
+3. **Execute with scope** - Run mutation with explicit `--tab`, `--group`, or `--window`
+4. **Check result** - Verify with `tabctl list` or `tabctl history`
+5. **Undo if needed** - Use `tabctl undo --latest` or `tabctl undo <txid>`
+
 ## Principles (read first)
 - Only mutate tabs that the test itself created.
 - Never run `archive --all` or `close --apply` in a normal browsing session.
