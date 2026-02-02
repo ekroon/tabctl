@@ -559,6 +559,15 @@ test("inspect rejects unknown signal", async () => {
   assert.match(output.error.message, /Unknown signal/);
 });
 
+test("unknown --format hints to use --json", async () => {
+  const result = await runCli(["list", "--format", "json"]);
+  assert.equal(result.status, 1);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, false);
+  assert.match(output.error.message, /Unknown option: --format/);
+  assert.match(output.error.hint, /Use --json/);
+});
+
 test("report pagination includes next hint", async () => {
   const { socketPath, server, sockets } = await startMockSocket((req) => ({
     ok: true,
@@ -1581,6 +1590,54 @@ test("undo sends undo action with txid", async () => {
   assert.equal(requests[0].action, "undo");
   const params = requests[0].params as { txid?: string } | undefined;
   assert.equal(params?.txid, "tx-123");
+});
+
+test("undo supports --txid", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { summary: { restoredTabs: 1 } },
+  }));
+
+  const result = await runCli(["undo", "--txid", "tx-555"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const params = requests[0].params as { txid?: string } | undefined;
+  assert.equal(params?.txid, "tx-555");
+});
+
+test("undo supports --latest", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { summary: { restoredTabs: 1 } },
+  }));
+
+  const result = await runCli(["undo", "--latest"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const params = requests[0].params as { latest?: boolean } | undefined;
+  assert.equal(params?.latest, true);
+});
+
+test("undo rejects --latest with txid", async () => {
+  const result = await runCli(["undo", "--latest", "tx-123"]);
+  assert.equal(result.status, 1);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, false);
+  assert.match(output.error.message, /undo --latest/);
+});
+
+test("undo rejects --latest with --txid", async () => {
+  const result = await runCli(["undo", "--latest", "--txid", "tx-123"]);
+  assert.equal(result.status, 1);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, false);
+  assert.match(output.error.message, /undo --latest/);
 });
 
 test("group-assign returns txid", async () => {

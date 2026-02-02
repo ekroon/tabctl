@@ -10,6 +10,7 @@ import {
   readUndoRecords,
   filterByRetention,
   findUndoRecord,
+  findLatestUndoRecord,
 } from "./lib/undo";
 
 const STATE_HOME = process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
@@ -318,11 +319,23 @@ function handleCliRequest(socket: net.Socket, request: Record<string, unknown>) 
 
   if (action === "undo") {
     const txid = (request.params as Record<string, unknown>)?.txid as string | undefined;
-    if (!txid) {
-      respond(socket, { ok: false, action, component: "host", version: VERSION, error: { message: "Missing txid" } });
+    const latest = (request.params as Record<string, unknown>)?.latest === true;
+    if (!txid && !latest) {
+      respond(socket, {
+        ok: false,
+        action,
+        component: "host",
+        version: VERSION,
+        error: {
+          message: "Missing txid",
+          hint: "Use tabctl history --json to find a txid, or run tabctl undo --latest",
+        },
+      });
       return;
     }
-    const record = findUndoRecord(UNDO_LOG, txid, RETENTION_DAYS);
+    const record = txid
+      ? findUndoRecord(UNDO_LOG, txid, RETENTION_DAYS)
+      : findLatestUndoRecord(UNDO_LOG, RETENTION_DAYS);
     if (!record) {
       respond(socket, { ok: false, action, component: "host", version: VERSION, error: { message: "Undo record not found" } });
       return;

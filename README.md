@@ -129,6 +129,7 @@ tabctl close --ungrouped --confirm
 tabctl report --format md --out /path/to/report.md
 tabctl report --limit 100
 tabctl undo <txid>
+tabctl undo --latest
 tabctl history --limit 20
 ```
 
@@ -194,6 +195,9 @@ Notes:
 - Use `--group-id -1` or `--ungrouped` to target ungrouped tabs.
 - `--selector` implies `--signal selector`.
 - Unknown inspect signals are rejected (valid: `page-meta`, `github-state`, `selector`).
+- `tabctl undo` accepts a positional txid, `--txid`, or `--latest`.
+- `tabctl history --json` returns a JSON array in `data`.
+- `--format` is only supported by `report` (use `--json` elsewhere).
 
 ## Runtime state
 - Socket: `$XDG_STATE_HOME/tabctl/tabctl.sock` (or `~/.local/state/tabctl/tabctl.sock`)

@@ -22,6 +22,8 @@ Use tabctl to inspect and analyze tabs safely, then perform targeted actions onl
 - Generate a report: `tabctl report --format md` (add scope flags as needed)
 - Get page metadata: `tabctl inspect --tab <id> --signal page-meta`
 - Extract links (selector auto-enabled): `tabctl inspect --tab <id> --selector '{"name":"links","selector":"a[href]","attr":"href","all":true}'`
+- Undo most recent change: `tabctl undo --latest`
+- Undo by txid: `tabctl undo <txid>` (from `tabctl history --json | jq -r '.data[] | .txid'`)
 
 ## Filter results (jq / node)
 
@@ -30,6 +32,7 @@ When you need custom filtering, pipe the JSON output to jq or node.
 - Stale candidates only (jq): `tabctl analyze --stale-days 7 | jq '.data.candidates[] | select(.reasons | any(.type == "stale")) | {tabId,title,url}'`
 - Only GitHub URLs (jq): `tabctl analyze --stale-days 7 | jq '.data.candidates[] | select(.url | test("github.com"))'`
 - Stale candidates only (node): `tabctl analyze --stale-days 7 | node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync(0,"utf8")); const stale=(data.data?.candidates||[]).filter(c=> (c.reasons||[]).some(r=>r.type==="stale")); console.log(JSON.stringify(stale,null,2));'`
+- List tabs (jq): `tabctl list --json | jq -r '.data.windows[].tabs[] | select(.url | contains("devportal")) | {tabId,title,url}'`
 
 ## Narrow scope
 

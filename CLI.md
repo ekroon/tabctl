@@ -23,6 +23,7 @@ tabctl policy --init
 ## Global flags
 - `--help`: human-readable help
 - `--json`: JSON help output (use with `tabctl help --json`)
+- `--format` is only supported by `report` (use `--json` elsewhere)
 
 ## Commands
 
@@ -38,6 +39,7 @@ List eligible tabs and groups only.
 ```bash
 tabctl list
 ```
+JSON output is nested under `data.windows[].tabs[]` when using `--json`.
 Defaults to paging with `--limit 100`.
 Options:
 - `--tab <id>` (repeatable)
@@ -283,6 +285,16 @@ Restore the last action by transaction id.
 ```bash
 tabctl undo <txid>
 ```
+Options:
+- `--txid <id>` (alias for positional)
+- `--latest` (undo most recent transaction)
+
+Examples:
+```bash
+tabctl undo tx-123
+tabctl undo --txid tx-123
+tabctl undo --latest
+```
 
 ### history
 List recent actions.
@@ -290,6 +302,12 @@ Options:
 - `--limit <n>`
 ```bash
 tabctl history --limit 20
+```
+Returns a JSON array under `data`.
+
+JSON example:
+```bash
+tabctl history --json | jq -r '.data[] | {txid, action, summary}'
 ```
 
 ### skill

@@ -105,6 +105,8 @@ function parseArgs(argv: string[]) {
     "signal-concurrency",
     "signal-timeout-ms",
     "selector",
+    "txid",
+    "latest",
     "url",
     "after-group",
     "before-group",
@@ -142,9 +144,12 @@ function parseArgs(argv: string[]) {
 
     const key = arg.slice(2);
     if (!allowedFlags.has(key)) {
+      if (key === "format") {
+        errorOut("Unknown option: --format");
+      }
       errorOut(`Unknown option: --${key}`);
     }
-    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json", "window-title", "create", "collapsed", "expanded", "new-window", "close-source", "include-stale", "groups", "global", "no-page", "ungrouped"].includes(key)) {
+    if (["all", "pretty", "confirm", "dry-run", "github", "progress", "init", "help", "json", "window-title", "create", "collapsed", "expanded", "new-window", "close-source", "include-stale", "groups", "global", "latest", "no-page", "ungrouped"].includes(key)) {
       options[key] = true;
       continue;
     }
@@ -1119,6 +1124,11 @@ function buildHelpData() {
       history: [
         "--limit <n>",
       ],
+      undo: [
+        "<txid>",
+        "--txid <id>",
+        "--latest",
+      ],
       skill: [
         "--agent <name> (repeatable)",
         "--global",
@@ -1159,6 +1169,7 @@ function printHelp(jsonOutput: boolean) {
   lines.push("");
   lines.push("Notes:");
   lines.push("  --before-group/--after-group only position tabs; use group-assign to move tabs into a group.");
+  lines.push("  undo accepts a txid as a positional arg (or --txid) and supports --latest.");
   lines.push("");
   lines.push("Policy: $XDG_CONFIG_HOME/tabctl/policy.json (or ~/.config/tabctl/policy.json)");
   lines.push("Policy is enforced when the file exists; missing file means no policy.");
@@ -1175,7 +1186,15 @@ function setupStdoutErrorHandling() {
 }
 
 function errorOut(message: string): never {
-  printJson({ ok: false, error: { message } });
+  const hints: Record<string, string> = {
+    "Unknown option: --format": "Use --json for JSON output. --format is only for report.",
+  };
+  const hint = hints[message];
+  if (hint) {
+    printJson({ ok: false, error: { message, hint } });
+  } else {
+    printJson({ ok: false, error: { message } });
+  }
   process.exit(1);
   throw new Error(message);
 }
@@ -1216,6 +1235,9 @@ async function main() {
   if (command === "list" && options.groups === true) {
     command = "group-list";
   }
+  if (options.format && command !== "report") {
+    errorOut("Unknown option: --format");
+  }
   if (Object.prototype.hasOwnProperty.call(options, "policy")) {
     errorOut("Custom policy path is not supported. Use XDG_CONFIG_HOME/tabctl/policy.json.");
   }
@@ -1234,6 +1256,21 @@ async function main() {
 
   if (command === "open" && options.color && !options.group) {
     errorOut("--color requires --group");
+  }
+
+  if (command === "undo") {
+    if (options.txid && options._.length > 0) {
+      errorOut("undo requires a single txid (use positional arg or --txid)");
+    }
+    if (options.latest === true && options._.length > 0) {
+      errorOut("undo --latest cannot be combined with a txid");
+    }
+    if (options.latest === true && options.txid) {
+      errorOut("undo --latest cannot be combined with --txid");
+    }
+    if (options.txid && options._.length === 0) {
+      options._ = [String(options.txid)];
+    }
   }
 
   if (command === "inspect") {
@@ -1570,7 +1607,7 @@ async function main() {
       break;
     case "undo":
       action = "undo";
-      params = { txid: options._[0] };
+      params = { txid: options._[0], latest: options.latest === true };
       break;
     case "history":
       action = "history";

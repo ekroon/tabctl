@@ -3,7 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import test from "node:test";
-import { appendUndoRecord, readUndoRecords, filterByRetention, findUndoRecord } from "../../host/lib/undo";
+import { appendUndoRecord, readUndoRecords, filterByRetention, findUndoRecord, findLatestUndoRecord } from "../../host/lib/undo";
 
 test("appendUndoRecord and readUndoRecords roundtrip", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-"));
@@ -42,4 +42,17 @@ test("findUndoRecord respects retention", () => {
   assert.ok(found);
   assert.equal(found?.txid, "new");
   assert.equal(missing, null);
+});
+
+test("findLatestUndoRecord returns newest", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-"));
+  const filePath = path.join(dir, "undo.jsonl");
+  const now = Date.now();
+  appendUndoRecord(filePath, { txid: "old", createdAt: now - 2 * 24 * 60 * 60 * 1000 });
+  appendUndoRecord(filePath, { txid: "new", createdAt: now - 1 * 24 * 60 * 60 * 1000 });
+
+  const found = findLatestUndoRecord(filePath, 30, now);
+
+  assert.ok(found);
+  assert.equal(found?.txid, "new");
 });

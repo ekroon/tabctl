@@ -53,3 +53,15 @@ export function findUndoRecord(
   }
   return null;
 }
+
+export function findLatestUndoRecord(
+  filePath: string,
+  retentionDays = DEFAULT_RETENTION_DAYS,
+  now = Date.now(),
+): Record<string, unknown> | null {
+  const records = filterByRetention(readUndoRecords(filePath), retentionDays, now);
+  if (!records.length) {
+    return null;
+  }
+  return records[records.length - 1] || null;
+}
