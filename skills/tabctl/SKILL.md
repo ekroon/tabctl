@@ -27,6 +27,7 @@ Use tabctl to inspect and analyze tabs safely, then perform targeted actions onl
 - Refresh a tab: `tabctl refresh --tab <id>`
 - Generate a report: `tabctl report --format md` (add scope flags as needed)
 - Get page metadata: `tabctl inspect --tab <id> --signal page-meta`
+- Get page metadata after JS loads: `tabctl inspect --tab <id> --signal page-meta --wait-for settle`
 - Extract links safely (absolute http(s) only): `tabctl inspect --tab <id> --selector '{"name":"links","selector":"a[href]","attr":"href-url","all":true}'`
 - Capture visual context when needed: `tabctl screenshot --tab <id> --mode full`
 - Undo most recent change: `tabctl undo --latest`
@@ -52,3 +53,18 @@ If scope is unclear, ask for it before running mutating commands.
 
 - Use `--json` for JSON output (list/analyze/inspect/etc.).
 - `--format` is only for `report` (e.g., `tabctl report --format md`).
+
+## Wait modes for inspect/screenshot
+
+Use `--wait-for` to control when inspection runs:
+
+- `load` – wait for page load event (may miss JS-set titles)
+- `dom` – wait for DOMContentLoaded
+- `settle` – wait for URL and title to stabilize (500ms quiet period); use for JS-heavy pages or freshly opened tabs
+- `none` – no waiting (default)
+
+Example for newly opened tabs:
+```bash
+tabctl open --url "https://example.com" --json
+tabctl inspect --tab <new_tab_id> --wait-for settle --wait-timeout-ms 10000 --json
+```

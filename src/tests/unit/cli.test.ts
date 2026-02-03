@@ -662,6 +662,31 @@ test("inspect passes wait-for options", async () => {
   assert.equal(params?.waitTimeoutMs, 9000);
 });
 
+test("inspect passes wait-for settle option", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { entries: [] },
+  }));
+
+  const result = await runCli([
+    "inspect",
+    "--tab",
+    "42",
+    "--wait-for",
+    "settle",
+    "--wait-timeout-ms",
+    "5000",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const params = requests[0].params as { waitFor?: string; waitTimeoutMs?: number } | undefined;
+  assert.equal(params?.waitFor, "settle");
+  assert.equal(params?.waitTimeoutMs, 5000);
+});
+
 test("inspect rejects invalid selector-attr", async () => {
   const result = await runCli(["inspect", "--selector", "a[href]", "--selector-attr", "blob"]); 
   assert.equal(result.status, 1);

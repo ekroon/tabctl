@@ -30,6 +30,8 @@ const SCREENSHOT_QUALITY = 80;
 const SCREENSHOT_SCROLL_DELAY_MS = 150;
 const SCREENSHOT_CAPTURE_DELAY_MS = 350;
 const SCREENSHOT_PROCESS_TIMEOUT_MS = 8000;
+const SETTLE_STABILITY_MS = 500;
+const SETTLE_POLL_INTERVAL_MS = 50;
 
 type AnyRecord = Record<string, any>;
 
@@ -607,6 +609,15 @@ async function waitForTabReady(tabId: number, params: Record<string, unknown>, f
   if (!waitFor || waitFor === "none") {
     return;
   }
+  const timeoutRaw = Number(params.waitTimeoutMs);
+  const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? Math.floor(timeoutRaw) : fallbackTimeoutMs;
+
+  // settle mode handles its own URL checking, so skip the early return
+  if (waitFor === "settle") {
+    await waitForSettle(tabId, timeoutMs);
+    return;
+  }
+
   try {
     const tab = await chrome.tabs.get(tabId);
     if (!isScriptableUrl(tab.url)) {
@@ -615,8 +626,6 @@ async function waitForTabReady(tabId: number, params: Record<string, unknown>, f
   } catch {
     return;
   }
-  const timeoutRaw = Number(params.waitTimeoutMs);
-  const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? Math.floor(timeoutRaw) : fallbackTimeoutMs;
 
   if (waitFor === "load") {
     await waitForTabLoad(tabId, timeoutMs);
@@ -680,6 +689,38 @@ async function waitForDomReady(tabId: number, timeoutMs: number) {
   if (result === null) {
     await delay(Math.min(200, Math.max(50, Math.floor(timeoutMs / 10))));
   }
+}
+
+async function waitForSettle(tabId: number, timeoutMs: number): Promise<void> {
+  const startTime = Date.now();
+  let lastUrl = "";
+  let lastTitle = "";
+  let stableStart = Date.now();
+
+  while (Date.now() - startTime < timeoutMs) {
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (!tab) return;
+
+    const currentUrl = tab.url || "";
+    const currentTitle = tab.title || "";
+
+    // Reset stability timer if URL or title changed
+    if (currentUrl !== lastUrl || currentTitle !== lastTitle) {
+      lastUrl = currentUrl;
+      lastTitle = currentTitle;
+      stableStart = Date.now();
+    } else if (
+      isScriptableUrl(currentUrl) &&
+      tab.status === "complete" &&
+      Date.now() - stableStart >= SETTLE_STABILITY_MS
+    ) {
+      // Page is loaded, URL is valid, and stable for long enough
+      return;
+    }
+
+    await delay(SETTLE_POLL_INTERVAL_MS);
+  }
+  // Timeout reached, continue anyway
 }
 
 function estimateDataUrlBytes(dataUrl: string) {
@@ -1277,6 +1318,16 @@ async function inspectTabs(params: Record<string, unknown>, requestId: string) {
     ? Math.floor(signalTimeoutRaw)
     : 4000;
   const progressEnabled = params.progress === true;
+
+  // For settle mode with specific tab IDs, wait BEFORE taking snapshot
+  // This ensures the tab URL is available for isScriptableUrl() checks
+  const waitFor = typeof params.waitFor === "string" ? params.waitFor.trim().toLowerCase() : "";
+  if (waitFor === "settle" && Array.isArray(params.tabIds) && params.tabIds.length > 0) {
+    const waitTimeoutRaw = Number(params.waitTimeoutMs);
+    const waitTimeoutMs = Number.isFinite(waitTimeoutRaw) && waitTimeoutRaw > 0 ? Math.floor(waitTimeoutRaw) : signalTimeoutMs;
+    const tabIds = (params.tabIds as number[]).map(Number).filter(Number.isFinite);
+    await Promise.all(tabIds.map((id) => waitForSettle(id, waitTimeoutMs)));
+  }
 
   const snapshot = await getTabSnapshot();
   const selection = selectTabsByScope(snapshot, params) as { tabs: Array<Record<string, unknown>>; error?: Record<string, unknown> };

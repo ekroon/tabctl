@@ -117,9 +117,15 @@ Additional options:
 - `--selector-attr <attr>` (default attr for selectors)
 - `--signal-concurrency <n>`
 - `--signal-timeout-ms <ms>`
-- `--wait-for load|dom|none`
+- `--wait-for load|dom|settle|none`
 - `--wait-timeout-ms <ms>`
 - `--progress`
+
+Wait modes:
+- `load` – wait for page load event
+- `dom` – wait for DOMContentLoaded
+- `settle` – wait for URL and title to stabilize (500ms after load); recommended for JS-heavy pages
+- `none` – no waiting
 
 Signals:
 - `page-meta` (description + h1)
@@ -149,7 +155,7 @@ Additional options:
 - `--quality <n>` (jpeg only)
 - `--tile-max-dim <px>` (full mode only)
 - `--max-bytes <n>`
-- `--wait-for load|dom|none`
+- `--wait-for load|dom|settle|none`
 - `--wait-timeout-ms <ms>`
 - `--out <dir>` (writes per-tab folders)
 - `--progress`

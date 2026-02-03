@@ -329,6 +329,8 @@ export function buildScreenshotParams(options: Options): Record<string, unknown>
   };
 }
 
+const VALID_WAIT_FOR = ["load", "dom", "settle", "none"];
+
 function parseWaitFor(value: unknown): string | undefined {
   if (value == null) {
     return undefined;
@@ -337,8 +339,8 @@ function parseWaitFor(value: unknown): string | undefined {
   if (!normalized) {
     return undefined;
   }
-  if (normalized !== "load" && normalized !== "dom" && normalized !== "none") {
-    errorOut("Invalid --wait-for value (use load|dom|none)");
+  if (!VALID_WAIT_FOR.includes(normalized)) {
+    errorOut(`Invalid --wait-for value (use ${VALID_WAIT_FOR.join("|")})`);
   }
   return normalized;
 }
