@@ -13,25 +13,22 @@ Use tabctl to inspect and analyze tabs safely, then perform targeted actions onl
 - Never run `archive --all` or `close --apply` in a normal session.
 - Only mutate explicit targets (`--tab`, `--group`, `--window`) and use `--confirm` for close.
 - Respect policy: protected tabs are excluded.
-- For selector-based extraction, capture a screenshot first.
+- Use screenshots only when you need visual context.
+
+## Discover commands
+
+- Use `tabctl help` (or `tabctl help --json`) to discover commands and flags.
+- For specific commands, use `tabctl <command> --help`.
 
 ## Common tasks
 
-- "Which tabs I didn't look at for a week?": run `tabctl analyze --stale-days 7` and report candidates with a `stale` reason.
-- List tabs in a window: `tabctl list --window <id>`
+- List tabs in a window: `tabctl list --window <id|active|last-focused>`
 - List ungrouped tabs: `tabctl list --ungrouped`
 - Refresh a tab: `tabctl refresh --tab <id>`
 - Generate a report: `tabctl report --format md` (add scope flags as needed)
 - Get page metadata: `tabctl inspect --tab <id> --signal page-meta`
 - Extract links safely (absolute http(s) only): `tabctl inspect --tab <id> --selector '{"name":"links","selector":"a[href]","attr":"href-url","all":true}'`
-- Capture visual context: `tabctl screenshot --tab <id> --mode full --out /tmp/tabctl-shots`
-- Use screenshot -> selector flow: capture, identify element, then `tabctl inspect --tab <id> --signal selector --selector '{"name":"target","selector":".your-selector"}'`
-
-Example (Wikipedia -> main logo link):
-```bash
-tabctl screenshot --tab <id> --mode viewport --out /tmp/tabctl-shots
-tabctl inspect --tab <id> --signal selector --selector "logo=a.mw-wiki-logo" --selector-attr href-url
-```
+- Capture visual context when needed: `tabctl screenshot --tab <id> --mode full`
 - Undo most recent change: `tabctl undo --latest`
 - Undo by txid: `tabctl undo <txid>` (from `tabctl history --json | jq -r '.data[] | .txid'`)
 

@@ -17,7 +17,7 @@ export type ScopeFlags = {
   tabIds: number[];
   groupTitle: string;
   groupId: number | null;
-  windowId: number | null;
+  windowId: number | string | null;
   hasScope: boolean;
   ungrouped: boolean;
 };
@@ -29,7 +29,7 @@ export type ScopeParams = {
   tabIds?: number[];
   groupTitle?: string;
   groupId?: number;
-  windowId?: number;
+  windowId?: number | string;
   all?: boolean;
 };
 

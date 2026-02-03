@@ -5,7 +5,7 @@
 import { VERSION, BASE_VERSION, GIT_SHA, DIRTY } from "../constants";
 import { printJson, errorOut, emitVersionWarnings } from "../output";
 import { sendRequest, createRequestId, fetchSnapshot } from "../client";
-import { resolveScopeFlags, buildScopeArgs, selectTabsFromSnapshot, filterGroupsByScope } from "../scope";
+import { resolveScopeFlags, buildScopeArgs, selectTabsFromSnapshot, filterGroupsByScope, resolveWindowIdFromSnapshot } from "../scope";
 import { resolvePagination } from "../pagination";
 import {
   filterSnapshotByPolicy,
@@ -49,6 +49,10 @@ export async function runList(
   if (data && Array.isArray(data.windows)) {
     const filtered = filterSnapshotByPolicy(data, policyContext.policy) as Record<string, unknown>;
     const scope = resolveScopeFlags(options);
+    if (typeof scope.windowId === "string") {
+      const resolvedWindowId = resolveWindowIdFromSnapshot(filtered, scope.windowId);
+      scope.windowId = resolvedWindowId ?? null;
+    }
     const allScope = options.all === true || !scope.hasScope;
     const listParams: Record<string, unknown> = allScope
       ? { all: true }
@@ -58,6 +62,10 @@ export async function runList(
           groupId: scope.groupId != null ? scope.groupId : undefined,
           windowId: scope.windowId != null ? scope.windowId : undefined,
         };
+    if (typeof listParams.windowId === "string") {
+      const resolvedWindowId = resolveWindowIdFromSnapshot(filtered, listParams.windowId);
+      listParams.windowId = resolvedWindowId ?? undefined;
+    }
     const selection = selectTabsFromSnapshot(filtered, listParams);
     if (selection.error) {
       printJson({ ok: false, error: selection.error }, prettyOutput);
@@ -102,7 +110,7 @@ export async function runGroupList(
   prettyOutput: boolean
 ): Promise<void> {
   const params: Record<string, unknown> = {
-    windowId: options.all ? undefined : (options.window ? Number(options.window) : undefined),
+    windowId: options.all ? undefined : options.window,
   };
 
   const response = await sendRequest({
@@ -130,8 +138,12 @@ export async function runGroupList(
     const scope = resolveScopeFlags(options);
     const snapshot = await fetchSnapshot();
     if (snapshot) {
-      const filteredSnapshot = filterSnapshotByPolicy(snapshot, policyContext.policy) as Record<string, unknown>;
-      const scopeWindow = Number.isFinite(scope.windowId) ? scope.windowId : null;
+    const filteredSnapshot = filterSnapshotByPolicy(snapshot, policyContext.policy) as Record<string, unknown>;
+    if (typeof scope.windowId === "string") {
+      const resolvedWindowId = resolveWindowIdFromSnapshot(filteredSnapshot, scope.windowId);
+      scope.windowId = resolvedWindowId ?? null;
+    }
+      const scopeWindow = typeof scope.windowId === "number" && Number.isFinite(scope.windowId) ? scope.windowId : null;
       const groups = buildGroupsFromSnapshot(filteredSnapshot, scopeWindow);
       data.groups = filterGroupsByScope(groups, scope, filteredSnapshot, buildTabIndex);
     } else {

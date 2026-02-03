@@ -16,6 +16,7 @@ export function buildAnalyzeParams(options: Options): Record<string, unknown> {
   if (options.ungrouped && options["group-id"]) {
     errorOut("--ungrouped cannot be combined with --group-id");
   }
+  const windowValue = parseWindowScope(options.window, { allowNew: false });
 
   return {
     staleDays: options["stale-days"] ? Number(options["stale-days"]) : undefined,
@@ -23,7 +24,7 @@ export function buildAnalyzeParams(options: Options): Record<string, unknown> {
     tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
     groupTitle: options.group,
     groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
-    windowId: options.window ? Number(options.window) : undefined,
+    windowId: windowValue,
     all: options.all === true,
     githubConcurrency: options["github-concurrency"] ? Number(options["github-concurrency"]) : undefined,
     githubTimeoutMs: options["github-timeout-ms"] ? Number(options["github-timeout-ms"]) : undefined,
@@ -39,6 +40,7 @@ export function buildInspectParams(options: Options): Record<string, unknown> {
   if (options.ungrouped && options["group-id"]) {
     errorOut("--ungrouped cannot be combined with --group-id");
   }
+  const windowValue = parseWindowScope(options.window, { allowNew: false });
 
   const selectorAttr = options["selector-attr"] ? String(options["selector-attr"]).trim() : "";
   const allowedSelectorAttrs = new Set(["text", "href", "src", "href-url", "src-url"]);
@@ -53,6 +55,9 @@ export function buildInspectParams(options: Options): Record<string, unknown> {
       if (trimmed.startsWith("{")) {
         try {
           const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+          if (parsed && typeof parsed.selector === "string" && parsed.selector.includes(":contains(")) {
+            errorOut("Selector :contains() is not supported; use text filters instead.");
+          }
           if (selectorAttr && parsed && typeof parsed === "object" && !Object.prototype.hasOwnProperty.call(parsed, "attr")) {
             return { ...parsed, attr: selectorAttr };
           }
@@ -60,6 +65,9 @@ export function buildInspectParams(options: Options): Record<string, unknown> {
         } catch {
           errorOut(`Invalid selector JSON: ${trimmed}`);
         }
+      }
+      if (trimmed.includes(":contains(")) {
+        errorOut("Selector :contains() is not supported; use text filters instead.");
       }
       if (trimmed.includes("=")) {
         const [name, selector] = trimmed.split(/=(.+)/);
@@ -81,7 +89,7 @@ export function buildInspectParams(options: Options): Record<string, unknown> {
 
   return {
     all: Boolean(options.all),
-    windowId: options.window ? Number(options.window) : undefined,
+    windowId: windowValue,
     groupTitle: options.group,
     groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
     tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
@@ -90,6 +98,8 @@ export function buildInspectParams(options: Options): Record<string, unknown> {
     signalConfig,
     signalConcurrency: options["signal-concurrency"] ? Number(options["signal-concurrency"]) : undefined,
     signalTimeoutMs: options["signal-timeout-ms"] ? Number(options["signal-timeout-ms"]) : undefined,
+    waitFor: parseWaitFor(options["wait-for"]),
+    waitTimeoutMs: parseWaitTimeout(options["wait-timeout-ms"]),
     progress: Boolean(options.progress),
   };
 }
@@ -117,13 +127,27 @@ export function buildRefreshParams(options: Options): Record<string, unknown> {
 // ============================================================================
 
 export function buildOpenParams(options: Options): Record<string, unknown> {
+  const windowValue = parseWindowScope(options.window, { allowNew: true });
+  const openNewWindow = options["new-window"] === true || windowValue === "new";
+  if (options["before-tab"] != null && !Number.isFinite(Number(options["before-tab"]))) {
+    errorOut("Invalid --before-tab value");
+  }
+  if (options["after-tab"] != null && !Number.isFinite(Number(options["after-tab"]))) {
+    errorOut("Invalid --after-tab value");
+  }
+  if (options["before-tab"] != null && options["after-tab"] != null) {
+    errorOut("Only one target position is allowed");
+  }
+
   return {
     urls: options.url ? (options.url as string[]).map(String) : undefined,
     groupTitle: options.group,
     color: normalizeGroupColor(options.color),
     afterGroupTitle: options["after-group"],
-    windowId: options.window ? Number(options.window) : undefined,
-    newWindow: options["new-window"] === true,
+    beforeTabId: options["before-tab"] ? Number(options["before-tab"]) : undefined,
+    afterTabId: options["after-tab"] ? Number(options["after-tab"]) : undefined,
+    windowId: windowValue === "new" ? undefined : windowValue,
+    newWindow: openNewWindow,
     windowGroupTitle: options["window-group"],
     windowTabId: options["window-tab"] ? Number(options["window-tab"]) : undefined,
     windowUrl: options["window-url"],
@@ -135,10 +159,11 @@ export function buildOpenParams(options: Options): Record<string, unknown> {
 // ============================================================================
 
 export function buildGroupUpdateParams(options: Options): Record<string, unknown> {
+  const windowValue = parseWindowScope(options.window, { allowNew: false });
   return {
     groupTitle: options.group,
     groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
-    windowId: options.window ? Number(options.window) : undefined,
+    windowId: windowValue,
     title: options.title,
     color: options.color,
     collapsed: options.collapsed === true ? true : options.expanded === true ? false : undefined,
@@ -146,19 +171,21 @@ export function buildGroupUpdateParams(options: Options): Record<string, unknown
 }
 
 export function buildGroupUngroupParams(options: Options): Record<string, unknown> {
+  const windowValue = parseWindowScope(options.window, { allowNew: false });
   return {
     groupTitle: options.group,
     groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
-    windowId: options.window ? Number(options.window) : undefined,
+    windowId: windowValue,
   };
 }
 
 export function buildGroupAssignParams(options: Options): Record<string, unknown> {
+  const windowValue = parseWindowScope(options.window, { allowNew: false });
   return {
     tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
     groupTitle: options.group,
     groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
-    windowId: options.window ? Number(options.window) : undefined,
+    windowId: windowValue,
     create: Boolean(options.create),
     color: options.color,
     collapsed: options.collapsed === true ? true : options.expanded === true ? false : undefined,
@@ -170,6 +197,7 @@ export function buildGroupAssignParams(options: Options): Record<string, unknown
 // ============================================================================
 
 export function buildMoveTabParams(options: Options): Record<string, unknown> {
+  const windowValue = parseWindowScope(options.window, { allowNew: false });
   return {
     tabId: options.tab ? Number((options.tab as string[])[0]) : undefined,
     tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
@@ -177,12 +205,13 @@ export function buildMoveTabParams(options: Options): Record<string, unknown> {
     afterTabId: options["after-tab"] ? Number(options["after-tab"]) : undefined,
     beforeGroupTitle: options["before-group"],
     afterGroupTitle: options["after-group"],
-    windowId: options.window ? Number(options.window) : undefined,
+    windowId: windowValue,
     newWindow: options["new-window"] === true,
   };
 }
 
 export function buildMoveGroupParams(options: Options): Record<string, unknown> {
+  const windowValue = parseWindowScope(options.window, { allowNew: false });
   return {
     groupTitle: options.group,
     groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
@@ -190,7 +219,7 @@ export function buildMoveGroupParams(options: Options): Record<string, unknown> 
     afterTabId: options["after-tab"] ? Number(options["after-tab"]) : undefined,
     beforeGroupTitle: options["before-group"],
     afterGroupTitle: options["after-group"],
-    windowId: options.window ? Number(options.window) : undefined,
+    windowId: windowValue,
     newWindow: options["new-window"] === true,
   };
 }
@@ -213,10 +242,11 @@ export function buildArchiveParams(options: Options): Record<string, unknown> {
   if (options.ungrouped && options["group-id"]) {
     errorOut("--ungrouped cannot be combined with --group-id");
   }
+  const windowValue = parseWindowScope(options.window, { allowNew: false });
 
   return {
     all: Boolean(options.all),
-    windowId: options.window ? Number(options.window) : undefined,
+    windowId: windowValue,
     groupTitle: options.group,
     groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
     tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
@@ -227,6 +257,7 @@ export function buildCloseParams(options: Options): Record<string, unknown> {
   if (options.ungrouped && options["group-id"]) {
     errorOut("--ungrouped cannot be combined with --group-id");
   }
+  const windowValue = parseWindowScope(options.window, { allowNew: false });
 
   if (options.apply) {
     return { mode: "apply", analysisId: options.apply };
@@ -239,7 +270,7 @@ export function buildCloseParams(options: Options): Record<string, unknown> {
   return {
     mode: "direct",
     confirmed: true,
-    windowId: options.window ? Number(options.window) : undefined,
+    windowId: windowValue,
     groupTitle: options.group,
     groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
     tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
@@ -254,10 +285,11 @@ export function buildReportParams(options: Options): Record<string, unknown> {
   if (options.ungrouped && options["group-id"]) {
     errorOut("--ungrouped cannot be combined with --group-id");
   }
+  const windowValue = parseWindowScope(options.window, { allowNew: false });
 
   return {
     all: Boolean(options.all),
-    windowId: options.window ? Number(options.window) : undefined,
+    windowId: windowValue,
     groupTitle: options.group,
     groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
     tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
@@ -272,6 +304,7 @@ export function buildScreenshotParams(options: Options): Record<string, unknown>
   if (options.ungrouped && options["group-id"]) {
     errorOut("--ungrouped cannot be combined with --group-id");
   }
+  const windowValue = parseWindowScope(options.window, { allowNew: false });
 
   const outDir = options.out != null ? String(options.out).trim() : "";
   if (options.out && !outDir) {
@@ -280,7 +313,7 @@ export function buildScreenshotParams(options: Options): Record<string, unknown>
 
   return {
     all: Boolean(options.all),
-    windowId: options.window ? Number(options.window) : undefined,
+    windowId: windowValue,
     groupTitle: options.group,
     groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
     tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
@@ -289,9 +322,65 @@ export function buildScreenshotParams(options: Options): Record<string, unknown>
     quality: options.quality != null ? Number(options.quality) : undefined,
     tileMaxDim: options["tile-max-dim"] != null ? Number(options["tile-max-dim"]) : undefined,
     maxBytes: options["max-bytes"] != null ? Number(options["max-bytes"]) : undefined,
+    waitFor: parseWaitFor(options["wait-for"]),
+    waitTimeoutMs: parseWaitTimeout(options["wait-timeout-ms"]),
     outDir: outDir || undefined,
     progress: Boolean(options.progress),
   };
+}
+
+function parseWaitFor(value: unknown): string | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized !== "load" && normalized !== "dom" && normalized !== "none") {
+    errorOut("Invalid --wait-for value (use load|dom|none)");
+  }
+  return normalized;
+}
+
+function parseWaitTimeout(value: unknown): number | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    errorOut("Invalid --wait-timeout-ms value");
+  }
+  return Math.floor(parsed);
+}
+
+function parseWindowScope(
+  value: unknown,
+  { allowNew }: { allowNew: boolean }
+): number | string | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim().toLowerCase();
+    if (!trimmed) {
+      return undefined;
+    }
+    if (trimmed === "active" || trimmed === "last-focused") {
+      return trimmed;
+    }
+    if (trimmed === "new") {
+      if (!allowNew) {
+        errorOut("--window new is only supported by open");
+      }
+      return trimmed;
+    }
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    errorOut("Invalid --window value");
+  }
+  return numeric;
 }
 
 // ============================================================================

@@ -242,6 +242,44 @@ function isScriptableUrl(url: unknown) {
   return typeof url === "string" && (url.startsWith("http://") || url.startsWith("https://"));
 }
 
+function getMostRecentFocusedWindowId(windows: WindowSnapshot[]) {
+  let bestWindowId: number | null = null;
+  let bestFocusedAt = -Infinity;
+  for (const win of windows) {
+    for (const tab of win.tabs) {
+      const focusedAt = Number(tab.lastFocusedAt);
+      if (!Number.isFinite(focusedAt)) {
+        continue;
+      }
+      if (focusedAt > bestFocusedAt) {
+        bestFocusedAt = focusedAt;
+        bestWindowId = win.windowId;
+      }
+    }
+  }
+  return bestWindowId;
+}
+
+function resolveWindowIdFromParams(snapshot: { windows: Array<Record<string, unknown>> }, value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "active") {
+      const focused = (snapshot.windows as WindowSnapshot[]).find((win) => win.focused);
+      return focused ? focused.windowId : null;
+    }
+    if (normalized === "last-focused") {
+      return getMostRecentFocusedWindowId(snapshot.windows as WindowSnapshot[]);
+    }
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function normalizeUrl(rawUrl: unknown) {
   if (!rawUrl || typeof rawUrl !== "string") {
     return null;
@@ -455,6 +493,7 @@ async function extractSelectorSignal(tabId: number, specs: Array<Record<string, 
     const values: Record<string, unknown> = {};
     const missing: string[] = [];
     const errors: Record<string, string> = {};
+    const hints: Record<string, string> = {};
 
     for (const raw of rawSpecs) {
       const selector = typeof raw.selector === "string" ? raw.selector : "";
@@ -462,13 +501,48 @@ async function extractSelectorSignal(tabId: number, specs: Array<Record<string, 
         continue;
       }
       const name = typeof raw.name === "string" && raw.name ? raw.name : selector;
-        const attr = typeof raw.attr === "string" ? raw.attr : "text";
+      const attr = typeof raw.attr === "string" ? raw.attr : "text";
       const all = Boolean(raw.all);
+      const text = typeof raw.text === "string" ? raw.text.trim() : "";
+      const textMode = typeof raw.textMode === "string" ? raw.textMode.trim().toLowerCase() : "";
+      const normalizedTextMode = textMode === "includes" ? "contains" : textMode;
+      const textModes = new Set(["", "contains", "exact", "starts-with"]);
+      if (!textModes.has(normalizedTextMode)) {
+        errors[name] = `Unsupported textMode: ${textMode || "unknown"}`;
+        hints[name] = "Use textMode: contains | exact | starts-with";
+        continue;
+      }
 
       try {
         const elements = Array.from(document.querySelectorAll(selector));
         if (!elements.length) {
           missing.push(name);
+          if (selector.includes(":contains(")) {
+            hints[name] = "CSS :contains() is not supported; use selector text filters or a different selector.";
+          } else {
+            hints[name] = "No matches found; capture a screenshot for context or adjust the selector.";
+          }
+          continue;
+        }
+
+        const matchesText = (el: Element) => {
+          if (!text) {
+            return true;
+          }
+          const content = (el.textContent || "").replace(/\s+/g, " ").trim();
+          if (normalizedTextMode === "exact") {
+            return content === text;
+          }
+          if (normalizedTextMode === "starts-with") {
+            return content.startsWith(text);
+          }
+          return content.includes(text);
+        };
+
+        const filtered = text ? elements.filter(matchesText) : elements;
+        if (!filtered.length) {
+          missing.push(name);
+          hints[name] = "Selector matched elements, but none matched the text filter; capture a screenshot for context or adjust text/textMode.";
           continue;
         }
 
@@ -499,17 +573,22 @@ async function extractSelectorSignal(tabId: number, specs: Array<Record<string, 
         };
 
         if (all) {
-          values[name] = elements.map(getValue).filter((val) => val.length > 0);
+          values[name] = filtered.map(getValue).filter((val) => val.length > 0);
         } else {
-          values[name] = getValue(elements[0]);
+          values[name] = getValue(filtered[0]);
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : "selector_error";
         errors[name] = message;
+        if (selector.includes(":contains(")) {
+          hints[name] = "CSS :contains() is not supported; use selector text filters or a different selector.";
+        } else {
+          hints[name] = "Selector failed to evaluate; capture a screenshot for context or adjust the selector.";
+        }
       }
     }
 
-    return { values, missing, errors };
+    return { values, missing, errors, hints };
   }, [specs, SELECTOR_VALUE_MAX_LENGTH]);
 
   if (!result || typeof result !== "object") {
@@ -521,6 +600,86 @@ async function extractSelectorSignal(tabId: number, specs: Array<Record<string, 
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForTabReady(tabId: number, params: Record<string, unknown>, fallbackTimeoutMs: number) {
+  const waitFor = typeof params.waitFor === "string" ? params.waitFor.trim().toLowerCase() : "";
+  if (!waitFor || waitFor === "none") {
+    return;
+  }
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!isScriptableUrl(tab.url)) {
+      return;
+    }
+  } catch {
+    return;
+  }
+  const timeoutRaw = Number(params.waitTimeoutMs);
+  const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? Math.floor(timeoutRaw) : fallbackTimeoutMs;
+
+  if (waitFor === "load") {
+    await waitForTabLoad(tabId, timeoutMs);
+    return;
+  }
+
+  if (waitFor === "dom") {
+    await waitForDomReady(tabId, timeoutMs);
+  }
+}
+
+function waitForTabLoad(tabId: number, timeoutMs: number) {
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      resolve();
+    };
+
+    const onUpdated = (updatedTabId: number, info: chrome.tabs.TabChangeInfo) => {
+      if (updatedTabId === tabId && info.status === "complete") {
+        done();
+      }
+    };
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.get(tabId).then((tab) => {
+      if (tab.status === "complete") {
+        done();
+      }
+    }).catch(() => {
+      done();
+    });
+
+    setTimeout(done, timeoutMs);
+  });
+}
+
+async function waitForDomReady(tabId: number, timeoutMs: number) {
+  const result = await executeWithTimeout(tabId, timeoutMs, () => {
+    if (document.readyState === "interactive" || document.readyState === "complete") {
+      return true;
+    }
+    return new Promise<boolean>((resolve) => {
+      const onReady = () => {
+        document.removeEventListener("DOMContentLoaded", onReady);
+        resolve(true);
+      };
+      document.addEventListener("DOMContentLoaded", onReady, { once: true });
+      setTimeout(() => {
+        document.removeEventListener("DOMContentLoaded", onReady);
+        resolve(false);
+      }, Math.max(0, timeoutMs - 50));
+    });
+  });
+
+  if (result === null) {
+    await delay(Math.min(200, Math.max(50, Math.floor(timeoutMs / 10))));
+  }
 }
 
 function estimateDataUrlBytes(dataUrl: string) {
@@ -916,6 +1075,7 @@ async function screenshotTabs(params: Record<string, unknown>, requestId: string
       }
 
       try {
+        await waitForTabReady(tabId, params, SCREENSHOT_PROCESS_TIMEOUT_MS);
         tiles = await captureTabTiles(tab, { mode, format, quality, tileMaxDim: adjustedTileMaxDim, maxBytes: adjustedMaxBytes });
       } finally {
         if (activeTabId && activeTabId !== tabId) {
@@ -1152,6 +1312,15 @@ async function inspectTabs(params: Record<string, unknown>, requestId: string) {
       selector: spec.selector,
       attr: typeof spec.attr === "string" ? spec.attr : "text",
       all: Boolean(spec.all),
+      text: typeof spec.text === "string" && spec.text.trim() ? spec.text.trim() : undefined,
+      textMode: typeof spec.textMode === "string" ? spec.textMode.trim().toLowerCase() : undefined,
+    }));
+
+  const selectorWarnings = normalizedSelectors
+    .filter((spec) => typeof spec.selector === "string" && spec.selector.includes(":contains("))
+    .map((spec) => ({
+      name: spec.name || spec.selector,
+      hint: "CSS :contains() is not supported; use selector text filters or a different selector.",
     }));
 
   const signalDefs: Array<{ id: string; match: (tab: Record<string, unknown>) => boolean; run: (tabId: number) => Promise<unknown> }> = [];
@@ -1210,6 +1379,7 @@ async function inspectTabs(params: Record<string, unknown>, requestId: string) {
       let error: string | null = null;
       const started = Date.now();
       try {
+        await waitForTabReady(tabId, params, signalTimeoutMs);
         result = await task.signal.run(tabId);
       } catch (err) {
         const message = err instanceof Error ? err.message : "signal_error";
@@ -1261,6 +1431,7 @@ async function inspectTabs(params: Record<string, unknown>, requestId: string) {
       durationMs: Date.now() - startedAt,
       signalTimeoutMs,
       selectorCount: normalizedSelectors.length,
+      selectorWarnings: selectorWarnings.length > 0 ? selectorWarnings : undefined,
     },
     entries,
   };
@@ -1326,6 +1497,26 @@ function resolveOpenWindow(snapshot: { windows: Array<Record<string, unknown>> }
   }
 
   if (params.windowId != null) {
+    if (typeof params.windowId === "string") {
+      const normalized = params.windowId.trim().toLowerCase();
+      if (normalized === "active") {
+        const focused = windows.find((win) => win.focused);
+        if (focused) {
+          return { windowId: focused.windowId };
+        }
+        return { error: { message: "Active window not found" } };
+      }
+      if (normalized === "last-focused") {
+        const lastFocused = getMostRecentFocusedWindowId(windows);
+        if (lastFocused != null) {
+          return { windowId: lastFocused };
+        }
+        return { error: { message: "Last focused window not found" } };
+      }
+      if (normalized === "new") {
+        return { error: { message: "--window new is only supported by open" } };
+      }
+    }
     const windowId = Number(params.windowId);
     const found = windows.find((win) => win.windowId === windowId);
     if (!found) {
@@ -1383,6 +1574,11 @@ function resolveOpenWindow(snapshot: { windows: Array<Record<string, unknown>> }
     return { windowId: windows[0].windowId };
   }
 
+  const lastFocused = getMostRecentFocusedWindowId(windows);
+  if (lastFocused != null) {
+    return { windowId: lastFocused };
+  }
+
   return { error: { message: "Multiple windows available. Provide --window to target one." } };
 }
 
@@ -1393,14 +1589,19 @@ async function openTabs(params: Record<string, unknown>) {
   const groupTitle = typeof params.groupTitle === "string" ? params.groupTitle.trim() : "";
   const groupColor = typeof params.color === "string" ? params.color.trim() : "";
   const afterGroupTitle = typeof params.afterGroupTitle === "string" ? params.afterGroupTitle.trim() : "";
+  const beforeTabId = Number.isFinite(params.beforeTabId as number) ? Number(params.beforeTabId) : null;
+  const afterTabId = Number.isFinite(params.afterTabId as number) ? Number(params.afterTabId) : null;
+  if (beforeTabId != null && afterTabId != null) {
+    throw new Error("Only one target position is allowed");
+  }
   const newWindow = params.newWindow === true;
   if (!urls.length && !newWindow) {
     throw new Error("No URLs provided");
   }
 
   if (newWindow) {
-    if (afterGroupTitle) {
-      throw new Error("Cannot use --after-group with --new-window");
+    if (afterGroupTitle || beforeTabId || afterTabId) {
+      throw new Error("Cannot use --before/--after with --new-window");
     }
     if (params.windowId != null || params.windowGroupTitle || params.windowTabId != null || params.windowUrl) {
       throw new Error("Cannot combine --new-window with window selectors");
@@ -1486,7 +1687,16 @@ async function openTabs(params: Record<string, unknown>) {
   }
 
   const snapshot = await getTabSnapshot();
-  const selection = resolveOpenWindow(snapshot, params);
+  let openParams = params;
+  if (params.windowId == null && (beforeTabId != null || afterTabId != null)) {
+    const anchorId = beforeTabId != null ? beforeTabId : (afterTabId as number);
+    const anchorWindow = (snapshot.windows as WindowSnapshot[])
+      .find((win) => win.tabs.some((tab) => tab.tabId === anchorId));
+    if (anchorWindow) {
+      openParams = { ...params, windowId: anchorWindow.windowId };
+    }
+  }
+  const selection = resolveOpenWindow(snapshot, openParams);
   if ((selection as { error?: Record<string, unknown> }).error) {
     throw (selection as { error: Record<string, unknown> }).error;
   }
@@ -1516,6 +1726,22 @@ async function openTabs(params: Record<string, unknown>) {
       throw new Error("Group tabs missing indices");
     }
     insertIndex = Math.max(...indices) + 1;
+  }
+
+  if (beforeTabId != null || afterTabId != null) {
+    if (afterGroupTitle) {
+      throw new Error("Only one target position is allowed");
+    }
+    const anchorId = beforeTabId != null ? beforeTabId : afterTabId as number;
+    const anchorTab = windowSnapshot.tabs.find((tab) => tab.tabId === anchorId);
+    if (!anchorTab) {
+      throw new Error("Anchor tab not found in target window");
+    }
+    const anchorIndex = normalizeTabIndex(anchorTab.index);
+    if (!Number.isFinite(anchorIndex)) {
+      throw new Error("Anchor tab index unavailable");
+    }
+    insertIndex = beforeTabId != null ? anchorIndex : anchorIndex + 1;
   }
 
   let nextIndex = insertIndex;
@@ -1855,7 +2081,13 @@ async function moveTab(params: Record<string, unknown>) {
     };
   }
 
-  const target = resolveMoveTarget(snapshot, params);
+  let normalizedParams = params;
+  if (params.windowId != null) {
+    const resolvedWindowId = resolveWindowIdFromParams(snapshot, params.windowId);
+    normalizedParams = { ...params, windowId: resolvedWindowId ?? undefined };
+  }
+
+  const target = resolveMoveTarget(snapshot, normalizedParams);
   if ((target as { error?: Record<string, unknown> }).error) {
     throw (target as { error: Record<string, unknown> }).error;
   }
@@ -1901,9 +2133,11 @@ async function moveGroup(params: Record<string, unknown>) {
   }
 
   const snapshot = await getTabSnapshot();
+  const windowIdParam = params.windowId != null ? resolveWindowIdFromParams(snapshot, params.windowId) ?? undefined : undefined;
+
   const resolvedGroup = groupId != null
     ? resolveGroupById(snapshot, groupId)
-    : resolveGroupByTitle(snapshot, groupTitle, Number.isFinite(params.windowId as number) ? Number(params.windowId) : undefined);
+    : resolveGroupByTitle(snapshot, groupTitle, windowIdParam);
   if ((resolvedGroup as { error?: Record<string, unknown> }).error) {
     throw (resolvedGroup as { error: Record<string, unknown> }).error;
   }
@@ -2244,7 +2478,7 @@ async function listGroups(params: Record<string, unknown>) {
   const snapshot = await getTabSnapshot();
   const windows = snapshot.windows as WindowSnapshot[];
   const windowLabels = buildWindowLabels(snapshot as { windows: Array<{ windowId: number }> });
-  const windowIdParam = Number.isFinite(params.windowId as number) ? Number(params.windowId) : null;
+  const windowIdParam = params.windowId != null ? resolveWindowIdFromParams(snapshot, params.windowId) : null;
   if (windowIdParam && !windows.some((win) => win.windowId === windowIdParam)) {
     throw new Error("Window not found");
   }
@@ -2287,7 +2521,7 @@ async function groupUpdate(params: Record<string, unknown>) {
 
   const snapshot = await getTabSnapshot();
   const windows = snapshot.windows as WindowSnapshot[];
-  const windowIdParam = Number.isFinite(params.windowId as number) ? Number(params.windowId) : null;
+  const windowIdParam = params.windowId != null ? resolveWindowIdFromParams(snapshot, params.windowId) : null;
   if (windowIdParam && !windows.some((win) => win.windowId === windowIdParam)) {
     throw new Error("Window not found");
   }
@@ -2354,7 +2588,7 @@ async function groupUngroup(params: Record<string, unknown>) {
 
   const snapshot = await getTabSnapshot();
   const windows = snapshot.windows as WindowSnapshot[];
-  const windowIdParam = Number.isFinite(params.windowId as number) ? Number(params.windowId) : null;
+  const windowIdParam = params.windowId != null ? resolveWindowIdFromParams(snapshot, params.windowId) : null;
   if (windowIdParam && !windows.some((win) => win.windowId === windowIdParam)) {
     throw new Error("Window not found");
   }
@@ -2431,7 +2665,7 @@ async function groupAssign(params: Record<string, unknown>) {
 
   const snapshot = await getTabSnapshot();
   const windows = snapshot.windows as WindowSnapshot[];
-  const windowIdParam = Number.isFinite(params.windowId as number) ? Number(params.windowId) : null;
+  const windowIdParam = params.windowId != null ? resolveWindowIdFromParams(snapshot, params.windowId) : null;
   if (windowIdParam && !windows.some((win) => win.windowId === windowIdParam)) {
     throw new Error("Window not found");
   }
@@ -2619,7 +2853,7 @@ function selectTabsByScope(snapshot: { windows: Array<Record<string, unknown>> }
   }
 
   if (params.groupTitle) {
-    const windowId = Number.isFinite(params.windowId as number) ? Number(params.windowId) : undefined;
+    const windowId = params.windowId != null ? resolveWindowIdFromParams(snapshot, params.windowId) ?? undefined : undefined;
     const resolved = resolveGroupByTitle(snapshot, params.groupTitle as string, windowId);
     if ((resolved as { error?: Record<string, unknown> }).error) {
       return { tabs: [], error: (resolved as { error: Record<string, unknown> }).error };
@@ -2631,7 +2865,10 @@ function selectTabsByScope(snapshot: { windows: Array<Record<string, unknown>> }
   }
 
   if (params.windowId) {
-    const windowId = Number(params.windowId);
+    const windowId = resolveWindowIdFromParams(snapshot, params.windowId);
+    if (!Number.isFinite(windowId)) {
+      return { tabs: [] };
+    }
     return { tabs: allTabs.filter((tab) => tab.windowId === windowId) };
   }
 
@@ -2652,7 +2889,10 @@ async function archiveTabs(params: Record<string, unknown>) {
 
   let windowsToProcess = snapshot.windows as Array<{ windowId: number; focused: boolean; state: string; tabs: Array<Record<string, unknown>>; groups: Array<Record<string, unknown>> }>;
   if (params.windowId) {
-    windowsToProcess = windowsToProcess.filter((win) => win.windowId === Number(params.windowId));
+    const resolvedWindowId = resolveWindowIdFromParams(snapshot, params.windowId);
+    windowsToProcess = resolvedWindowId != null
+      ? windowsToProcess.filter((win) => win.windowId === resolvedWindowId)
+      : [];
   } else if (!params.all) {
     const focused = windowsToProcess.find((win) => win.focused);
     windowsToProcess = focused ? [focused] : [];

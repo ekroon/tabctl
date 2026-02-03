@@ -73,7 +73,7 @@ function assertVersion(version: string | undefined) {
 }
 
 test("list sends list action", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+  const { socketPath, server, sockets, requests } = await startMockSocket((req) => ({
     ok: true,
     action: req.action,
     requestId: req.id,
@@ -214,6 +214,14 @@ test("list supports --ungrouped", async () => {
   const tabs = ((data.windows?.[0].tabs as Array<Record<string, unknown>>) || []);
   assert.equal(tabs.length, 1);
   assert.equal(tabs[0].tabId, 1);
+});
+
+test("list rejects invalid window value", async () => {
+  const result = await runCli(["list", "--window", "nope"]);
+  assert.equal(result.status, 1);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, false);
+  assert.match(output.error.message, /Invalid --window value/);
 });
 
 test("report supports --ungrouped", async () => {
@@ -629,12 +637,45 @@ test("inspect selector-attr preserves explicit attr in JSON", async () => {
   assert.equal(params?.selectorSpecs?.[0]?.attr, "href");
 });
 
+test("inspect passes wait-for options", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { entries: [] },
+  }));
+
+  const result = await runCli([
+    "inspect",
+    "--tab",
+    "42",
+    "--wait-for",
+    "dom",
+    "--wait-timeout-ms",
+    "9000",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const params = requests[0].params as { waitFor?: string; waitTimeoutMs?: number } | undefined;
+  assert.equal(params?.waitFor, "dom");
+  assert.equal(params?.waitTimeoutMs, 9000);
+});
+
 test("inspect rejects invalid selector-attr", async () => {
   const result = await runCli(["inspect", "--selector", "a[href]", "--selector-attr", "blob"]); 
   assert.equal(result.status, 1);
   const output = JSON.parse(result.stdout.trim());
   assert.equal(output.ok, false);
   assert.match(output.error.message, /Invalid --selector-attr/);
+});
+
+test("inspect rejects :contains selector", async () => {
+  const result = await runCli(["inspect", "--selector", "a:contains(Hello)"]);
+  assert.equal(result.status, 1);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, false);
+  assert.match(output.error.message, /:contains\(\) is not supported/);
 });
 
 test("screenshot rejects --ungrouped with --group-id", async () => {
@@ -676,6 +717,10 @@ test("screenshot passes capture options", async () => {
     "1500",
     "--max-bytes",
     "2000000",
+    "--wait-for",
+    "load",
+    "--wait-timeout-ms",
+    "7000",
     "--out",
     outDir,
     "--progress",
@@ -691,6 +736,8 @@ test("screenshot passes capture options", async () => {
     quality?: number;
     tileMaxDim?: number;
     maxBytes?: number;
+    waitFor?: string;
+    waitTimeoutMs?: number;
     outDir?: string;
     progress?: boolean;
   } | undefined;
@@ -700,6 +747,8 @@ test("screenshot passes capture options", async () => {
   assert.equal(params?.quality, 70);
   assert.equal(params?.tileMaxDim, 1500);
   assert.equal(params?.maxBytes, 2000000);
+  assert.equal(params?.waitFor, "load");
+  assert.equal(params?.waitTimeoutMs, 7000);
   assert.equal(params?.outDir, outDir);
   assert.equal(params?.progress, true);
   const output = JSON.parse(result.stdout.trim());
@@ -709,6 +758,47 @@ test("screenshot passes capture options", async () => {
   assert.ok(tiles);
   const tilePath = String(tiles?.[0]?.path || "");
   assert.equal(tilePath.includes(path.join(outDir, "42")), true);
+});
+
+test("screenshot defaults to .tabctl/screenshots directory", async () => {
+  const mockEntries = [{
+    tabId: 7,
+    tiles: [{
+      index: 0,
+      total: 1,
+      dataUrl: "data:image/png;base64,SGVsbG8=",
+    }],
+  }];
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { entries: mockEntries },
+  }));
+
+  const originalCwd = process.cwd();
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-cwd-"));
+  process.chdir(tempDir);
+  try {
+    const result = await runCli([
+      "screenshot",
+      "--tab",
+      "7",
+    ], socketPath);
+
+    assert.equal(result.status, 0);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.ok, true);
+    const writtenTo = String(output.data?.writtenTo || "");
+    assert.ok(writtenTo.includes(path.join(tempDir, ".tabctl", "screenshots")));
+    const tiles = output.data?.entries?.[0]?.tiles as Array<Record<string, unknown>> | undefined;
+    assert.ok(tiles);
+    const tilePath = String(tiles?.[0]?.path || "");
+    assert.ok(tilePath.includes(path.join(tempDir, ".tabctl", "screenshots")));
+  } finally {
+    process.chdir(originalCwd);
+    await stopMockSocket(server, socketPath, sockets);
+  }
 });
 
 test("screenshot rejects invalid mode", async () => {
@@ -903,6 +993,23 @@ test("open passes urls and window selectors", async () => {
   assert.equal(params?.windowUrl, "mail.google.com");
 });
 
+test("analyze does not force all when --window active", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { candidates: [] },
+  }));
+
+  const result = await runCli(["analyze", "--window", "active"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const params = requests[0].params as { all?: boolean; windowId?: string } | undefined;
+  assert.equal(params?.windowId, "active");
+  assert.ok(!params?.all);
+});
+
 test("open supports new window flag", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
     ok: true,
@@ -925,12 +1032,72 @@ test("open supports new window flag", async () => {
   assert.equal(params?.newWindow, true);
 });
 
+test("open rejects before/after tab together", async () => {
+  const result = await runCli([
+    "open",
+    "--url",
+    "https://example.com",
+    "--before-tab",
+    "1",
+    "--after-tab",
+    "2",
+  ]);
+  assert.equal(result.status, 1);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, false);
+  assert.match(output.error.message, /Only one target position is allowed/);
+});
+
+test("open supports after-tab", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { summary: { createdTabs: 1 } },
+  }));
+
+  const result = await runCli([
+    "open",
+    "--url",
+    "https://example.com",
+    "--after-tab",
+    "55",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const params = requests[0].params as { afterTabId?: number } | undefined;
+  assert.equal(params?.afterTabId, 55);
+});
+
 test("open rejects invalid color", async () => {
   const result = await runCli(["open", "--group", "Docs", "--color", "chartreuse", "--url", "https://example.com"]);
   assert.equal(result.status, 1);
   const output = JSON.parse(result.stdout.trim());
   assert.equal(output.ok, false);
   assert.equal(output.error?.message, "Invalid color: chartreuse. Use one of: grey, blue, red, yellow, green, pink, purple, cyan, orange");
+});
+
+test("open supports window new alias", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { summary: { createdTabs: 1 } },
+  }));
+
+  const result = await runCli([
+    "open",
+    "--window",
+    "new",
+    "--url",
+    "https://example.com",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const params = requests[0].params as { newWindow?: boolean } | undefined;
+  assert.equal(params?.newWindow, true);
 });
 
 test("group-list passes window option", async () => {
@@ -946,8 +1113,25 @@ test("group-list passes window option", async () => {
 
   assert.equal(result.status, 0);
   assert.equal(requests[0].action, "group-list");
-  const params = requests[0].params as { windowId?: number } | undefined;
-  assert.equal(params?.windowId, 3);
+  const params = requests[0].params as { windowId?: string } | undefined;
+  assert.equal(params?.windowId, "3");
+});
+
+test("group-list supports --window active", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { groups: [] },
+  }));
+
+  const result = await runCli(["group-list", "--window", "active"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "group-list");
+  const params = requests[0].params as { windowId?: string } | undefined;
+  assert.equal(params?.windowId, "active");
 });
 
 test("group-list paginates and filters by tab", async () => {
@@ -1271,6 +1455,45 @@ test("group-update passes update options", async () => {
   assert.equal(params?.title, "Work Items");
   assert.equal(params?.color, "red");
   assert.equal(params?.collapsed, false);
+});
+
+test("group-update supports --window active", async () => {
+  const snapshot = {
+    windows: [
+      {
+        windowId: 1,
+        focused: true,
+        tabs: [
+          { tabId: 1, windowId: 1, index: 0, groupId: 10, groupTitle: "Work", title: "A", url: "https://a" },
+        ],
+        groups: [
+          { groupId: 10, title: "Work" },
+        ],
+      },
+    ],
+  };
+
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
+    if (req.action === "list") {
+      return { ok: true, action: req.action, requestId: req.id, data: snapshot };
+    }
+    return { ok: true, action: req.action, requestId: req.id, data: { groups: [] } };
+  });
+
+  const result = await runCli([
+    "group-update",
+    "--group",
+    "Work",
+    "--window",
+    "active",
+    "--title",
+    "Work Items",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const params = requests.find((req) => req.action === "group-update")?.params as { windowId?: string } | undefined;
+  assert.equal(params?.windowId, "active");
 });
 
 test("group-ungroup passes group selectors", async () => {
@@ -1683,6 +1906,8 @@ test("help supports --help flag", async () => {
   const result = await runCli(["--help"]);
   assert.equal(result.status, 0);
   assert.match(result.stdout, /tabctl - Edge tab management CLI/);
+  assert.match(result.stdout, /Command Details/);
+  assert.match(result.stdout, /Option Groups/);
 });
 
 test("help supports json output", async () => {
@@ -1700,7 +1925,7 @@ test("help supports json output", async () => {
   assert.ok(scopeGroup?.options?.includes("--group <name>"));
   assert.ok(scopeGroup?.options?.includes("--group-id <id>"));
   assert.ok(scopeGroup?.options?.includes("--ungrouped"));
-  assert.ok(scopeGroup?.options?.includes("--window <id>"));
+  assert.ok(scopeGroup?.options?.includes("--window <id|active|last-focused>"));
   assert.ok(scopeGroup?.options?.includes("--all"));
   assert.ok(paginationGroup?.options?.includes("--limit <n>"));
   assert.ok(paginationGroup?.options?.includes("--offset <n>"));
@@ -1711,6 +1936,8 @@ test("help supports json output", async () => {
   assert.ok(list?.options?.includes("--groups"));
   const open = output.data?.commands?.find((cmd: { name: string; options?: string[] }) => cmd?.name === "open");
   assert.ok(open?.options?.includes("--url <url> (repeatable)"));
+  assert.ok(open?.options?.includes("--before-tab <id>"));
+  assert.ok(open?.options?.includes("--after-tab <id>"));
   assert.ok(open?.options?.includes("--new-window"));
   const report = output.data?.commands?.find((cmd: { name: string; options?: string[] }) => cmd?.name === "report");
   assert.ok(report?.options?.includes("--format json|md|csv"));
@@ -1718,6 +1945,15 @@ test("help supports json output", async () => {
   assert.ok(close?.options?.includes("--dry-run"));
   const setup = output.data?.commands?.find((cmd: { name: string; options?: string[] }) => cmd?.name === "setup");
   assert.ok(setup?.options?.includes("--browser edge|chrome"));
+});
+
+test("command-specific help filters output", async () => {
+  const result = await runCli(["help", "open", "--json"]);
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, true);
+  assert.equal(output.data?.commands?.length, 1);
+  assert.equal(output.data?.commands?.[0]?.name, "open");
 });
 
 test("version outputs cli version", async () => {

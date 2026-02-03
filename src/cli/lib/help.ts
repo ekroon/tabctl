@@ -6,7 +6,7 @@
 
 import { VERSION } from "./constants";
 import { OPTION_GROUPS, COMMANDS, SCREENSHOT_OPTIONS, type OptionDef } from "./options";
-import { printJson } from "./output";
+import { printJson, errorOut } from "./output";
 
 // ============================================================================
 // Types
@@ -48,7 +48,7 @@ function formatOption(opt: OptionDef): string {
 /**
  * Build structured help data from COMMANDS and OPTION_GROUPS.
  */
-export function buildHelpData(): HelpData {
+export function buildHelpData(command?: string): HelpData {
   // Build option groups
   const optionGroups: HelpOptionGroup[] = Object.entries(OPTION_GROUPS).map(
     ([_key, group]) => ({
@@ -81,6 +81,30 @@ export function buildHelpData(): HelpData {
 
       return cmd;
     });
+  const normalizedCommand = command ? normalizeHelpCommand(command) : undefined;
+  if (normalizedCommand && !COMMANDS[normalizedCommand]) {
+    errorOut(`Unknown command: ${normalizedCommand}`);
+  }
+  const filteredCommands = normalizedCommand
+    ? commands.filter((entry) => entry.name === normalizedCommand)
+    : commands;
+
+  const filteredGroups = normalizedCommand
+    ? optionGroups.filter((group) => {
+        const target = filteredCommands[0];
+        if (!target?.groups || target.groups.length === 0) {
+          return false;
+        }
+        const included = target.groups.some((groupKey) => {
+          const meta = OPTION_GROUPS[groupKey];
+          return meta?.name === group.name;
+        });
+        if (target.name === "screenshot" && group.name === SCREENSHOT_OPTIONS.name) {
+          return true;
+        }
+        return included;
+      })
+    : optionGroups;
 
   // Global options
   const globalOptions = ["--help", "--json", "--pretty"];
@@ -96,11 +120,22 @@ export function buildHelpData(): HelpData {
   return {
     version: VERSION,
     usage: "tabctl <command> [options]",
-    commands,
-    optionGroups,
+    commands: filteredCommands,
+    optionGroups: filteredGroups,
     globalOptions,
     notes,
   };
+}
+
+function normalizeHelpCommand(command: string): string | undefined {
+  const trimmed = command.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (trimmed === "groups" || trimmed === "group") {
+    return "group-list";
+  }
+  return trimmed;
 }
 
 // ============================================================================
@@ -110,7 +145,7 @@ export function buildHelpData(): HelpData {
 /**
  * Print help in human-readable text format.
  */
-function printHelpText(data: HelpData): void {
+function printHelpText(data: HelpData, command?: string): void {
   const lines: string[] = [];
 
   // Header
@@ -120,22 +155,34 @@ function printHelpText(data: HelpData): void {
   lines.push(`Usage: ${data.usage}`);
   lines.push("");
 
-  // Commands grouped by category
-  lines.push("Commands:");
-  const commandNames = data.commands.map((c) => c.name);
-  lines.push(`  ${commandNames.join(", ")}`);
-  lines.push("");
+  if (!command) {
+    // Commands grouped by category
+    lines.push("Commands:");
+    const commandNames = data.commands.map((c) => c.name);
+    lines.push(`  ${commandNames.join(", ")}`);
+    lines.push("");
+  }
 
   // Option Groups
-  lines.push("Option Groups:");
-  lines.push("  (Commands reference these groups; see command details below)");
-  lines.push("");
-  for (const group of data.optionGroups) {
-    lines.push(`  [${group.name}] - ${group.description}`);
-    for (const opt of group.options) {
-      lines.push(`    ${opt}`);
-    }
+  if (!command) {
+    lines.push("Option Groups:");
+    lines.push("  (Commands reference these groups; see command details below)");
     lines.push("");
+    for (const group of data.optionGroups) {
+      lines.push(`  [${group.name}] - ${group.description}`);
+      for (const opt of group.options) {
+        lines.push(`    ${opt}`);
+      }
+      lines.push("");
+    }
+  } else {
+    for (const group of data.optionGroups) {
+      lines.push(`Options (${group.name}):`);
+      for (const opt of group.options) {
+        lines.push(`  ${opt}`);
+      }
+      lines.push("");
+    }
   }
 
   // Command Details
@@ -148,7 +195,7 @@ function printHelpText(data: HelpData): void {
     lines.push(parts.join(" "));
 
     // Show which groups the command uses
-    if (cmd.groups && cmd.groups.length > 0) {
+    if (!command && cmd.groups && cmd.groups.length > 0) {
       const groupRefs = cmd.groups.map((g) => {
         const group = OPTION_GROUPS[g];
         return group ? `[${group.name}]` : `[${g}]`;
@@ -167,18 +214,22 @@ function printHelpText(data: HelpData): void {
   lines.push("");
 
   // Global Options
-  lines.push("Global Options:");
-  for (const opt of data.globalOptions) {
-    lines.push(`  ${opt}`);
+  if (!command) {
+    lines.push("Global Options:");
+    for (const opt of data.globalOptions) {
+      lines.push(`  ${opt}`);
+    }
+    lines.push("");
   }
-  lines.push("");
 
   // Notes
-  lines.push("Notes:");
-  for (const note of data.notes) {
-    lines.push(`  ${note}`);
+  if (!command) {
+    lines.push("Notes:");
+    for (const note of data.notes) {
+      lines.push(`  ${note}`);
+    }
+    lines.push("");
   }
-  lines.push("");
 
   // Policy location
   lines.push("Policy: $XDG_CONFIG_HOME/tabctl/policy.json (or ~/.config/tabctl/policy.json)");
@@ -194,11 +245,11 @@ function printHelpText(data: HelpData): void {
 /**
  * Print help output in either JSON or text format.
  */
-export function printHelp(jsonOutput: boolean): void {
-  const data = buildHelpData();
+export function printHelp(jsonOutput: boolean, command?: string): void {
+  const data = buildHelpData(command);
   if (jsonOutput) {
     printJson({ ok: true, data });
     return;
   }
-  printHelpText(data);
+  printHelpText(data, command);
 }

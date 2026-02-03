@@ -36,7 +36,8 @@ export function buildScopeArgs(options: Options, includeAll: boolean): string[] 
     args.push("--group-id", formatCliArgValue(options["group-id"]));
   }
   if (options.window != null) {
-    args.push("--window", formatCliArgValue(options.window));
+    const windowValue = normalizeWindowScope(options.window);
+    args.push("--window", formatCliArgValue(windowValue));
   }
   return args;
 }
@@ -48,7 +49,10 @@ export function resolveScopeFlags(options: Options): ScopeFlags {
   const groupTitle = typeof options.group === "string" ? options.group.trim() : "";
   const ungrouped = options.ungrouped === true;
   const groupId = ungrouped ? -1 : (options["group-id"] != null ? Number(options["group-id"]) : null);
-  const windowId = options.window != null ? Number(options.window) : null;
+  const normalizedWindow = options.window != null ? normalizeWindowScope(options.window) : null;
+  const windowId = normalizedWindow == null
+    ? null
+    : normalizedWindow;
   
   if (options["group-id"] != null && !Number.isFinite(groupId)) {
     errorOut("Invalid --group-id value");
@@ -56,16 +60,38 @@ export function resolveScopeFlags(options: Options): ScopeFlags {
   if (ungrouped && options["group-id"] != null) {
     errorOut("--ungrouped cannot be combined with --group-id");
   }
-  if (options.window != null && !Number.isFinite(windowId)) {
+  if (options.window != null && typeof windowId === "number" && !Number.isFinite(windowId)) {
     errorOut("Invalid --window value");
   }
   
   const hasScope = tabIds.length > 0
     || Boolean(groupTitle)
     || Number.isFinite(groupId)
-    || Number.isFinite(windowId);
+    || (typeof windowId === "number" && Number.isFinite(windowId))
+    || (typeof windowId === "string" && windowId.length > 0);
     
   return { tabIds, groupTitle, groupId, windowId, hasScope, ungrouped };
+}
+
+function normalizeWindowScope(value: unknown): string | number {
+  if (typeof value === "string") {
+    const trimmed = value.trim().toLowerCase();
+    if (trimmed === "active") {
+      return "active";
+    }
+    if (trimmed === "last-focused" || trimmed === "lastfocused") {
+      return "last-focused";
+    }
+    if (trimmed === "new") {
+      errorOut("--window new is only supported by open");
+    }
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+    errorOut("Invalid --window value");
+  }
+  return typeof value === "number" ? value : String(value);
 }
 
 export function extractScopeParams(options: Options): ScopeParams {
@@ -171,8 +197,11 @@ export function selectTabsFromSnapshot(
       };
     }
 
-    const target = params.windowId
-      ? matches.find((match) => match.windowId === Number(params.windowId))
+    const resolvedWindowId = params.windowId != null
+      ? resolveWindowIdFromSnapshot(snapshot, params.windowId)
+      : null;
+    const target = resolvedWindowId != null
+      ? matches.find((match) => match.windowId === resolvedWindowId)
       : matches[0];
 
     if (!target) {
@@ -191,7 +220,10 @@ export function selectTabsFromSnapshot(
   }
 
   if (params.windowId != null) {
-    const windowId = Number(params.windowId);
+    const windowId = resolveWindowIdFromSnapshot(snapshot, params.windowId);
+    if (!Number.isFinite(windowId)) {
+      return { tabs: [] };
+    }
     return { tabs: allTabs.filter((tab) => tab.windowId === windowId) };
   }
 
@@ -201,6 +233,39 @@ export function selectTabsFromSnapshot(
 
   const focused = windows.find((win) => win.focused);
   return { tabs: focused ? ((focused.tabs as Array<Record<string, unknown>>) || []) : [] };
+}
+
+export function resolveWindowIdFromSnapshot(snapshot: Record<string, unknown>, value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  const windows = (snapshot.windows as Array<Record<string, unknown>>) || [];
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "active") {
+      const focused = windows.find((win) => win.focused === true);
+      return typeof focused?.windowId === "number" ? focused.windowId : null;
+    }
+    if (normalized === "last-focused") {
+      let bestWindowId: number | null = null;
+      let bestFocusedAt = -Infinity;
+      for (const win of windows) {
+        const tabs = (win.tabs as Array<Record<string, unknown>>) || [];
+        for (const tab of tabs) {
+          const focusedAt = Number(tab.lastFocusedAt);
+          if (!Number.isFinite(focusedAt)) {
+            continue;
+          }
+          if (focusedAt > bestFocusedAt) {
+            bestFocusedAt = focusedAt;
+            bestWindowId = typeof win.windowId === "number" ? win.windowId : null;
+          }
+        }
+      }
+      return bestWindowId;
+    }
+  }
+  return Number.isFinite(Number(value)) ? Number(value) : null;
 }
 
 export function filterGroupsByScope(
@@ -213,7 +278,7 @@ export function filterGroupsByScope(
   const allScope = !scope.hasScope;
   
   if (!allScope) {
-    if (Number.isFinite(scope.windowId)) {
+    if (typeof scope.windowId === "number" && Number.isFinite(scope.windowId)) {
       filtered = filtered.filter((group) => group.windowId === scope.windowId);
     }
     if (Number.isFinite(scope.groupId)) {

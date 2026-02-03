@@ -94,7 +94,7 @@ tabctl group-list --window <windowId>
 
 Screenshot-first example:
 ```bash
-tabctl screenshot --tab <tabId> --mode viewport --out /tmp/tabctl-shots
+tabctl screenshot --tab <tabId> --mode viewport
 tabctl inspect --tab <tabId> --signal selector --selector "link=a[href]" --selector-attr href-url
 ```
 

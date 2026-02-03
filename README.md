@@ -107,15 +107,20 @@ tabctl inspect --tab 123 --signal page-meta --progress
 tabctl inspect --tab 123 --limit 100
 tabctl inspect --tab 123 --signal github-state --signal-concurrency 4 --signal-timeout-ms 4000 --progress
 tabctl inspect --tab 123 --signal selector --selector "price=.price" --signal-timeout-ms 1500 --progress
+tabctl inspect --tab 123 --signal page-meta --wait-for dom --wait-timeout-ms 8000
 tabctl inspect --tab 123 --signal selector --signal-config ~/.config/tabctl/signals.json --progress
 tabctl inspect --tab 123 --selector "price=.price"
 tabctl inspect --tab 123 --selector '{"name":"cta","selector":"a.cta","attr":"href-url"}'
+tabctl inspect --tab 123 --signal selector --selector '{"name":"price","selector":".price","text":"€","textMode":"contains"}'
 tabctl screenshot --tab 123 --mode viewport
-tabctl screenshot --tab 123 --mode full --tile-max-dim 1500 --max-bytes 2000000 --out /tmp/tabctl-shots
+tabctl screenshot --tab 123 --mode full --tile-max-dim 1500 --max-bytes 2000000
+tabctl screenshot --tab 123 --mode full --wait-for load --wait-timeout-ms 8000
 tabctl focus --tab 123
 tabctl refresh --tab 123
 tabctl open --new-window --url https://example.com
 tabctl open --url https://example.com --group "Docs" --color blue
+tabctl open --url https://example.com --after-tab 123
+tabctl open --window new --url https://example.com
 tabctl move-tab --tab 123 --new-window
 tabctl merge-window --from 1 --to 2
 tabctl group-list
@@ -136,12 +141,15 @@ tabctl undo --latest
 tabctl history --limit 20
 ```
 
+## Screenshot output
+When `--out` is omitted, screenshots are written to `./.tabctl/screenshots/<timestamp>` and the JSON response includes `writtenTo`.
+
 ## Agent workflow (context -> selector)
-Use screenshots to pick the right element, then extract selectors with `inspect`.
+Use screenshots only when you need visual context, then extract selectors with `inspect`.
 
 1) Capture context (full page tiles):
 ```bash
-tabctl screenshot --tab <id> --mode full --out /tmp/tabctl-shots
+tabctl screenshot --tab <id> --mode full
 ```
 
 2) Identify the element visually, then extract its selector:

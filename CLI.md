@@ -21,7 +21,7 @@ tabctl policy --init
 ```
 
 ## Global flags
-- `--help`: human-readable help
+- `--help`: command-specific help
 - `--json`: JSON output
 - `--pretty`: pretty-print JSON (default: true)
 - `--format` is only supported by `report` (use `--json` elsewhere)
@@ -39,7 +39,7 @@ Filter which tabs/groups to operate on.
 | `--group <name>` | Target tabs in group by title |
 | `--group-id <id>` | Target group by ID (use `-1` for ungrouped) |
 | `--ungrouped` | Alias for `--group-id -1` |
-| `--window <id>` | Target tabs in specific window |
+| `--window <id|active|last-focused>` | Target tabs in specific window |
 | `--all` | Target all eligible tabs |
 
 ### Pagination Options
@@ -60,6 +60,7 @@ Show CLI help.
 ```bash
 tabctl help
 tabctl help --json
+tabctl help open
 ```
 
 ### list
@@ -112,10 +113,12 @@ Run signals to collect metadata (page-meta, github-state, selector).
 Additional options:
 - `--signal-config <path>`
 - `--signal <id>` (repeatable)
-- `--selector <name=css|json>` (repeatable)
+- `--selector <name=css|json>` (repeatable; supports `text`/`textMode` in JSON)
 - `--selector-attr <attr>` (default attr for selectors)
 - `--signal-concurrency <n>`
 - `--signal-timeout-ms <ms>`
+- `--wait-for load|dom|none`
+- `--wait-timeout-ms <ms>`
 - `--progress`
 
 Signals:
@@ -127,9 +130,10 @@ Notes:
 - `--selector` implies `--signal selector`.
 - Unknown signals are rejected; valid signals: `page-meta`, `github-state`, `selector`.
 - Selector `attr` supports `href-url`/`src-url` to return absolute http(s) URLs.
+- Selector `:contains()` is not supported; use selector text filters or screenshots.
 
 Suggested flow for agents:
-1. `tabctl screenshot --tab <id> --mode full --out /tmp/tabctl-shots`
+1. `tabctl screenshot --tab <id> --mode full`
 2. Identify the element visually.
 3. `tabctl inspect --tab <id> --signal selector --selector '{"name":"target","selector":".your-selector"}'`
 4. For links, set `--selector-attr href-url` (or per-selector `attr: "href-url"`).
@@ -145,13 +149,18 @@ Additional options:
 - `--quality <n>` (jpeg only)
 - `--tile-max-dim <px>` (full mode only)
 - `--max-bytes <n>`
+- `--wait-for load|dom|none`
+- `--wait-timeout-ms <ms>`
 - `--out <dir>` (writes per-tab folders)
 - `--progress`
+
+Output:
+- Writes files to `./.tabctl/screenshots/<timestamp>` by default and includes `writtenTo` in JSON output.
 
 Examples:
 ```bash
 tabctl screenshot --tab 123 --mode viewport
-tabctl screenshot --tab 123 --mode full --tile-max-dim 1500 --max-bytes 2000000 --out /tmp/tabctl-shots
+tabctl screenshot --tab 123 --mode full --tile-max-dim 1500 --max-bytes 2000000
 ```
 
 
@@ -173,8 +182,10 @@ Options:
 - `--url <url>` (repeatable)
 - `--group <name>` (new group title)
 - `--color <name>` (group color)
+- `--before-tab <id>`
+- `--after-tab <id>`
 - `--after-group <name>` (insert tabs after this group)
-- `--window <id>`
+- `--window <id|active|last-focused|new>`
 - `--new-window`
 - `--window-group <name>` (window containing a group with this title)
 - `--window-tab <id>` (window containing this tab)
@@ -187,7 +198,7 @@ Example:
 tabctl open --url https://example.com --group "Docs" --color blue
 ```
 
-If no window selector is provided, the focused window is used.
+If no window selector is provided, the focused window is used (fallback to last-focused if needed).
 
 ### group-list
 List groups with window ids/labels and tab counts.
@@ -204,7 +215,7 @@ Update group metadata (title, color, or collapsed state).
 Options:
 - `--group <name>`
 - `--group-id <id>`
-- `--window <id>` (disambiguate group titles)
+- `--window <id|active|last-focused>` (disambiguate group titles)
 - `--title <name>`
 - `--color <name>`
 - `--collapsed`
@@ -215,7 +226,7 @@ Remove all tabs from a group.
 Options:
 - `--group <name>`
 - `--group-id <id>`
-- `--window <id>` (disambiguate group titles)
+- `--window <id|active|last-focused>` (disambiguate group titles)
 
 ### group-assign
 Move existing tabs into an existing group (or create one).
@@ -223,7 +234,7 @@ Options:
 - `--tab <id>` (repeatable)
 - `--group <name>`
 - `--group-id <id>`
-- `--window <id>` (disambiguate group titles or create target)
+- `--window <id|active|last-focused>` (disambiguate group titles or create target)
 - `--create` (create group if missing)
 - `--color <name>`
 - `--collapsed`
@@ -237,7 +248,7 @@ Options:
 - `--after-tab <id>`
 - `--before-group <name>`
 - `--after-group <name>`
-- `--window <id>` (disambiguate group names)
+- `--window <id|active|last-focused>` (disambiguate group names)
 - `--new-window`
 
 Note: `--before-group`/`--after-group` only position tabs; use `group-assign` to move tabs into a group.
@@ -251,7 +262,7 @@ Options:
 - `--after-tab <id>`
 - `--before-group <name>`
 - `--after-group <name>`
-- `--window <id>` (disambiguate group names)
+- `--window <id|active|last-focused>` (disambiguate group names)
 - `--new-window`
 
 Note: `--before-group`/`--after-group` only position groups; they do not merge groups.

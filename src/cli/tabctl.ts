@@ -156,7 +156,10 @@ async function main() {
   };
 
   if (!command || command === "help" || options.help) {
-    printHelp(options.json === true);
+    const helpTarget = command === "help"
+      ? (options._.length > 0 ? String(options._[0]) : undefined)
+      : command;
+    printHelp(options.json === true, helpTarget);
     return;
   }
 
@@ -293,10 +296,12 @@ async function main() {
 
   if (command === "analyze") {
     const tabIds = (params as { tabIds?: number[] }).tabIds;
+    const windowId = (params as { windowId?: number | string }).windowId;
     const hasScope = (Array.isArray(tabIds) && tabIds.length > 0)
       || Boolean((params as { groupTitle?: string }).groupTitle)
       || Number.isFinite((params as { groupId?: number }).groupId)
-      || Number.isFinite((params as { windowId?: number }).windowId)
+      || (typeof windowId === "number" && Number.isFinite(windowId))
+      || (typeof windowId === "string" && windowId.length > 0)
       || (params as { all?: boolean }).all === true;
     if (!hasScope) {
       params = { ...params, all: true };
@@ -807,15 +812,16 @@ async function main() {
     return;
   }
 
-  if (command === "screenshot") {
+   if (command === "screenshot") {
     const data = response.data as { entries?: Array<Record<string, unknown>> } | undefined;
     const entries = data?.entries || [];
     const page = data && "page" in data ? (data.page as Record<string, unknown> | undefined) : undefined;
-    if (options.out) {
-      const outDir = String(options.out);
-      fs.mkdirSync(outDir, { recursive: true });
-      let filesWritten = 0;
-      const sanitized = entries.map((entry) => {
+    const outDir = options.out
+      ? String(options.out)
+      : path.join(process.cwd(), ".tabctl", "screenshots", String(Date.now()));
+    fs.mkdirSync(outDir, { recursive: true });
+    let filesWritten = 0;
+    const sanitized = entries.map((entry) => {
         const tabId = entry.tabId as number | string | undefined;
         const tabDir = path.join(outDir, String(tabId ?? "unknown"));
         fs.mkdirSync(tabDir, { recursive: true });
@@ -852,10 +858,7 @@ async function main() {
           tiles: sanitizedTiles,
         };
       });
-      printJson({ ok: true, data: { writtenTo: outDir, files: filesWritten, entries: sanitized, ...(page ? { page } : {}) } }, prettyOutput);
-      return;
-    }
-    printJson({ ok: true, data: { entries, ...(page ? { page } : {}) } }, prettyOutput);
+    printJson({ ok: true, data: { writtenTo: outDir, files: filesWritten, entries: sanitized, ...(page ? { page } : {}) } }, prettyOutput);
     return;
   }
 
