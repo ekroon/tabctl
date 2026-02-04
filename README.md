@@ -214,7 +214,7 @@ Notes:
 
 #### Copilot Coding Agent (CCA) config
 
-Copilot Coding Agent uses a slightly different MCP config shape (adds `type` and `tools`). Copy `config/copilot-mcp.json` into `~/.copilot/mcp-config.json` (or merge it with your existing file) to enable Playwright MCP for CCA runs:
+Copilot Coding Agent uses a slightly different MCP config shape (adds `type` and `tools`). Merge the contents of `config/copilot-mcp.json` into `~/.copilot/mcp-config.json` (or copy it if you are starting fresh) to enable Playwright MCP for CCA runs:
 
 ```json
 {
