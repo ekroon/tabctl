@@ -212,6 +212,29 @@ Notes:
 - `--browser msedge` keeps the MCP session aligned with Edge (same browser required by the extension).
 - `--user-data-dir .tabctl/playwright-profile` isolates test state from your normal profile.
 
+#### Copilot Coding Agent (CCA) config
+
+Copilot Coding Agent uses a slightly different MCP config shape (adds `type` and `tools`). Copy `config/copilot-mcp.json` into `~/.copilot/mcp-config.json` (or merge it with your existing file) to enable Playwright MCP for CCA runs:
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "type": "local",
+      "command": "npx",
+      "tools": ["*"],
+      "args": [
+        "@playwright/mcp@latest",
+        "--browser",
+        "msedge",
+        "--user-data-dir",
+        ".tabctl/playwright-profile"
+      ]
+    }
+  }
+}
+```
+
 ### 2) Load the extension into the MCP-driven Edge profile
 
 1. Start the MCP server through your client.
