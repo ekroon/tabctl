@@ -35,4 +35,4 @@ exec "${BROWSER_BIN}" \
   --remote-debugging-port="${REMOTE_DEBUGGING_PORT}" \
   --no-first-run \
   --no-default-browser-check \
-  "${EXTRA_ARGS[@]}"
+  ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
