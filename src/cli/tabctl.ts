@@ -11,7 +11,7 @@ import { resolveScopeFlags, buildScopeArgs, selectTabsFromSnapshot } from "./lib
 import { resolvePagination } from "./lib/pagination";
 import { buildTabIndex, buildWindowTitleIndex } from "./lib/snapshot";
 import { printHelp } from "./lib/help";
-import { runSetup, runSkillInstall, runVersion, runPolicy, runList, runGroupList, runPing, runHistory, runUndo } from "./lib/commands";
+import { runSetup, runSkillInstall, runVersion, runPolicy, runList, runGroupList, runPing, runReloadExtension, runHistory, runUndo } from "./lib/commands";
 import {
   buildAnalyzeParams,
   buildInspectParams,
@@ -191,6 +191,11 @@ async function main() {
 
   if (command === "ping") {
     await runPing(prettyOutput);
+    return;
+  }
+
+  if (command === "reload-extension") {
+    await runReloadExtension(prettyOutput);
     return;
   }
 

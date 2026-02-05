@@ -12,6 +12,7 @@ export {
   runHistory,
   runUndo,
   runPing,
+  runReloadExtension,
 } from "./meta";
 
 // List commands (list, group-list)

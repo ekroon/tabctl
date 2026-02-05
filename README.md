@@ -117,6 +117,7 @@ tabctl screenshot --tab 123 --mode full --tile-max-dim 1500 --max-bytes 2000000
 tabctl screenshot --tab 123 --mode full --wait-for load --wait-timeout-ms 8000
 tabctl focus --tab 123
 tabctl refresh --tab 123
+tabctl reload-extension
 tabctl open --new-window --url https://example.com
 tabctl open --url https://example.com --group "Docs" --color blue
 tabctl open --url https://example.com --after-tab 123
@@ -257,6 +258,43 @@ tabctl group-list --window <windowId>
 tabctl screenshot --tab <tabId> --mode viewport
 tabctl inspect --tab <tabId> --signal selector --selector "a[href]" --selector-attr href-url
 ```
+
+### Reload the extension after changes
+
+After rebuilding the extension (`npm run build`), you can reload it without visiting the extensions page:
+
+```bash
+tabctl reload-extension
+```
+
+### Devbox/CI setup (launch with extension loaded)
+
+To automate extension loading in a devbox or CI environment, launch the browser with the extension preloaded and a remote debugging port:
+
+```bash
+npm install
+npm run build
+bash scripts/launch-extension-browser.sh
+```
+
+Then point Playwright MCP to the running browser via CDP (sample config in `config/playwright-mcp-cdp.json`):
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "@playwright/mcp@latest",
+        "--cdp-endpoint",
+        "http://127.0.0.1:9222"
+      ]
+    }
+  }
+}
+```
+
+CI note: run the launch script under `xvfb-run -a` and ensure a Chrome/Edge binary is installed (set `TABCTL_BROWSER_BIN` if needed).
 
 ### Offline mock host (no Edge/extension)
 

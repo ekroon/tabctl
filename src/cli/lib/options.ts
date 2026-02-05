@@ -303,6 +303,13 @@ export const COMMANDS: Record<string, CommandMeta> = {
   ping: {
     description: "Test connection to browser extension",
   },
+  "reload-extension": {
+    description: "Reload the browser extension",
+  },
+  "extension-reload": {
+    description: "Alias for reload-extension",
+    aliases: ["reload-extension"],
+  },
 } as const;
 
 // ============================================================================

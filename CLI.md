@@ -182,6 +182,12 @@ Refresh a tab by id.
 tabctl refresh --tab <id>
 ```
 
+### reload-extension
+Reload the browser extension (use after `npm run build` to pick up changes).
+```bash
+tabctl reload-extension
+```
+
 ### open
 Open new tabs and optionally group them in a target window.
 Options:

@@ -2091,6 +2091,23 @@ test("version includes dev sha when built", async () => {
   assert.equal(output.data?.baseVersion, "0.1.0");
 });
 
+test("reload-extension sends action", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { scheduled: true },
+  }));
+
+  const result = await runCli(["reload-extension"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, true);
+  assert.equal(requests[0].action, "reload-extension");
+});
+
 test("undo sends undo action with txid", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
     ok: true,

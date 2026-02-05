@@ -376,3 +376,27 @@ export async function runPing(prettyOutput: boolean): Promise<void> {
     process.exit(1);
   }
 }
+
+// ============================================================================
+// Reload Extension Command
+// ============================================================================
+
+export async function runReloadExtension(prettyOutput: boolean): Promise<void> {
+  const response = await sendRequest({
+    id: createRequestId(),
+    action: "reload-extension",
+    params: {},
+    client: {
+      component: "cli",
+      version: VERSION,
+      baseVersion: BASE_VERSION,
+      gitSha: GIT_SHA,
+      dirty: DIRTY,
+    },
+  });
+
+  printJson(response, prettyOutput);
+  if (!response.ok) {
+    process.exit(1);
+  }
+}

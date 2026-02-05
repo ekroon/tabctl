@@ -235,6 +235,13 @@ async function handleAction(action: string, params: Record<string, unknown>, req
       return await screenshotTabs(params, requestId);
     case "undo":
       return await undoTransaction(params);
+    case "reload-extension": {
+      const reloadDelayMs = 200;
+      setTimeout(() => {
+        chrome.runtime.reload();
+      }, reloadDelayMs);
+      return { scheduled: true, delayMs: reloadDelayMs };
+    }
     default:
       throw new Error(`Unknown action: ${action}`);
   }

@@ -198,6 +198,9 @@ const server = net.createServer((socket) => {
         case "screenshot":
           payload = handleScreenshot();
           break;
+        case "reload-extension":
+          payload = { scheduled: true, delayMs: 0 };
+          break;
         case "ping":
         case "version":
           payload = { now: Date.now() };
