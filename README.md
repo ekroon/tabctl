@@ -258,6 +258,18 @@ tabctl screenshot --tab <tabId> --mode viewport
 tabctl inspect --tab <tabId> --signal selector --selector "a[href]" --selector-attr href-url
 ```
 
+### Offline mock host (no Edge/extension)
+
+If Edge or the extension is unavailable, you can still exercise the CLI with a lightweight mock host:
+
+```bash
+node scripts/mock-host.js --socket /tmp/tabctl-mock.sock
+TABCTL_SOCKET=/tmp/tabctl-mock.sock tabctl open --new-window --url https://example.com --group "TEST-Mock"
+TABCTL_SOCKET=/tmp/tabctl-mock.sock tabctl list
+```
+
+The mock host simulates responses (it does not control a real browser), but it lets you verify CLI flows and JSON output.
+
 For more MCP configuration options, see the official Playwright MCP README: https://github.com/microsoft/playwright-mcp.
 
 ## Policy (protect tabs)
