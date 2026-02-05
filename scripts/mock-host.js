@@ -23,6 +23,7 @@ const state = {
   nextTabId: 1,
   nextGroupId: 1,
 };
+const MOCK_DURATION_MS = 1;
 
 function createWindow(idOverride) {
   const id = Number.isFinite(idOverride) ? idOverride : state.nextWindowId;
@@ -40,9 +41,6 @@ function resolveWindow(params) {
   if (typeof params.windowId === "number") {
     const existing = state.windows.find((win) => win.windowId === params.windowId);
     return existing || createWindow(params.windowId);
-  }
-  if (typeof params.windowId === "string") {
-    return state.windows[0] || createWindow();
   }
   return state.windows[0] || createWindow();
 }
@@ -125,7 +123,7 @@ function handleInspect(request) {
     url: tab.url,
     title: tab.title,
     signals: {
-      "page-meta": { ok: true, durationMs: 1, data: { title: tab.title, description: "Mock page", h1: tab.title } },
+      "page-meta": { ok: true, durationMs: MOCK_DURATION_MS, data: { title: tab.title, description: "Mock page", h1: tab.title } },
     },
   })));
   return { generatedAt: Date.now(), entries };
