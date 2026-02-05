@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ -z "${BASH_VERSION:-}" ]]; then
+  echo "Run this script with bash: bash scripts/launch-extension-browser.sh" >&2
+  exit 1
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXTENSION_DIR="${TABCTL_EXTENSION_DIR:-"${ROOT_DIR}/extension"}"
 PROFILE_DIR="${TABCTL_PROFILE_DIR:-"${ROOT_DIR}/.tabctl/profile"}"
