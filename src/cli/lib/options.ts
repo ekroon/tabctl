@@ -307,7 +307,7 @@ export const COMMANDS: Record<string, CommandMeta> = {
     description: "Reload the browser extension",
   },
   "extension-reload": {
-    description: "Alias for reload-extension",
+    description: "Alternative name for reload-extension",
     aliases: ["reload-extension"],
   },
 } as const;
