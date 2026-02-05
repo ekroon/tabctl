@@ -269,6 +269,8 @@ tabctl reload-extension
 
 ### Devbox/CI setup (launch with extension loaded)
 
+Playwright MCP does **not** expose arbitrary Chromium flags (like `--load-extension`) via its CLI args. To pass extension flags, launch the browser yourself and connect MCP over CDP.
+
 To automate extension loading in a devbox or CI environment, launch the browser with the extension preloaded and a remote debugging port:
 
 ```bash
@@ -295,6 +297,20 @@ Then point Playwright MCP to the running browser via CDP (sample config in `conf
 ```
 
 CI note: run the launch script under `xvfb-run -a` and ensure a Chrome/Edge binary is installed (set `TABCTL_BROWSER_BIN` if needed).
+
+#### Copilot Coding Agent environment setup
+
+If you customize the Copilot agent environment (see GitHub’s “customize the agent environment” guide), you can preinstall Chrome/Edge and launch the extension before the agent runs. Example steps:
+
+```bash
+npm install
+npm run build
+TABCTL_BROWSER_BIN=google-chrome \
+  TABCTL_PROFILE_DIR=/tmp/tabctl-profile \
+  bash scripts/launch-extension-browser.sh &
+```
+
+Then configure MCP with `config/playwright-mcp-cdp.json` so the agent attaches to the already-running browser.
 
 ### Offline mock host (no Edge/extension)
 
