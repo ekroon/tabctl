@@ -23,16 +23,10 @@ fi
 
 mkdir -p "${PROFILE_DIR}"
 
-EXTRA_ARGS=()
-if [[ -n "${TABCTL_BROWSER_ARGS:-}" ]]; then
-  read -r -a EXTRA_ARGS <<< "${TABCTL_BROWSER_ARGS}"
-fi
-
 exec "${BROWSER_BIN}" \
   --user-data-dir="${PROFILE_DIR}" \
   --disable-extensions-except="${EXTENSION_DIR}" \
   --load-extension="${EXTENSION_DIR}" \
   --remote-debugging-port="${REMOTE_DEBUGGING_PORT}" \
   --no-first-run \
-  --no-default-browser-check \
-  ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+  --no-default-browser-check
