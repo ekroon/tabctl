@@ -46,6 +46,9 @@ async function main() {
   if (command === "list" && options.groups === true) {
     command = "group-list";
   }
+  if (command === "extension-reload") {
+    command = "reload-extension";
+  }
   if (options.format && command !== "report" && command !== "screenshot") {
     errorOut("Unknown option: --format");
   }
