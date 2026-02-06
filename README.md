@@ -73,13 +73,13 @@ For multiple Chrome profiles, start each profile with a different `XDG_CONFIG_HO
 
 ```bash
 XDG_CONFIG_HOME="$HOME/.config/tabctl-work" tabctl config --browser chrome --socket-name tabctl-work
-XDG_CONFIG_HOME="$HOME/.config/tabctl-work" /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+XDG_CONFIG_HOME="$HOME/.config/tabctl-work" "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --user-data-dir="$HOME/Library/Application Support/Google/Chrome-Work"
 
 XDG_CONFIG_HOME="$HOME/.config/tabctl-work" tabctl list
 
 XDG_CONFIG_HOME="$HOME/.config/tabctl-personal" tabctl config --browser chrome --socket-name tabctl-personal
-XDG_CONFIG_HOME="$HOME/.config/tabctl-personal" /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+XDG_CONFIG_HOME="$HOME/.config/tabctl-personal" "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --user-data-dir="$HOME/Library/Application Support/Google/Chrome-Personal"
 
 XDG_CONFIG_HOME="$HOME/.config/tabctl-personal" tabctl list
