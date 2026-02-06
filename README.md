@@ -77,9 +77,15 @@ XDG_CONFIG_HOME="$HOME/.config/tabctl-work" /Applications/Google\ Chrome.app/Con
   --user-data-dir="$HOME/Library/Application Support/Google/Chrome-Work"
 
 XDG_CONFIG_HOME="$HOME/.config/tabctl-work" tabctl list
+
+XDG_CONFIG_HOME="$HOME/.config/tabctl-personal" tabctl config --browser chrome --socket-name tabctl-personal
+XDG_CONFIG_HOME="$HOME/.config/tabctl-personal" /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --user-data-dir="$HOME/Library/Application Support/Google/Chrome-Personal"
+
+XDG_CONFIG_HOME="$HOME/.config/tabctl-personal" tabctl list
 ```
 
-This connects the CLI to the Chrome instance using the `tabctl-work` socket from `$HOME/.config/tabctl-work`.
+Each `tabctl list` connects to the Chrome instance using the matching socket from its config directory.
 No extra Chrome flags are required; the extension handles the host connection.
 
 You can also use the helper script:
