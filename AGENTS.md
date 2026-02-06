@@ -49,6 +49,11 @@ tabctl dedupe --window 123 --confirm # Execute after review
 4. **Check result** - Verify with `tabctl list` or `tabctl history`
 5. **Undo if needed** - Use `tabctl undo --latest` or `tabctl undo <txid>`
 
+## Commit message style
+- Use Conventional Commits (`type(scope): subject`), with scope optional.
+- Keep the subject in present-tense, lowercase imperative form.
+- Do not add a trailing period.
+
 ## Principles (read first)
 - Only mutate tabs that the test itself created.
 - Never run `archive --all` or `close --apply` in a normal browsing session.
