@@ -60,6 +60,13 @@ Use the CLI to generate the manifest and wrapper:
 tabctl setup --browser edge --extension-id <YOUR_EXTENSION_ID>
 ```
 
+Configure which browser/socket the CLI should connect to (writes config.json):
+
+```bash
+tabctl config --browser chrome
+tabctl config --socket-name tabctl-test
+```
+
 You can also use the helper script:
 
 ```bash
