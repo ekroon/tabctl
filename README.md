@@ -69,7 +69,7 @@ tabctl config --browser chrome
 tabctl config --socket-name tabctl-test
 ```
 
-For multiple Chrome profiles, start each profile with a different `XDG_CONFIG_HOME` + `--user-data-dir`, then point the CLI at the matching config or socket:
+For multiple Chrome profiles, start each profile with a different `XDG_CONFIG_HOME` + `--user-data-dir`, then point the CLI at the matching config or socket (macOS example):
 
 ```bash
 XDG_CONFIG_HOME="$HOME/.config/tabctl-work" tabctl config --browser chrome --socket-name tabctl-work
