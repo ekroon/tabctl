@@ -5,7 +5,7 @@ import { loadConfig, resolveBrowser, resolveSocketPath } from "../../shared/conf
 import { STATE_HOME, LEGACY_SOCKET_PATH } from "./constants";
 import type { ProgressCallback } from "./types";
 
-const LEGACY_EDGE_SOCKET_PATH = path.join(STATE_HOME, "tabctl", "tabctl.sock");
+const LEGACY_TABCTL_SOCKET_PATH = path.join(STATE_HOME, "tabctl", "tabctl.sock");
 
 export function createRequestId(): string {
   return `req-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
@@ -20,8 +20,8 @@ function resolveClientSocketPath(): string {
   const socketPath = resolveSocketPath(STATE_HOME, browser, config);
   const hasCustomSocket = Boolean(config?.socketName);
   if (browser === "edge" && !hasCustomSocket && !fs.existsSync(socketPath)) {
-    if (fs.existsSync(LEGACY_EDGE_SOCKET_PATH)) {
-      return LEGACY_EDGE_SOCKET_PATH;
+    if (fs.existsSync(LEGACY_TABCTL_SOCKET_PATH)) {
+      return LEGACY_TABCTL_SOCKET_PATH;
     }
     // Backward compatibility for older Edge installs that still use the tabarchive socket.
     return LEGACY_SOCKET_PATH;
