@@ -79,7 +79,7 @@ export function resolveBrowser(config: TabctlConfig | null): Browser {
 }
 
 export function resolveSocketName(config: TabctlConfig | null, browser: Browser): string {
-  const socketName = config?.socketName ? config.socketName.trim() : "";
+  const socketName = config?.socketName ? config.socketName : "";
   if (socketName) {
     return socketName.endsWith(".sock") ? socketName : `${socketName}.sock`;
   }
