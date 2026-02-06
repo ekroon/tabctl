@@ -184,6 +184,148 @@ To install into a specific agent toolchain with `skills`:
 npx skills add https://github.com/ekroon/tabctl --skill tabctl -a opencode
 ```
 
+## Playwright MCP setup (extension + CLI testing)
+
+Playwright MCP can drive Edge/Chrome to exercise the extension and `tabctl` CLI in a controlled window. Use the standard MCP config with the Edge browser channel and a dedicated profile so the extension and CLI live in the same browser state.
+
+### 1) Install Playwright MCP
+
+Add the MCP server to your client using the standard config (or copy `config/playwright-mcp.json` and adapt the path). Example config:
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "@playwright/mcp@latest",
+        "--browser",
+        "msedge",
+        "--user-data-dir",
+        ".tabctl/playwright-profile"
+      ]
+    }
+  }
+}
+```
+
+Notes:
+- `--browser msedge` keeps the MCP session aligned with Edge (same browser required by the extension).
+- `--user-data-dir .tabctl/playwright-profile` isolates test state from your normal profile.
+
+#### Copilot Coding Agent (CCA) config
+
+Copilot Coding Agent uses a slightly different MCP config shape (adds `type` and `tools`). Merge the contents of `config/copilot-mcp.json` into `~/.copilot/mcp-config.json` (or copy it if you are starting fresh) to enable Playwright MCP for CCA runs:
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "type": "local",
+      "command": "npx",
+      "tools": ["*"],
+      "args": [
+        "@playwright/mcp@latest",
+        "--browser",
+        "msedge",
+        "--user-data-dir",
+        ".tabctl/playwright-profile"
+      ]
+    }
+  }
+}
+```
+
+### 2) Load the extension into the MCP-driven Edge profile
+
+1. Start the MCP server through your client.
+2. Open `edge://extensions` in the MCP-managed Edge window (either manually or via `tabctl open --new-window --url edge://extensions` once `tabctl` is installed).
+3. Enable **Developer mode**, click **Load unpacked**, and choose the `extension/` folder.
+4. Copy the extension ID and run:
+
+```bash
+tabctl setup --browser edge --extension-id <YOUR_EXTENSION_ID>
+```
+
+### 3) Smoke-test the CLI + extension via MCP
+
+Use the MCP session to open a safe test window and exercise the CLI. Example:
+
+```bash
+ts=$(date +%s)
+tabctl open --new-window --url https://example.com --url https://example.org --group "TEST-Smoke-${ts}"
+tabctl group-list --window <windowId>
+tabctl screenshot --tab <tabId> --mode viewport
+tabctl inspect --tab <tabId> --signal selector --selector "a[href]" --selector-attr href-url
+```
+
+### Reload the extension after changes
+
+After rebuilding the extension (`npm run build`), you can reload it without visiting the extensions page:
+
+```bash
+tabctl reload-extension
+```
+
+### Devbox/CI setup (launch with extension loaded)
+
+Playwright MCP does **not** expose arbitrary Chromium flags (like `--load-extension`) via its CLI args. To pass extension flags, launch the browser yourself and connect MCP over CDP.
+
+To automate extension loading in a devbox or CI environment, launch the browser with the extension preloaded and a remote debugging port:
+
+```bash
+npm install
+npm run build
+bash scripts/launch-extension-browser.sh
+```
+
+Then point Playwright MCP to the running browser via CDP (sample config in `config/playwright-mcp-cdp.json`):
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "@playwright/mcp@latest",
+        "--cdp-endpoint",
+        "http://127.0.0.1:9222"
+      ]
+    }
+  }
+}
+```
+
+CI note: run the launch script under `xvfb-run -a` and ensure a Chrome/Edge binary is installed (set `TABCTL_BROWSER_BIN` if needed).
+
+#### Copilot Coding Agent environment setup
+
+If you customize the Copilot agent environment (see GitHub’s “customize the agent environment” guide), you can preinstall Chrome/Edge and launch the extension before the agent runs. Example steps:
+
+```bash
+npm install
+npm run build
+TABCTL_BROWSER_BIN=google-chrome \
+  TABCTL_PROFILE_DIR=/tmp/tabctl-profile \
+  bash scripts/launch-extension-browser.sh &
+```
+
+Then configure MCP with `config/playwright-mcp-cdp.json` so the agent attaches to the already-running browser.
+
+### Offline mock host (no Edge/extension)
+
+If Edge or the extension is unavailable, you can still exercise the CLI with a lightweight mock host:
+
+```bash
+node scripts/mock-host.js --socket /tmp/tabctl-mock.sock
+TABCTL_SOCKET=/tmp/tabctl-mock.sock tabctl open --new-window --url https://example.com --group "TEST-Mock"
+TABCTL_SOCKET=/tmp/tabctl-mock.sock tabctl list
+```
+
+The mock host simulates responses (it does not control a real browser), but it lets you verify CLI flows and JSON output.
+
+For more MCP configuration options, see the official Playwright MCP README: https://github.com/microsoft/playwright-mcp.
+
 ## Policy (protect tabs)
 By default the CLI loads a policy file from:
 `$XDG_CONFIG_HOME/tabctl/policy.json` (or `~/.config/tabctl/policy.json`)
