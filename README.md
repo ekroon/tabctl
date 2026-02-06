@@ -53,6 +53,8 @@ TABCTL_VERSION_MODE=release npm run build
 2. Click **Load unpacked** and select `extension`.
 3. Copy the extension ID shown on the extensions page.
 
+If you run Edge/Chrome with a custom profile (for example `--user-data-dir`), load the extension in that profile and use the extension ID from that profile when running `tabctl setup`.
+
 ## 2) Register the native messaging host (macOS)
 Use the CLI to generate the manifest and wrapper:
 
