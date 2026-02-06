@@ -111,8 +111,14 @@ function sendSocketRequest(socketPath: string, request: NativeMessage): Promise<
 
 async function startHost(stateHome: string, extraEnv: Record<string, string> = {}) {
   const hostPath = path.resolve(__dirname, "../../host/host.js");
+  const configHome = path.join(stateHome, "config");
   const child = spawn(process.execPath, [hostPath], {
-    env: { ...process.env, ...extraEnv, XDG_STATE_HOME: stateHome },
+    env: {
+      ...process.env,
+      ...extraEnv,
+      XDG_STATE_HOME: stateHome,
+      XDG_CONFIG_HOME: configHome,
+    },
     stdio: ["pipe", "pipe", "pipe"],
   });
 

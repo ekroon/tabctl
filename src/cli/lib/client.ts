@@ -1,10 +1,25 @@
 import fs from "fs";
 import net from "net";
-import { SOCKET_PATH, LEGACY_SOCKET_PATH } from "./constants";
+import { loadConfig, resolveBrowser, resolveSocketPath } from "../../shared/config";
+import { STATE_HOME, LEGACY_SOCKET_PATH } from "./constants";
 import type { ProgressCallback } from "./types";
 
 export function createRequestId(): string {
   return `req-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function resolveClientSocketPath(): string {
+  if (process.env.TABCTL_SOCKET) {
+    return process.env.TABCTL_SOCKET;
+  }
+  const browser = resolveBrowser(loadConfig());
+  const socketPath = resolveSocketPath(STATE_HOME, browser);
+  if (browser === "edge" && !fs.existsSync(socketPath)) {
+    // Backward compatibility for older Edge installs that still use the tabarchive socket.
+    return LEGACY_SOCKET_PATH;
+  }
+  // Chrome uses its own socket path without legacy fallback.
+  return socketPath;
 }
 
 export function sendRequest(
@@ -12,8 +27,7 @@ export function sendRequest(
   onProgress?: ProgressCallback
 ): Promise<Record<string, unknown>> {
   return new Promise<Record<string, unknown>>((resolve, reject) => {
-    const socketPath = process.env.TABCTL_SOCKET
-      || (fs.existsSync(SOCKET_PATH) ? SOCKET_PATH : LEGACY_SOCKET_PATH);
+    const socketPath = resolveClientSocketPath();
     const client = net.createConnection(socketPath);
     let buffer = "";
 

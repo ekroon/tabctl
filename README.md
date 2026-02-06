@@ -231,6 +231,10 @@ Notes:
 - `tabctl history --json` returns a JSON array in `data`.
 - `--format` is only supported by `report` (use `--json` elsewhere).
 
+## Config
+- Config file: `$XDG_CONFIG_HOME/tabctl/config.json` (or `~/.config/tabctl/config.json`)
+- `browser`: `edge` (default) or `chrome` (uses `tabctl-chrome.sock`)
+
 ## Runtime state
 - Socket: `$XDG_STATE_HOME/tabctl/tabctl.sock` (or `~/.local/state/tabctl/tabctl.sock`)
 - Undo log: `$XDG_STATE_HOME/tabctl/undo.jsonl` (or `~/.local/state/tabctl/undo.jsonl`)

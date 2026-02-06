@@ -1,11 +1,13 @@
 import os from "os";
 import path from "path";
+import { stateHome } from "../../shared/config";
 
 // Re-export version info from shared module
 export { VERSION, BASE_VERSION, GIT_SHA, DIRTY } from "../../shared/version";
 
-export const STATE_HOME = process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
-export const SOCKET_PATH = process.env.TABCTL_SOCKET || path.join(STATE_HOME, "tabctl", "tabctl.sock");
+export const STATE_HOME = stateHome();
+// Default socket path for Edge installs (tabctl.sock).
+export const SOCKET_PATH = path.join(STATE_HOME, "tabctl", "tabctl.sock");
 export const LEGACY_SOCKET_PATH = path.join(os.homedir(), ".tabarchive", "tabarchive.sock");
 export const HOST_NAME = "com.erwinkroon.tabctl";
 export const HOST_DESCRIPTION = "Tab archive native host";

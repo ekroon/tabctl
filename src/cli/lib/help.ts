@@ -234,6 +234,8 @@ function printHelpText(data: HelpData, command?: string): void {
   // Policy location
   lines.push("Policy: $XDG_CONFIG_HOME/tabctl/policy.json (or ~/.config/tabctl/policy.json)");
   lines.push("Policy is enforced when the file exists; missing file means no policy.");
+  lines.push("Config: $XDG_CONFIG_HOME/tabctl/config.json (or ~/.config/tabctl/config.json)");
+  lines.push("Config browser: edge|chrome (chrome uses tabctl-chrome.sock)");
 
   process.stdout.write(lines.join("\n") + "\n");
 }

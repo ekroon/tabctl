@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import fs from "fs";
 import net from "net";
-import os from "os";
 import path from "path";
 import crypto from "crypto";
 import { VERSION, BASE_VERSION, GIT_SHA, DIRTY } from "../shared/version";
+import { loadConfig, resolveBrowser, resolveSocketPath, stateHome } from "../shared/config";
 import {
   appendUndoRecord,
   readUndoRecords,
@@ -13,9 +13,9 @@ import {
   findLatestUndoRecord,
 } from "./lib/undo";
 
-const STATE_HOME = process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
+const STATE_HOME = stateHome();
 const SOCKET_DIR = path.join(STATE_HOME, "tabctl");
-const SOCKET_PATH = path.join(SOCKET_DIR, "tabctl.sock");
+const SOCKET_PATH = resolveSocketPath(STATE_HOME, resolveBrowser(loadConfig()));
 const UNDO_LOG = path.join(SOCKET_DIR, "undo.jsonl");
 const REQUEST_TIMEOUT_MS = 30000;
 const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;

@@ -20,6 +20,10 @@ Create the default policy file:
 tabctl policy --init
 ```
 
+## Config
+- Config file: `$XDG_CONFIG_HOME/tabctl/config.json` (or `~/.config/tabctl/config.json`)
+- `browser`: `edge` (default) or `chrome` (uses `tabctl-chrome.sock`)
+
 ## Global flags
 - `--help`: command-specific help
 - `--json`: JSON output
@@ -385,4 +389,5 @@ Notes:
  - `screenshot --out` writes per-tab folders into the target directory.
 ## Runtime state
 - Socket: `$XDG_STATE_HOME/tabctl/tabctl.sock` (or `~/.local/state/tabctl/tabctl.sock`)
+- Chrome socket: `$XDG_STATE_HOME/tabctl/tabctl-chrome.sock`
 - Undo log: `$XDG_STATE_HOME/tabctl/undo.jsonl` (or `~/.local/state/tabctl/undo.jsonl`)
