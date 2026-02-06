@@ -69,7 +69,7 @@ tabctl config --browser chrome
 tabctl config --socket-name tabctl-test
 ```
 
-For multiple Chrome profiles, start each profile with a different `XDG_CONFIG_HOME` + `--user-data-dir`, then point the CLI at the matching config or socket (macOS example):
+For multiple Chrome profiles, start each profile with a different `XDG_CONFIG_HOME` + `--user-data-dir`, then point the CLI at the matching config or socket (macOS example). Repeat this pattern for each profile (for example `tabctl-personal`).
 
 ```bash
 XDG_CONFIG_HOME="$HOME/.config/tabctl-work" tabctl config --browser chrome --socket-name tabctl-work
@@ -78,6 +78,8 @@ XDG_CONFIG_HOME="$HOME/.config/tabctl-work" /Applications/Google\ Chrome.app/Con
 
 XDG_CONFIG_HOME="$HOME/.config/tabctl-work" tabctl list
 ```
+
+No extra Chrome flags are required; the extension handles the host connection.
 
 You can also use the helper script:
 
