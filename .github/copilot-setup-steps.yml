@@ -1,0 +1,15 @@
+# Copilot Coding Agent setup steps
+# These steps run before the agent begins working on an issue.
+# See: https://docs.github.com/en/copilot/customizing-copilot/customizing-the-development-environment-for-copilot-coding-agent
+
+setup:
+  - name: Install Node.js
+    uses: actions/setup-node@v4
+    with:
+      node-version: "20"
+
+  - name: Install dependencies
+    run: npm install
+
+  - name: Build the project
+    run: npm run build
