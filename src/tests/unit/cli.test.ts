@@ -1908,6 +1908,26 @@ test("setup writes native host manifest", async () => {
   assert.ok(wrapper.includes(hostPath));
 });
 
+test("config writes browser config", async () => {
+  const configHome = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-config-"));
+  const result = await runCli([
+    "config",
+    "--browser",
+    "edge",
+    "--socket-name",
+    "tabctl-test",
+  ], undefined, { XDG_CONFIG_HOME: configHome });
+
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, true);
+  assert.equal(output.data?.status, "updated");
+  const savedConfigPath = path.join(configHome, "tabctl", "config.json");
+  const savedConfig = JSON.parse(fs.readFileSync(savedConfigPath, "utf8"));
+  assert.equal(savedConfig.browser, "edge");
+  assert.equal(savedConfig.socketName, "tabctl-test");
+});
+
 test("policy init creates default file", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-policy-init-"));
   const result = await runCli(["policy", "--init"], undefined, { XDG_CONFIG_HOME: dir });

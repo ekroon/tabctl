@@ -245,6 +245,13 @@ export const COMMANDS: Record<string, CommandMeta> = {
       { flag: "--node <path>", desc: "Path to Node.js executable" },
     ],
   },
+  config: {
+    description: "View or update CLI config",
+    options: [
+      { flag: "--browser edge|chrome", desc: "Browser to connect to" },
+      { flag: "--socket-name <name>", desc: "Custom socket name (without path)" },
+    ],
+  },
   policy: {
     description: "Manage browser policies",
     options: [

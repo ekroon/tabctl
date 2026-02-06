@@ -9,6 +9,7 @@ import path from "path";
 import { spawnSync } from "node:child_process";
 
 import { VERSION, BASE_VERSION, GIT_SHA, DIRTY, HOST_NAME, HOST_DESCRIPTION, EXTENSION_ID_PATTERN, SKILL_NAME, SKILL_REPO } from "../constants";
+import { configPath, loadConfig, parseBrowser, parseSocketName } from "../../../shared/config";
 import { printJson, errorOut } from "../output";
 import { sendRequest, createRequestId } from "../client";
 import { defaultPolicyPath, defaultPolicyTemplate, summarizePolicy, type Policy } from "../policy";
@@ -17,17 +18,6 @@ import type { Options, PolicyContext } from "../types";
 // ============================================================================
 // Setup Command
 // ============================================================================
-
-function resolveBrowser(value: unknown): "edge" | "chrome" | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim().toLowerCase();
-  if (trimmed === "edge" || trimmed === "chrome") {
-    return trimmed;
-  }
-  return null;
-}
 
 function resolveExtensionId(options: Options): string {
   const raw = typeof options["extension-id"] === "string"
@@ -105,7 +95,7 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
     errorOut("tabctl setup is only supported on macOS.");
   }
 
-  const browser = resolveBrowser(options.browser);
+  const browser = parseBrowser(options.browser);
   if (!browser) {
     errorOut("Missing or invalid --browser (edge|chrome)");
   }
@@ -136,6 +126,49 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
       hostPath,
       nodePath,
       wrapperPath,
+    },
+  }, prettyOutput);
+}
+
+// ============================================================================
+// Config Command
+// ============================================================================
+
+export function runConfig(options: Options, prettyOutput: boolean): void {
+  const resolvedPath = configPath();
+  const existing = loadConfig() || {};
+  const updatedConfig = { ...existing };
+  let updated = false;
+
+  if (options.browser != null) {
+    const browser = parseBrowser(options.browser);
+    if (!browser) {
+      errorOut("Invalid --browser value (edge|chrome)");
+    }
+    updatedConfig.browser = browser;
+    updated = true;
+  }
+
+  if (options["socket-name"] != null) {
+    const socketName = parseSocketName(options["socket-name"]);
+    if (!socketName) {
+      errorOut("Invalid --socket-name value");
+    }
+    updatedConfig.socketName = socketName;
+    updated = true;
+  }
+
+  if (updated) {
+    fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+    fs.writeFileSync(resolvedPath, JSON.stringify(updatedConfig, null, 2), "utf8");
+  }
+
+  printJson({
+    ok: true,
+    data: {
+      status: updated ? "updated" : "current",
+      path: resolvedPath,
+      config: updatedConfig,
     },
   }, prettyOutput);
 }

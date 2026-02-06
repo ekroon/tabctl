@@ -11,7 +11,7 @@ import { resolveScopeFlags, buildScopeArgs, selectTabsFromSnapshot } from "./lib
 import { resolvePagination } from "./lib/pagination";
 import { buildTabIndex, buildWindowTitleIndex } from "./lib/snapshot";
 import { printHelp } from "./lib/help";
-import { runSetup, runSkillInstall, runVersion, runPolicy, runList, runGroupList, runPing, runHistory, runUndo } from "./lib/commands";
+import { runConfig, runSetup, runSkillInstall, runVersion, runPolicy, runList, runGroupList, runPing, runHistory, runUndo } from "./lib/commands";
 import {
   buildAnalyzeParams,
   buildInspectParams,
@@ -171,6 +171,11 @@ async function main() {
 
   if (command === "skill") {
     runSkillInstall(options, prettyOutput);
+    return;
+  }
+
+  if (command === "config") {
+    runConfig(options, prettyOutput);
     return;
   }
 

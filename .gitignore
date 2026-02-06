@@ -15,3 +15,4 @@ build/
 /tests/unit/*.js
 /src/shared/version.ts
 /shared/version.js
+/shared/config.js

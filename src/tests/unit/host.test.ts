@@ -126,7 +126,7 @@ async function startHost(stateHome: string, extraEnv: Record<string, string> = {
     throw new Error("Failed to start host process");
   }
 
-  const socketPath = path.join(stateHome, "tabctl", "tabctl.sock");
+  const socketPath = path.join(stateHome, "tabctl", "tabctl-chrome.sock");
   await waitForSocket(socketPath);
   const undoPath = path.join(stateHome, "tabctl", "undo.jsonl");
   return { child, socketPath, undoPath };

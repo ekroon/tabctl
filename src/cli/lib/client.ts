@@ -1,5 +1,6 @@
 import fs from "fs";
 import net from "net";
+import path from "path";
 import { loadConfig, resolveBrowser, resolveSocketPath } from "../../shared/config";
 import { STATE_HOME, LEGACY_SOCKET_PATH } from "./constants";
 import type { ProgressCallback } from "./types";
@@ -12,9 +13,15 @@ function resolveClientSocketPath(): string {
   if (process.env.TABCTL_SOCKET) {
     return process.env.TABCTL_SOCKET;
   }
-  const browser = resolveBrowser(loadConfig());
-  const socketPath = resolveSocketPath(STATE_HOME, browser);
-  if (browser === "edge" && !fs.existsSync(socketPath)) {
+  const config = loadConfig();
+  const browser = resolveBrowser(config);
+  const socketPath = resolveSocketPath(STATE_HOME, browser, config);
+  const hasCustomSocket = Boolean(config?.socketName);
+  if (browser === "edge" && !hasCustomSocket && !fs.existsSync(socketPath)) {
+    const legacyEdgeSocket = path.join(STATE_HOME, "tabctl", "tabctl.sock");
+    if (fs.existsSync(legacyEdgeSocket)) {
+      return legacyEdgeSocket;
+    }
     // Backward compatibility for older Edge installs that still use the tabarchive socket.
     return LEGACY_SOCKET_PATH;
   }

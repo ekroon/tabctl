@@ -22,7 +22,13 @@ tabctl policy --init
 
 ## Config
 - Config file: `$XDG_CONFIG_HOME/tabctl/config.json` (or `~/.config/tabctl/config.json`)
-- `browser`: `edge` (default) or `chrome` (uses `tabctl-chrome.sock`)
+- `browser`: `chrome` (default) or `edge` (uses `tabctl-edge.sock`)
+- `socketName`: override the socket basename (defaults to `tabctl-<browser>.sock`)
+
+Update config via CLI:
+```bash
+tabctl config --browser edge --socket-name tabctl-test
+```
 
 ## Global flags
 - `--help`: command-specific help

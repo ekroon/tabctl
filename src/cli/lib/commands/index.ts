@@ -5,6 +5,7 @@
 
 // Meta commands (version, ping, setup, skill, policy, history, undo)
 export {
+  runConfig,
   runSetup,
   runSkillInstall,
   runVersion,

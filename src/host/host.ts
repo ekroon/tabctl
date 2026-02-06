@@ -15,7 +15,8 @@ import {
 
 const STATE_HOME = stateHome();
 const SOCKET_DIR = path.join(STATE_HOME, "tabctl");
-const SOCKET_PATH = resolveSocketPath(STATE_HOME, resolveBrowser(loadConfig()));
+const CONFIG = loadConfig();
+const SOCKET_PATH = resolveSocketPath(STATE_HOME, resolveBrowser(CONFIG), CONFIG);
 const UNDO_LOG = path.join(SOCKET_DIR, "undo.jsonl");
 const REQUEST_TIMEOUT_MS = 30000;
 const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;

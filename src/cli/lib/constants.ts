@@ -6,8 +6,8 @@ import { stateHome } from "../../shared/config";
 export { VERSION, BASE_VERSION, GIT_SHA, DIRTY } from "../../shared/version";
 
 export const STATE_HOME = stateHome();
-// Default socket path for Edge installs (tabctl.sock).
-export const SOCKET_PATH = path.join(STATE_HOME, "tabctl", "tabctl.sock");
+// Default socket path for Chrome installs (tabctl-chrome.sock).
+export const SOCKET_PATH = path.join(STATE_HOME, "tabctl", "tabctl-chrome.sock");
 export const LEGACY_SOCKET_PATH = path.join(os.homedir(), ".tabarchive", "tabarchive.sock");
 export const HOST_NAME = "com.erwinkroon.tabctl";
 export const HOST_DESCRIPTION = "Tab archive native host";

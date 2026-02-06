@@ -233,10 +233,15 @@ Notes:
 
 ## Config
 - Config file: `$XDG_CONFIG_HOME/tabctl/config.json` (or `~/.config/tabctl/config.json`)
-- `browser`: `edge` (default) or `chrome` (uses `tabctl-chrome.sock`)
+- `browser`: `chrome` (default) or `edge` (uses `tabctl-edge.sock`)
+- `socketName`: override the socket basename (defaults to `tabctl-<browser>.sock`)
+
+```bash
+tabctl config --browser edge --socket-name tabctl-test
+```
 
 ## Runtime state
-- Socket: `$XDG_STATE_HOME/tabctl/tabctl.sock` (or `~/.local/state/tabctl/tabctl.sock`)
+- Socket: `$XDG_STATE_HOME/tabctl/tabctl-<browser>.sock` (or `~/.local/state/tabctl/tabctl-<browser>.sock`)
 - Undo log: `$XDG_STATE_HOME/tabctl/undo.jsonl` (or `~/.local/state/tabctl/undo.jsonl`)
 
 ## Security

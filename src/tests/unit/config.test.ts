@@ -19,16 +19,16 @@ function withConfigHome(dir: string, fn: () => void) {
   }
 }
 
-test("config defaults to edge when missing", () => {
+test("config defaults to chrome when missing", () => {
   const configHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-config-"));
   withConfigHome(configHomeDir, () => {
     const config = loadConfig();
     assert.equal(config, null);
-    assert.equal(resolveBrowser(config), "edge");
+    assert.equal(resolveBrowser(config), "chrome");
     const stateHome = path.join(configHomeDir, "state");
     assert.equal(
-      resolveSocketPath(stateHome, resolveBrowser(config)),
-      path.join(stateHome, "tabctl", "tabctl.sock"),
+      resolveSocketPath(stateHome, resolveBrowser(config), config),
+      path.join(stateHome, "tabctl", "tabctl-chrome.sock"),
     );
   });
 });
@@ -43,8 +43,39 @@ test("config uses chrome socket", () => {
     assert.equal(resolveBrowser(config), "chrome");
     const stateHome = path.join(configHomeDir, "state");
     assert.equal(
-      resolveSocketPath(stateHome, resolveBrowser(config)),
+      resolveSocketPath(stateHome, resolveBrowser(config), config),
       path.join(stateHome, "tabctl", "tabctl-chrome.sock"),
+    );
+  });
+});
+
+test("config uses edge socket", () => {
+  const configHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-config-"));
+  withConfigHome(configHomeDir, () => {
+    const resolvedPath = configPath();
+    fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+    fs.writeFileSync(resolvedPath, JSON.stringify({ browser: "edge" }));
+    const config = loadConfig();
+    assert.equal(resolveBrowser(config), "edge");
+    const stateHome = path.join(configHomeDir, "state");
+    assert.equal(
+      resolveSocketPath(stateHome, resolveBrowser(config), config),
+      path.join(stateHome, "tabctl", "tabctl-edge.sock"),
+    );
+  });
+});
+
+test("config uses custom socket name", () => {
+  const configHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-config-"));
+  withConfigHome(configHomeDir, () => {
+    const resolvedPath = configPath();
+    fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+    fs.writeFileSync(resolvedPath, JSON.stringify({ socketName: "tabctl-test" }));
+    const config = loadConfig();
+    const stateHome = path.join(configHomeDir, "state");
+    assert.equal(
+      resolveSocketPath(stateHome, resolveBrowser(config), config),
+      path.join(stateHome, "tabctl", "tabctl-test.sock"),
     );
   });
 });
