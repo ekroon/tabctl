@@ -66,7 +66,7 @@ tabctl dedupe --window 123 --confirm # Execute after review
 - Edge is open.
 - The extension is loaded (`extension/`) and connected to the native host.
 - The native host manifest is installed (use `scripts/setup-native-host.sh`).
-- CLI available via: `node /Users/<you>/develop/scripts/check-browser-tabs/cli/tabctl.js`.
+- For development, prefer the repo script (`node ./cli/tabctl.js`) so a stable global `tabctl` can stay installed.
 
 ## Unit tests (no Edge required)
 These tests validate the CLI/host helpers using a mocked socket and run without Edge or the extension.
@@ -85,12 +85,13 @@ Always finish with:
 2. A minimal smoke test in a new window you create (safe URLs + unique `TEST-` prefix). Verify via `tabctl group-list` or `tabctl list`.
 3. A screenshot-first smoke step: capture a screenshot before running selector-based extraction.
 
-Example:
+Example (recommended for development):
 ```bash
 ts=$(date +%s)
-tabctl open --new-window --url https://example.com --url https://example.org --group "TEST-Smoke-${ts}"
-tabctl group-list --window <windowId>
+node ./cli/tabctl.js open --new-window --url https://example.com --url https://example.org --url https://example.net --group "TEST-Smoke-${ts}"
+node ./cli/tabctl.js group-list --window last-focused
 ```
+
 
 Screenshot-first example:
 ```bash
