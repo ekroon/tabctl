@@ -1,10 +1,31 @@
 {
-  "name": "check-browser-tabs",
-  "version": "0.1.0",
-  "private": true,
+  "name": "tabctl",
+  "version": "0.1.1",
+  "description": "CLI tool to manage and analyze browser tabs",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ekroon/tabctl"
+  },
+  "keywords": [
+    "browser",
+    "tabs",
+    "cli",
+    "edge",
+    "chrome"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "bin": {
     "tabctl": "cli/tabctl.js"
   },
+  "files": [
+    "cli",
+    "host",
+    "shared",
+    "extension"
+  ],
   "scripts": {
     "build": "node scripts/gen-version.js && tsc -p tsconfig.json && node scripts/sync-build.js",
     "bump:major": "node scripts/bump-version.js major",
