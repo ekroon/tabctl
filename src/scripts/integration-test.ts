@@ -141,9 +141,6 @@ async function main(): Promise<void> {
     log(`Chrome: ${chromePath}`);
 
     // 2. Launch headless Chrome with CDP pipe.
-    //    Load the extension via --load-extension so the service worker registers
-    //    at startup (Extensions.loadUnpacked alone can cause Chrome to exit
-    //    before the worker is ready in headless mode).
     const extensionDir = path.resolve(__dirname, "..", "..", "extension");
     chrome = spawn(chromePath, [
       "--headless=new",
@@ -154,8 +151,6 @@ async function main(): Promise<void> {
       "--disable-gpu",
       "--disable-background-timer-throttling",
       "--no-sandbox",
-      `--disable-extensions-except=${extensionDir}`,
-      `--load-extension=${extensionDir}`,
       "--user-data-dir=" + userDataDir,
     ], {
       stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
@@ -182,43 +177,13 @@ async function main(): Promise<void> {
 
     initCDP(chrome);
 
-    // 3. Discover the extension ID from the service worker target.
-    //    The extension was loaded at startup via --load-extension.
-    //    The first connectNative() will fail (no manifest yet) — that's expected.
-    log(`Loading extension from ${extensionDir}`);
-    let swTarget: { targetId: string; type: string; url: string } | undefined;
-    let extensionId = "";
-    for (let attempt = 0; attempt < 15; attempt++) {
-      await sleep(1000);
-      if (chrome.exitCode !== null) {
-        log(`Chrome stderr: ${stderrBuf.slice(-500)}`);
-        throw new Error(`Chrome exited during service worker discovery (code ${chrome.exitCode})`);
-      }
-      const targets = await sendCDP("Target.getTargets");
-      swTarget = (targets.targetInfos as Array<{ targetId: string; type: string; url: string }>)
-        .find((t) => t.type === "service_worker" && t.url.startsWith("chrome-extension://"));
-      if (swTarget) {
-        const m = swTarget.url.match(/chrome-extension:\/\/([^/]+)/);
-        extensionId = m ? m[1] : "";
-        break;
-      }
-      log(`Service worker not found yet (attempt ${attempt + 1}/15)…`);
-    }
-    if (!swTarget || !extensionId) {
-      log(`Chrome stderr: ${stderrBuf.slice(-500)}`);
-      throw new Error("Extension service worker not found");
-    }
-    log(`Extension loaded: ${extensionId}`);
-
-    // 4. Write native messaging manifest inside the user-data-dir.
-    //    Chrome with --user-data-dir looks for manifests in
-    //    <user-data-dir>/NativeMessagingHosts/, NOT the system-level path.
+    // 3. Write native messaging manifest with a placeholder. We need the
+    //    extension ID for allowed_origins, but we also need the manifest ready
+    //    quickly so connectNative() can succeed.
     const manifestDir = path.join(userDataDir, "NativeMessagingHosts");
     fs.mkdirSync(manifestDir, { recursive: true });
-
     const hostPath = path.resolve(__dirname, "..", "..", "host", "host.js");
     const wrapperPath = path.join(dataDir, "tabctl-host.sh");
-
     const wrapper = [
       "#!/usr/bin/env bash",
       "set -euo pipefail",
@@ -228,8 +193,16 @@ async function main(): Promise<void> {
       "",
     ].join("\n");
     fs.writeFileSync(wrapperPath, wrapper, { mode: 0o700 });
-
     manifestPath = path.join(manifestDir, `${DEFAULT_HOST_NAME}.json`);
+
+    // 4. Load extension via CDP to discover its ID.
+    //    The first connectNative() will fail (no manifest yet) — that's expected.
+    log(`Loading extension from ${extensionDir}`);
+    const loadResult = await sendCDP("Extensions.loadUnpacked", { path: extensionDir });
+    const extensionId: string = loadResult.id;
+    log(`Extension loaded: ${extensionId}`);
+
+    // Write the real manifest with the correct allowed_origins immediately.
     const manifest = {
       name: DEFAULT_HOST_NAME,
       description: "tabctl integration test",
@@ -240,9 +213,26 @@ async function main(): Promise<void> {
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
     log(`Manifest written: ${manifestPath}`);
 
-    // 5. Trigger reconnect via CDP — attach to the extension's service worker
-    //    and call connectNative() directly. The first attempt failed (no manifest),
-    //    but now the manifest is in place.
+    // 5. Find the extension's service worker target.
+    //    Must be fast — in headless mode, Chrome may exit shortly after
+    //    Extensions.loadUnpacked if subprocesses fail to initialize.
+    let swTarget: { targetId: string; type: string; url: string } | undefined;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if (chrome.exitCode !== null) {
+        log(`Chrome stderr: ${stderrBuf.slice(-500)}`);
+        throw new Error(`Chrome exited during service worker discovery (code ${chrome.exitCode})`);
+      }
+      const targets = await sendCDP("Target.getTargets");
+      swTarget = (targets.targetInfos as Array<{ targetId: string; type: string; url: string }>)
+        .find((t) => t.type === "service_worker" && t.url.includes(extensionId));
+      if (swTarget) break;
+      log(`Service worker not found yet (attempt ${attempt + 1}/20)…`);
+      await sleep(500);
+    }
+    if (!swTarget) {
+      log(`Chrome stderr: ${stderrBuf.slice(-500)}`);
+      throw new Error("Extension service worker not found");
+    }
     const { sessionId } = await sendCDP("Target.attachToTarget", {
       targetId: swTarget.targetId,
       flatten: true,
