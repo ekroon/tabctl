@@ -1,172 +1,75 @@
-# Tab Control
+# tabctl
 
-Tab Control is a local-first Microsoft Edge Manifest V3 (MV3) extension with a native messaging host and the `tabctl` command-line interface (CLI) for inspecting, analyzing, and managing browser tabs. It can list tabs and groups, analyze duplicates or stale tabs, inspect page metadata and selector signals (for example, extracting a price or headline), open new tabs into named groups, move tabs and groups around, close or archive targets, generate reports in JSON/Markdown/CSV, and undo actions when needed. A policy file can mark pinned tabs or specific group titles as protected so automated actions skip them.
+`tabctl` is a command-line tool that gives you terminal control over your browser tabs. List, search, group, move, close, deduplicate, inspect, and report on tabs without leaving your terminal — across Chrome and Edge.
 
-It requires the Edge extension to be installed and the native host running on the same machine; the CLI talks to the host, and the host proxies requests to the extension.
+It works through a lightweight local stack: the CLI talks to a native messaging host, which proxies requests to a browser extension. A policy file can protect pinned tabs or specific groups from automated actions, and every mutation is undoable.
 
 This repo contains:
-- Edge MV3 extension (tab/group inspection + actions)
+- Chrome/Edge extension (tab/group inspection + actions)
 - Native messaging host (Node)
 - CLI (`tabctl`) for on-demand workflows
 
-The host only runs while Edge is open and the extension is connected.
+The host only runs while the browser is open and the extension is connected.
 
-## TypeScript workflow
-Source lives in `src/` and compiles to `build/`, then syncs to the runtime locations:
-- `src/extension/background.ts` -> `extension/background.js`
-- `src/host/host.ts` -> `host/host.js`
-- `src/cli/tabctl.ts` -> `cli/tabctl.js`
-- `src/tests/unit/*.ts` -> `tests/unit/*.js`
+## Quick Start
 
-Build and test:
+### 1. Build and install
 
 ```bash
 npm install
 npm run build
-npm test
+npm link          # puts tabctl on your PATH
 ```
 
-## Versioning
-The base version lives in `package.json` and is embedded into the CLI, host, and extension at build time.
+If you haven't run `npm link`, you can always use `node ./cli/tabctl.js` instead of `tabctl`.
 
-Commands:
+### 2. Set up your browser
+
+Run the interactive setup — it syncs the extension, tells you where to load it, and prompts for the extension ID:
+
+<!-- test: "setup interactive mode reads extension-id from stdin" -->
 ```bash
-npm run bump:patch
-npm run bump:minor
-npm run bump:major
+tabctl setup --browser chrome
 ```
 
-Local builds default to a dev version when a `.git` directory is present, appending the short SHA.
+This will:
+1. Copy the extension to a stable location (`~/.local/state/tabctl/extension/`)
+2. Print the path (and copy it to your clipboard)
+3. Ask you to load it as an unpacked extension in `chrome://extensions`
+4. Prompt you to paste the extension ID
+
+> **Edge?** Use `--browser edge` and load from `edge://extensions` instead.
+
+If you already know your extension ID, skip the interactive flow:
+
+<!-- test: "setup writes native host manifest for chrome" -->
 ```bash
-npm run build
+tabctl setup --browser chrome --extension-id <your-extension-id>
 ```
 
-This produces versions like `0.1.0-dev.abc12345` (and appends `.dirty` when the repo has uncommitted changes).
+### 3. Verify and explore
 
-For release builds without SHA, set:
+<!-- test: "ping sends ping action", "list sends list action" -->
 ```bash
-TABCTL_VERSION_MODE=release npm run build
+tabctl ping       # check the connection
+tabctl list       # see your open tabs
 ```
 
-## 1) Load the extension
-1. Open `edge://extensions` and enable **Developer mode**.
-2. Click **Load unpacked** and select `extension`.
-3. Copy the extension ID shown on the extensions page.
+> **Multiple browsers?** See [Multi-Browser Setup](#multi-browser-setup) for running tabctl with both Chrome and Edge.
 
-## 2) Register the native messaging host (macOS)
-Use the CLI to generate the manifest and wrapper:
+## Commands
 
-```bash
-tabctl setup --browser edge --extension-id <YOUR_EXTENSION_ID>
-```
+<!-- test: "list sends list action", "analyze passes tab ids and github options", "inspect passes signal options", "close without confirm fails", "report format md returns markdown content", "undo sends undo action with txid" -->
+| Command | Description |
+|---------|-------------|
+| `tabctl list` | List open tabs and groups |
+| `tabctl analyze` | Find stale or duplicate tabs |
+| `tabctl inspect --tab <id>` | Extract page metadata or CSS selectors |
+| `tabctl close --tab <id>` | Close tabs with full undo support |
+| `tabctl report` | Generate reports in JSON, Markdown, or CSV |
+| `tabctl undo` | Revert the last action |
 
-This writes the manifest and registers a profile. The first profile registered becomes the default.
-`~/Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.erwinkroon.tabctl.json`
-
-The manifest points to a wrapper script at:
-`<dataDir>/tabctl-host.sh` (default: `~/.local/state/tabctl/tabctl-host.sh`)
-
-If `node` is not on PATH for Edge, pass an explicit path:
-
-```bash
-tabctl setup --browser edge --extension-id <YOUR_EXTENSION_ID> --node /usr/local/bin/node
-```
-
-## Multi-Browser Setup
-
-tabctl supports multiple browser profiles. Each profile connects to a different browser or browser user profile.
-
-### Quick Start
-
-```bash
-# Setup for Edge
-tabctl setup --browser edge --extension-id <edge-id>
-
-# Setup for Chrome (with custom name)
-tabctl setup --browser chrome --extension-id <chrome-id> --name chrome-work
-
-# List profiles
-tabctl profile-list
-
-# Switch default
-tabctl profile-switch edge
-
-# One-off command with different profile
-tabctl list --profile chrome-work
-```
-
-### How It Works
-
-Each profile gets its own:
-- Native host manifest and wrapper script
-- Unix socket for CLI-host communication
-- Undo history log
-- Data directory
-
-Policy is shared across all profiles.
-
-## 3) Run the CLI
-The CLI connects to the host over a local UNIX socket. It only works when Edge is open and the extension is active.
-
-```bash
-node /Users/<you>/develop/scripts/check-browser-tabs/cli/tabctl.js list
-```
-
-## CLI commands
-
-```bash
-tabctl --help
-tabctl help --json
-tabctl skill
-tabctl list
-tabctl list --limit 100
-tabctl list --group-id -1
-tabctl list --ungrouped
-tabctl analyze --stale-days 30
-tabctl analyze --ungrouped
-tabctl analyze --stale-days 30 --github
-tabctl analyze --stale-days 30 --tab 123 --github --progress
-tabctl analyze --stale-days 30 --github --github-concurrency 4 --progress
-tabctl analyze --stale-days 30 --github --github-concurrency 4 --github-timeout-ms 4000 --progress
-tabctl dedupe --stale-days 30 --github
-tabctl dedupe --ungrouped
-tabctl inspect --tab 123 --signal page-meta --progress
-tabctl inspect --tab 123 --limit 100
-tabctl inspect --tab 123 --signal github-state --signal-concurrency 4 --signal-timeout-ms 4000 --progress
-tabctl inspect --tab 123 --signal selector --selector "price=.price" --signal-timeout-ms 1500 --progress
-tabctl inspect --tab 123 --signal page-meta --wait-for dom --wait-timeout-ms 8000
-tabctl inspect --tab 123 --signal selector --signal-config ~/.config/tabctl/signals.json --progress
-tabctl inspect --tab 123 --selector "price=.price"
-tabctl inspect --tab 123 --selector '{"name":"cta","selector":"a.cta","attr":"href-url"}'
-tabctl inspect --tab 123 --signal selector --selector '{"name":"price","selector":".price","text":"€","textMode":"contains"}'
-tabctl screenshot --tab 123 --mode viewport
-tabctl screenshot --tab 123 --mode full --tile-max-dim 1500 --max-bytes 2000000
-tabctl screenshot --tab 123 --mode full --wait-for load --wait-timeout-ms 8000
-tabctl focus --tab 123
-tabctl refresh --tab 123
-tabctl open --new-window --url https://example.com
-tabctl open --url https://example.com --group "Docs" --color blue
-tabctl open --url https://example.com --after-tab 123
-tabctl open --window new --url https://example.com
-tabctl move-tab --tab 123 --new-window
-tabctl merge-window --from 1 --to 2
-tabctl group-list
-tabctl group-list --limit 100
-tabctl group-update --group "Work" --title "Work Items" --color red --collapsed
-tabctl group-ungroup --group "Work"
-tabctl group-assign --tab 123 --group "Work" --create
-tabctl policy --init
-tabctl archive --all
-tabctl archive --window 3
-tabctl archive --ungrouped
-tabctl close --tab 123 --confirm
-tabctl close --ungrouped --confirm
-tabctl report --format md --out /path/to/report.md
-tabctl report --limit 100
-tabctl undo <txid>
-tabctl undo --latest
-tabctl history --limit 20
-```
+See [CLI.md](CLI.md) for the full command reference, options, and examples.
 
 ## Screenshot output
 When `--out` is omitted, screenshots are written to `./.tabctl/screenshots/<timestamp>` and the JSON response includes `writtenTo`.
@@ -175,16 +78,19 @@ When `--out` is omitted, screenshots are written to `./.tabctl/screenshots/<time
 Use screenshots only when you need visual context, then extract selectors with `inspect`.
 
 1) Capture context (full page tiles):
+<!-- test: "screenshot passes capture options" -->
 ```bash
 tabctl screenshot --tab <id> --mode full
 ```
 
 2) Identify the element visually, then extract its selector:
+<!-- test: "inspect passes signal options" -->
 ```bash
 tabctl inspect --tab <id> --signal selector --selector '{"name":"target","selector":".your-selector"}'
 ```
 
 3) If you need an absolute URL, set `--selector-attr href-url` or set `attr` to `href-url`/`src-url`:
+<!-- test: "inspect passes selector attr" -->
 ```bash
 tabctl inspect --tab <id> --signal selector --selector '{"name":"link","selector":"a[href]","attr":"href-url"}'
 tabctl inspect --tab <id> --signal selector --selector "link=a[href]" --selector-attr href-url
@@ -194,12 +100,14 @@ tabctl inspect --tab <id> --signal selector --selector "link=a[href]" --selector
 
 Install the tabctl skill for agents (OpenCode, Claude Code, Codex, etc.) via the bundled command (uses the Skills CLI under the hood):
 
+<!-- test: "skill install creates project skill link" -->
 ```bash
 tabctl skill
 ```
 
 This writes a project-local skill to `.opencode/skills/tabctl/SKILL.md`. You can also install globally:
 
+<!-- test: "skill install supports global scope" -->
 ```bash
 tabctl skill --global
 ```
@@ -223,13 +131,14 @@ Example:
 {
   "protect": {
     "pinned": true,
-    "groupTitles": ["\ud83d\udd12"]
+    "groupTitles": ["🔒"]
   }
 }
 ```
 
 Create a default policy file:
 
+<!-- test: "policy init creates default file" -->
 ```bash
 tabctl policy --init
 ```
@@ -237,14 +146,105 @@ tabctl policy --init
 `tabctl setup` does not install a default policy.
 See `config/policy.example.json` for a starter template.
 
-## Install tabctl on PATH
-Use npm to install the local bin:
+## Configuration
+Config directory: `TABCTL_CONFIG_DIR` → `$XDG_CONFIG_HOME/tabctl` → `~/.config/tabctl`
 
+An optional `config.json` in the config directory can set `dataDir` to override where state files (socket, undo log) are stored. When `TABCTL_CONFIG_DIR` is set but no `dataDir` is configured, data defaults to `<configDir>/data/`; otherwise it uses `$XDG_STATE_HOME/tabctl` (or `~/.local/state/tabctl`).
+
+See [CLI.md](CLI.md#configuration) for full details.
+
+## Runtime state
+- Socket: `<dataDir>/tabctl.sock` (default: `~/.local/state/tabctl/tabctl.sock`)
+- Undo log: `<dataDir>/undo.jsonl` (default: `~/.local/state/tabctl/undo.jsonl`)
+- Profile registry: `<configDir>/profiles.json`
+
+## Multi-Browser Setup
+
+> **Advanced topic** — you only need this if you run tabctl with more than one browser (e.g. Edge *and* Chrome).
+
+tabctl supports multiple browser profiles. Each profile connects to a different **browser** (Chrome, Edge).
+
+<!-- test: "setup writes native host manifest", "setup writes native host manifest for chrome", "setup --name creates custom-named profile", "profile-list with multiple profiles shows all", "profile-switch success updates default", "--profile flag overrides active profile" -->
 ```bash
-npm link
+# Setup for Edge
+tabctl setup --browser edge --extension-id <edge-id>
+
+# Setup for Chrome (with custom name)
+tabctl setup --browser chrome --extension-id <chrome-id> --name chrome-work
+
+# List profiles
+tabctl profile-list
+
+# Switch default
+tabctl profile-switch edge
+
+# One-off command with different profile
+tabctl list --profile chrome-work
 ```
 
-Then you can run `tabctl` directly.
+### Custom Chrome Profile Directories
+
+If you launch Chrome with `--user-data-dir`, Chrome looks for native messaging manifests inside that directory. Use `--user-data-dir` in setup to write the manifest to the right place:
+
+<!-- test: "setup --user-data-dir writes manifest to custom path" -->
+```bash
+tabctl setup --browser chrome --user-data-dir /path/to/chrome-profile
+```
+
+This writes the manifest to `<user-data-dir>/NativeMessagingHosts/` instead of the system-wide location.
+
+### How It Works
+
+Each profile gets its own:
+- Native host manifest and wrapper script
+- Unix socket for CLI-host communication
+- Undo history log
+- Data directory
+
+Policy is shared across all profiles.
+
+## Security
+- The native host is locked to your extension ID.
+- All data stays local; no external API keys are used.
+
+## Development
+
+### TypeScript workflow
+Source lives in `src/` and compiles to `build/`, then syncs to the runtime locations:
+- `src/extension/background.ts` -> `extension/background.js`
+- `src/host/host.ts` -> `host/host.js`
+- `src/cli/tabctl.ts` -> `cli/tabctl.js`
+- `src/tests/unit/*.ts` -> `tests/unit/*.js`
+
+Build and test:
+
+```bash
+npm install
+npm run build
+npm test
+```
+
+### Versioning
+The base version lives in `package.json` and is embedded into the CLI, host, and extension at build time.
+
+Commands:
+```bash
+npm run bump:patch
+npm run bump:minor
+npm run bump:major
+```
+
+Local builds default to a dev version when a `.git` directory is present, appending the short SHA.
+```bash
+npm run build
+```
+
+This produces versions like `0.1.0-dev.abc12345` (and appends `.dirty` when the repo has uncommitted changes).
+
+For release builds without SHA, set:
+```bash
+TABCTL_VERSION_MODE=release npm run build
+```
 
 Notes:
 - `close --apply` uses the most recent analysis by `analysisId`.
@@ -259,19 +259,3 @@ Notes:
 - `tabctl undo` accepts a positional txid, `--txid`, or `--latest`.
 - `tabctl history --json` returns a JSON array in `data`.
 - `--format` is only supported by `report` (use `--json` elsewhere).
-
-## Configuration
-Config directory: `TABCTL_CONFIG_DIR` → `$XDG_CONFIG_HOME/tabctl` → `~/.config/tabctl`
-
-An optional `config.json` in the config directory can set `dataDir` to override where state files (socket, undo log) are stored. When `TABCTL_CONFIG_DIR` is set but no `dataDir` is configured, data defaults to `<configDir>/data/`; otherwise it uses `$XDG_STATE_HOME/tabctl` (or `~/.local/state/tabctl`).
-
-See [CLI.md](CLI.md#configuration) for full details.
-
-## Runtime state
-- Socket: `<dataDir>/tabctl.sock` (default: `~/.local/state/tabctl/tabctl.sock`)
-- Undo log: `<dataDir>/undo.jsonl` (default: `~/.local/state/tabctl/undo.jsonl`)
-- Profile registry: `<configDir>/profiles.json`
-
-## Security
-- The native host is locked to your extension ID.
-- All data stays local; no external API keys are used.

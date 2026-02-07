@@ -244,6 +244,7 @@ export const COMMANDS: Record<string, CommandMeta> = {
       { flag: "--extension-id <id>", desc: "Extension ID to connect to" },
       { flag: "--node <path>", desc: "Path to Node.js executable" },
       { flag: "--name <name>", desc: "Profile name (default: browser type)" },
+      { flag: "--user-data-dir <path>", desc: "Chrome/Edge user data directory for custom profiles" },
     ],
   },
   policy: {

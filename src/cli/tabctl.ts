@@ -181,7 +181,7 @@ async function main() {
   }
 
   if (command === "setup") {
-    runSetup(options, prettyOutput);
+    await runSetup(options, prettyOutput);
     return;
   }
 

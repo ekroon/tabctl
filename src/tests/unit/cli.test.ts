@@ -63,6 +63,53 @@ async function runCli(
   });
 }
 
+async function runCliWithStdin(
+  args: string[],
+  stdinData: string,
+  extraEnv?: Record<string, string>,
+) {
+  const env = { ...process.env };
+  if (extraEnv) {
+    Object.assign(env, extraEnv);
+  }
+  const hasCustomConfig = extraEnv && Object.prototype.hasOwnProperty.call(extraEnv, "XDG_CONFIG_HOME");
+  if (!hasCustomConfig) {
+    env.XDG_CONFIG_HOME = testConfigHome;
+  }
+
+  return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn(process.execPath, [cliPath, ...args], { env, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("CLI timeout"));
+    }, 5000);
+
+    child.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    child.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+
+    child.on("exit", (code) => {
+      clearTimeout(timeout);
+      resolve({ status: code, stdout, stderr });
+    });
+
+    child.stdin.write(stdinData);
+    child.stdin.end();
+  });
+}
+
 function assertVersion(version: string | undefined) {
   assert.ok(version);
   if (version && version.includes("-dev.")) {
@@ -88,6 +135,24 @@ test("list sends list action", async () => {
   assert.equal(output.ok, true);
   assert.equal(requests.length, 1);
   assert.equal(requests[0].action, "list");
+});
+
+test("ping sends ping action", async () => {
+  const { socketPath, server, sockets, requests } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    data: { value: "pong" },
+  }));
+
+  const result = await runCli(["ping"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].action, "ping");
 });
 
 test("list paginates and filters by group", async () => {
@@ -1920,6 +1985,123 @@ test("setup writes native host manifest", async () => {
   assert.ok(profiles.profiles.edge);
 });
 
+test("setup writes native host manifest for chrome", async () => {
+  if (process.platform !== "darwin") {
+    return;
+  }
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-chrome-"));
+  const extensionId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const nodePath = process.execPath;
+  const result = await runCli([
+    "setup",
+    "--browser",
+    "chrome",
+    "--extension-id",
+    extensionId,
+    "--node",
+    nodePath,
+  ], undefined, { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state"), XDG_CONFIG_HOME: path.join(homeDir, ".config") });
+
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim()) as { ok: boolean; action?: string; data: Record<string, unknown> };
+  assert.equal(output.ok, true);
+  assert.equal(output.action, "setup");
+  assert.equal(output.data.profileName, "chrome");
+
+  const wrapperPath = path.join(homeDir, ".local", "state", "tabctl", "profiles", "chrome", "tabctl-host.sh");
+  const manifestPath = path.join(
+    homeDir,
+    "Library",
+    "Application Support",
+    "Google",
+    "Chrome",
+    "NativeMessagingHosts",
+    "com.erwinkroon.tabctl.json",
+  );
+  assert.equal(output.data.wrapperPath, wrapperPath);
+  assert.equal(output.data.manifestPath, manifestPath);
+  assert.ok(fs.existsSync(wrapperPath));
+  assert.ok(fs.existsSync(manifestPath));
+
+  // Manifest uses standard host name
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { name?: string; path?: string; allowed_origins?: string[] };
+  assert.equal(manifest.name, "com.erwinkroon.tabctl");
+  assert.equal(manifest.path, wrapperPath);
+  assert.deepEqual(manifest.allowed_origins, [`chrome-extension://${extensionId}/`]);
+
+  const wrapper = fs.readFileSync(wrapperPath, "utf8");
+  const hostPath = path.resolve(__dirname, "../../host/host.js");
+  assert.ok(wrapper.includes(nodePath));
+  assert.ok(wrapper.includes(hostPath));
+  assert.ok(wrapper.includes('export TABCTL_PROFILE="chrome"'));
+
+  // Profile registered with browser: "chrome"
+  assert.equal(output.data.isDefault, true);
+  const profilesPath = path.join(homeDir, ".config", "tabctl", "profiles.json");
+  assert.ok(fs.existsSync(profilesPath));
+  const profiles = JSON.parse(fs.readFileSync(profilesPath, "utf8"));
+  assert.equal(profiles.default, "chrome");
+  assert.ok(profiles.profiles.chrome);
+  assert.equal(profiles.profiles.chrome.browser, "chrome");
+});
+
+test("setup --user-data-dir writes manifest to custom path", async () => {
+  if (process.platform !== "darwin") {
+    return;
+  }
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-udd-"));
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-udd-chrome-"));
+  const extensionId = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+  const nodePath = process.execPath;
+  const result = await runCli([
+    "setup",
+    "--browser",
+    "chrome",
+    "--extension-id",
+    extensionId,
+    "--node",
+    nodePath,
+    "--user-data-dir",
+    userDataDir,
+  ], undefined, { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state"), XDG_CONFIG_HOME: path.join(homeDir, ".config") });
+
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim()) as { ok: boolean; action?: string; data: Record<string, unknown> };
+  assert.equal(output.ok, true);
+  assert.equal(output.action, "setup");
+  assert.equal(output.data.profileName, "chrome");
+
+  // Manifest written to userDataDir, NOT the system-wide path
+  const manifestPath = path.join(userDataDir, "NativeMessagingHosts", "com.erwinkroon.tabctl.json");
+  const systemManifestPath = path.join(
+    homeDir,
+    "Library",
+    "Application Support",
+    "Google",
+    "Chrome",
+    "NativeMessagingHosts",
+    "com.erwinkroon.tabctl.json",
+  );
+  assert.equal(output.data.manifestPath, manifestPath);
+  assert.ok(fs.existsSync(manifestPath), "manifest should exist in userDataDir");
+  assert.ok(!fs.existsSync(systemManifestPath), "manifest should NOT exist in system-wide path");
+
+  // Manifest has correct allowed_origins
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { name?: string; path?: string; allowed_origins?: string[] };
+  assert.equal(manifest.name, "com.erwinkroon.tabctl");
+  assert.deepEqual(manifest.allowed_origins, [`chrome-extension://${extensionId}/`]);
+
+  // Profile registered with browser "chrome"
+  const profilesPath = path.join(homeDir, ".config", "tabctl", "profiles.json");
+  assert.ok(fs.existsSync(profilesPath));
+  const profiles = JSON.parse(fs.readFileSync(profilesPath, "utf8"));
+  assert.ok(profiles.profiles.chrome);
+  assert.equal(profiles.profiles.chrome.browser, "chrome");
+
+  // Output JSON includes userDataDir
+  assert.equal(output.data.userDataDir, userDataDir);
+});
+
 test("policy init creates default file", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-policy-init-"));
   const result = await runCli(["policy", "--init"], undefined, { XDG_CONFIG_HOME: dir });
@@ -2525,6 +2707,111 @@ test("profile-show isDefault is false when using --profile override", async () =
     assert.equal(output.data.isDefault, false);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// Non-interactive setup mode is covered by "setup writes native host manifest" and
+// "setup writes native host manifest for chrome" tests above (both pass --extension-id).
+
+test("setup interactive mode reads extension-id from stdin", async () => {
+  if (process.platform !== "darwin") {
+    return;
+  }
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-interactive-"));
+  try {
+    const extensionId = "cccccccccccccccccccccccccccccccc";
+    const envOverrides = {
+      HOME: homeDir,
+      XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
+      XDG_CONFIG_HOME: path.join(homeDir, ".config"),
+    };
+    const result = await runCliWithStdin(
+      ["setup", "--browser", "chrome", "--node", process.execPath],
+      `${extensionId}\n`,
+      envOverrides,
+    );
+
+    assert.equal(result.status, 0, `expected exit 0, stderr: ${result.stderr}`);
+    const output = JSON.parse(result.stdout.trim()) as { ok: boolean; action?: string; data: Record<string, unknown> };
+    assert.equal(output.ok, true);
+    assert.equal(output.action, "setup");
+    assert.equal(output.data.extensionId, extensionId);
+    assert.equal(output.data.profileName, "chrome");
+
+    // Manifest written with correct allowed_origins
+    const manifestPath = output.data.manifestPath as string;
+    assert.ok(fs.existsSync(manifestPath));
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { allowed_origins?: string[] };
+    assert.deepEqual(manifest.allowed_origins, [`chrome-extension://${extensionId}/`]);
+
+    // Profile registered
+    const profilesPath = path.join(homeDir, ".config", "tabctl", "profiles.json");
+    assert.ok(fs.existsSync(profilesPath));
+    const profiles = JSON.parse(fs.readFileSync(profilesPath, "utf8"));
+    assert.ok(profiles.profiles.chrome);
+    assert.equal(profiles.profiles.chrome.extensionId, extensionId);
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("setup interactive mode rejects invalid ids and accepts valid on retry", async () => {
+  if (process.platform !== "darwin") {
+    return;
+  }
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-retry-"));
+  try {
+    const validId = "dddddddddddddddddddddddddddddddd".slice(0, 32);
+    const envOverrides = {
+      HOME: homeDir,
+      XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
+      XDG_CONFIG_HOME: path.join(homeDir, ".config"),
+    };
+    // First two inputs are invalid, third is valid
+    const stdinData = "bad\nXYZ\n" + validId + "\n";
+    const result = await runCliWithStdin(
+      ["setup", "--browser", "chrome", "--node", process.execPath],
+      stdinData,
+      envOverrides,
+    );
+
+    assert.equal(result.status, 0, `expected exit 0, stderr: ${result.stderr}`);
+    const output = JSON.parse(result.stdout.trim()) as { ok: boolean; data: Record<string, unknown> };
+    assert.equal(output.ok, true);
+    assert.equal(output.data.extensionId, validId);
+    // Stderr should mention invalid attempts
+    assert.ok(result.stderr.includes("Invalid extension ID"), "expected retry message on stderr");
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("setup interactive mode fails after 3 invalid attempts", async () => {
+  if (process.platform !== "darwin") {
+    return;
+  }
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-fail-"));
+  try {
+    const envOverrides = {
+      HOME: homeDir,
+      XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
+      XDG_CONFIG_HOME: path.join(homeDir, ".config"),
+    };
+    // All three inputs are invalid
+    const stdinData = "bad1\nbad2\nbad3\n";
+    const result = await runCliWithStdin(
+      ["setup", "--browser", "chrome", "--node", process.execPath],
+      stdinData,
+      envOverrides,
+    );
+
+    assert.notEqual(result.status, 0, "expected non-zero exit after 3 invalid attempts");
+    assert.ok(
+      result.stderr.includes("3 attempts") || result.stdout.includes("3 attempts"),
+      "expected error message about 3 attempts",
+    );
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
 

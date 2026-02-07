@@ -8,6 +8,7 @@ export type ProfileEntry = {
   nodePath: string;
   hostPath: string;
   dataDir: string;
+  userDataDir?: string;
 };
 
 export type ProfileRegistry = {

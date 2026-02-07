@@ -6,7 +6,8 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { spawnSync } from "node:child_process";
+import readline from "readline";
+import { spawn, spawnSync } from "node:child_process";
 
 import { VERSION, BASE_VERSION, GIT_SHA, DIRTY, HOST_NAME, HOST_DESCRIPTION, EXTENSION_ID_PATTERN, SKILL_NAME, SKILL_REPO, resolveConfig } from "../constants";
 import { printJson, errorOut } from "../output";
@@ -31,18 +32,92 @@ function resolveBrowser(value: unknown): "edge" | "chrome" | null {
   return null;
 }
 
-function resolveExtensionId(options: Options): string {
+function resolveExtensionId(options: Options, required: true): string;
+function resolveExtensionId(options: Options, required: false): string | null;
+function resolveExtensionId(options: Options, required: boolean): string | null {
   const raw = typeof options["extension-id"] === "string"
     ? String(options["extension-id"])
     : (process.env.TABCTL_EXTENSION_ID || "");
   const value = raw.trim().toLowerCase();
   if (!value) {
+    if (!required) return null;
     errorOut("Missing --extension-id (or TABCTL_EXTENSION_ID)");
   }
   if (!EXTENSION_ID_PATTERN.test(value)) {
     errorOut(`Extension ID looks unusual: ${raw}`);
   }
   return value;
+}
+
+async function promptExtensionId(browser: string): Promise<string> {
+  const maxAttempts = 3;
+  const extPage = browser === "chrome" ? "chrome://extensions" : "edge://extensions";
+  const instructions = [
+    "",
+    "Next steps:",
+    `  1. Open ${extPage}`,
+    "  2. Enable Developer mode",
+    '  3. Click "Load unpacked" and select the path above',
+    "  4. Copy the extension ID shown on the extensions page",
+    "",
+  ].join("\n");
+  process.stderr.write(instructions);
+
+  // Collect lines from stdin and provide them on demand
+  const lines: string[] = [];
+  let closed = false;
+  let waiting: ((line: string | null) => void) | null = null;
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stderr, terminal: false });
+  rl.on("line", (line) => {
+    if (waiting) {
+      const cb = waiting;
+      waiting = null;
+      cb(line.trim());
+    } else {
+      lines.push(line.trim());
+    }
+  });
+  rl.on("close", () => {
+    closed = true;
+    if (waiting) {
+      const cb = waiting;
+      waiting = null;
+      cb(null);
+    }
+  });
+
+  const nextLine = (prompt: string): Promise<string | null> => {
+    process.stderr.write(prompt);
+    if (lines.length > 0) {
+      return Promise.resolve(lines.shift()!);
+    }
+    if (closed) return Promise.resolve(null);
+    return new Promise((resolve) => { waiting = resolve; });
+  };
+
+  try {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const raw = await nextLine("Paste the extension ID: ");
+      if (raw === null) {
+        errorOut("No input received (stdin closed).");
+      }
+      const value = raw.toLowerCase();
+      if (EXTENSION_ID_PATTERN.test(value)) {
+        return value;
+      }
+      const remaining = maxAttempts - attempt;
+      if (remaining > 0) {
+        process.stderr.write(`Invalid extension ID (expected 32 lowercase a-p characters). ${remaining} attempt(s) remaining.\n`);
+      } else {
+        errorOut("Invalid extension ID after 3 attempts.");
+      }
+    }
+  } finally {
+    rl.close();
+  }
+  // unreachable due to errorOut, but satisfies TypeScript
+  return "";
 }
 
 function resolveNodePath(options: Options): string {
@@ -104,7 +179,7 @@ function writeWrapper(nodePath: string, hostPath: string, profileName: string | 
   return wrapperPath;
 }
 
-export function runSetup(options: Options, prettyOutput: boolean): void {
+export async function runSetup(options: Options, prettyOutput: boolean): Promise<void> {
   if (process.platform !== "darwin") {
     errorOut("tabctl setup is only supported on macOS.");
   }
@@ -114,9 +189,36 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
     errorOut("Missing or invalid --browser (edge|chrome)");
   }
 
-  const extensionId = resolveExtensionId(options);
   const nodePath = resolveNodePath(options);
   const hostPath = resolveHostPath();
+
+  // Sync extension to stable path (before extensionId so interactive mode can show it)
+  const config = resolveConfig();
+  let extensionSync;
+  try {
+    extensionSync = syncExtension(config.baseDataDir);
+  } catch {
+    extensionSync = null;
+  }
+
+  // Resolve extension ID: non-interactive if provided, interactive otherwise
+  let extensionId = resolveExtensionId(options, false);
+  if (!extensionId) {
+    // Interactive mode
+    if (extensionSync?.extensionDir) {
+      process.stderr.write(`\nExtension synced to: ${extensionSync.extensionDir}\n`);
+      try {
+        const pbcopy = spawn("pbcopy", { stdio: ["pipe", "ignore", "ignore"] });
+        pbcopy.stdin.end(extensionSync.extensionDir);
+        pbcopy.on("exit", (code) => {
+          if (code === 0) process.stderr.write("(Path copied to clipboard)\n");
+        });
+      } catch {
+        // clipboard copy is best-effort
+      }
+    }
+    extensionId = await promptExtensionId(browser);
+  }
 
   // Profile name: --name flag or browser type
   const profileName = typeof options.name === "string" && options.name.trim()
@@ -129,15 +231,6 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
     errorOut((err as Error).message);
   }
 
-  // Sync extension to stable path
-  const config = resolveConfig();
-  let extensionSync;
-  try {
-    extensionSync = syncExtension(config.baseDataDir);
-  } catch {
-    extensionSync = null;
-  }
-
   // Profile data dir (use baseDataDir to avoid nesting under another profile)
   const profileDataDir = path.join(config.baseDataDir, "profiles", profileName);
   fs.mkdirSync(profileDataDir, { recursive: true, mode: 0o700 });
@@ -145,8 +238,14 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
   // Write profile-specific wrapper
   const wrapperPath = writeWrapper(nodePath, hostPath, profileName, profileDataDir);
 
-  // Write manifest with standard host name
-  const manifestDir = resolveManifestDir(browser);
+  // Resolve manifest directory: custom user-data-dir or system-wide
+  const rawUserDataDir = typeof options["user-data-dir"] === "string"
+    ? options["user-data-dir"].trim()
+    : "";
+  const userDataDir = rawUserDataDir ? path.resolve(rawUserDataDir) : "";
+  const manifestDir = userDataDir
+    ? path.join(userDataDir, "NativeMessagingHosts")
+    : resolveManifestDir(browser);
   fs.mkdirSync(manifestDir, { recursive: true });
 
   const manifestPath = path.join(manifestDir, `${HOST_NAME}.json`);
@@ -160,13 +259,17 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
 
   // Register profile
-  const registry = addProfile(profileName, {
+  const profileEntry: Parameters<typeof addProfile>[1] = {
     browser,
     extensionId,
     nodePath,
     hostPath,
     dataDir: profileDataDir,
-  });
+  };
+  if (userDataDir) {
+    profileEntry.userDataDir = userDataDir;
+  }
+  const registry = addProfile(profileName, profileEntry);
 
   printJson({
     ok: true,
@@ -180,6 +283,7 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
       nodePath,
       wrapperPath,
       dataDir: profileDataDir,
+      ...(userDataDir ? { userDataDir } : {}),
       isDefault: registry.default === profileName,
       extensionDir: extensionSync?.extensionDir || null,
       extensionSynced: extensionSync?.synced || false,

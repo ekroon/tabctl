@@ -45,6 +45,7 @@ export function runProfileShow(options: Options, prettyOutput: boolean): void {
       browser: active.profile.browser,
       extensionId: active.profile.extensionId,
       dataDir: active.profile.dataDir,
+      ...(active.profile.userDataDir ? { userDataDir: active.profile.userDataDir } : {}),
       socketPath: config.socketPath,
       policyPath: config.policyPath,
       isDefault: active.name === registry.default,
