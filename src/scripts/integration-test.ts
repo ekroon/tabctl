@@ -140,7 +140,11 @@ async function main(): Promise<void> {
     const chromePath = findChrome();
     log(`Chrome: ${chromePath}`);
 
-    // 2. Launch headless Chrome with CDP pipe
+    // 2. Launch headless Chrome with CDP pipe.
+    //    Load the extension via --load-extension so the service worker registers
+    //    at startup (Extensions.loadUnpacked alone can cause Chrome to exit
+    //    before the worker is ready in headless mode).
+    const extensionDir = path.resolve(__dirname, "..", "..", "extension");
     chrome = spawn(chromePath, [
       "--headless=new",
       "--remote-debugging-pipe",
@@ -149,6 +153,8 @@ async function main(): Promise<void> {
       "--no-default-browser-check",
       "--disable-gpu",
       "--disable-background-timer-throttling",
+      `--disable-extensions-except=${extensionDir}`,
+      `--load-extension=${extensionDir}`,
       "--user-data-dir=" + userDataDir,
     ], {
       stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
@@ -158,9 +164,12 @@ async function main(): Promise<void> {
       log(`Chrome exited (code ${code})`);
     });
 
-    // Drain stdout/stderr so pipes don't block
+    // Drain stdout and capture stderr for diagnostics
     chrome.stdout?.resume();
-    chrome.stderr?.resume();
+    let stderrBuf = "";
+    chrome.stderr?.on("data", (chunk: Buffer) => {
+      stderrBuf += chunk.toString();
+    });
 
     // Wait for Chrome to initialize
     await sleep(3000);
@@ -172,12 +181,32 @@ async function main(): Promise<void> {
 
     initCDP(chrome);
 
-    // 3. Load extension via CDP to discover its ID.
+    // 3. Discover the extension ID from the service worker target.
+    //    The extension was loaded at startup via --load-extension.
     //    The first connectNative() will fail (no manifest yet) — that's expected.
-    const extensionDir = path.resolve(__dirname, "..", "..", "extension");
     log(`Loading extension from ${extensionDir}`);
-    const loadResult = await sendCDP("Extensions.loadUnpacked", { path: extensionDir });
-    const extensionId: string = loadResult.id;
+    let swTarget: { targetId: string; type: string; url: string } | undefined;
+    let extensionId = "";
+    for (let attempt = 0; attempt < 15; attempt++) {
+      await sleep(1000);
+      if (chrome.exitCode !== null) {
+        log(`Chrome stderr: ${stderrBuf.slice(-500)}`);
+        throw new Error(`Chrome exited during service worker discovery (code ${chrome.exitCode})`);
+      }
+      const targets = await sendCDP("Target.getTargets");
+      swTarget = (targets.targetInfos as Array<{ targetId: string; type: string; url: string }>)
+        .find((t) => t.type === "service_worker" && t.url.startsWith("chrome-extension://"));
+      if (swTarget) {
+        const m = swTarget.url.match(/chrome-extension:\/\/([^/]+)/);
+        extensionId = m ? m[1] : "";
+        break;
+      }
+      log(`Service worker not found yet (attempt ${attempt + 1}/15)…`);
+    }
+    if (!swTarget || !extensionId) {
+      log(`Chrome stderr: ${stderrBuf.slice(-500)}`);
+      throw new Error("Extension service worker not found");
+    }
     log(`Extension loaded: ${extensionId}`);
 
     // 4. Write native messaging manifest inside the user-data-dir.
@@ -213,19 +242,6 @@ async function main(): Promise<void> {
     // 5. Trigger reconnect via CDP — attach to the extension's service worker
     //    and call connectNative() directly. The first attempt failed (no manifest),
     //    but now the manifest is in place.
-    //    Retry finding the service worker — on CI it may take a few seconds to register.
-    let swTarget: { targetId: string; type: string; url: string } | undefined;
-    for (let attempt = 0; attempt < 10; attempt++) {
-      await sleep(1000);
-      const targets = await sendCDP("Target.getTargets");
-      swTarget = (targets.targetInfos as Array<{ targetId: string; type: string; url: string }>)
-        .find((t) => t.type === "service_worker" && t.url.includes(extensionId));
-      if (swTarget) break;
-      log(`Service worker not found yet (attempt ${attempt + 1}/10)…`);
-    }
-    if (!swTarget) {
-      throw new Error("Extension service worker not found");
-    }
     const { sessionId } = await sendCDP("Target.attachToTarget", {
       targetId: swTarget.targetId,
       flatten: true,
