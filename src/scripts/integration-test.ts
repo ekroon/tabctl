@@ -213,10 +213,16 @@ async function main(): Promise<void> {
     // 5. Trigger reconnect via CDP — attach to the extension's service worker
     //    and call connectNative() directly. The first attempt failed (no manifest),
     //    but now the manifest is in place.
-    await sleep(1000);
-    const targets = await sendCDP("Target.getTargets");
-    const swTarget = (targets.targetInfos as Array<{ targetId: string; type: string; url: string }>)
-      .find((t) => t.type === "service_worker" && t.url.includes(extensionId));
+    //    Retry finding the service worker — on CI it may take a few seconds to register.
+    let swTarget: { targetId: string; type: string; url: string } | undefined;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await sleep(1000);
+      const targets = await sendCDP("Target.getTargets");
+      swTarget = (targets.targetInfos as Array<{ targetId: string; type: string; url: string }>)
+        .find((t) => t.type === "service_worker" && t.url.includes(extensionId));
+      if (swTarget) break;
+      log(`Service worker not found yet (attempt ${attempt + 1}/10)…`);
+    }
     if (!swTarget) {
       throw new Error("Extension service worker not found");
     }

@@ -27,6 +27,10 @@ export async function runList(
   policySummary: Record<string, unknown>,
   prettyOutput: boolean
 ): Promise<void> {
+  // Validate scope flags early (before connecting) so invalid values
+  // are rejected without needing a socket connection.
+  const scope = resolveScopeFlags(options);
+
   const response = await sendRequest({
     id: createRequestId(),
     action: "list",
@@ -48,7 +52,6 @@ export async function runList(
   const data = response.data as Record<string, unknown>;
   if (data && Array.isArray(data.windows)) {
     const filtered = filterSnapshotByPolicy(data, policyContext.policy) as Record<string, unknown>;
-    const scope = resolveScopeFlags(options);
     if (typeof scope.windowId === "string") {
       const resolvedWindowId = resolveWindowIdFromSnapshot(filtered, scope.windowId);
       scope.windowId = resolvedWindowId ?? null;
