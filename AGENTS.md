@@ -73,6 +73,21 @@ tabctl dedupe --window 123 --confirm # Execute after review
 - The native host manifest is installed (use `tabctl setup --browser edge --extension-id <id>`).
 - For development, prefer the repo script (`node ./cli/tabctl.js`) so a stable global `tabctl` can stay installed.
 
+## Profile awareness
+When multiple profiles are configured, verify which browser the CLI is targeting before running commands:
+
+```bash
+tabctl profile-show --json
+```
+
+Check the `name` and `browser` fields in the output. To target a specific browser for a single command, use `--profile <name>`:
+
+```bash
+tabctl list --profile chrome-work --all
+```
+
+When creating smoke tests, ensure you are connected to the correct profile. Use `tabctl profile-list` to see all available profiles.
+
 ## Unit tests (no Edge required)
 These tests validate the CLI/host helpers using a mocked socket and run without Edge or the extension.
 
@@ -87,8 +102,10 @@ Notes:
 ## Required end-of-task checks
 Always finish with:
 1. `npm test`
-2. A minimal smoke test in a new window you create (safe URLs + unique `TEST-` prefix). Verify via `tabctl group-list` or `tabctl list`.
-3. A screenshot-first smoke step: capture a screenshot before running selector-based extraction.
+2. `npm run test:integration` (if Chrome is available)
+3. A minimal smoke test in a new window you create (safe URLs + unique `TEST-` prefix). Verify via `tabctl group-list` or `tabctl list`.
+4. A screenshot-first smoke step: capture a screenshot before running selector-based extraction.
+5. If multiple profiles are configured, verify the active profile with `tabctl profile-show` before running smoke tests.
 
 Example (recommended for development):
 ```bash
@@ -149,10 +166,11 @@ Only use a dedicated test window and clearly labeled groups.
 `tabctl close` only works with explicit targets and is blocked for protected tabs by policy.
 
 Recommended safe pattern:
-1. Use a dedicated test profile or a brand-new Edge window with only test tabs.
-2. Run `tabctl analyze` (add `--github` only when you accept slower analysis).
-3. Use `tabctl close --tab <tabId> --confirm` for a single test tab.
-4. Run `tabctl undo <txid>` to restore.
+1. Use `npm run test:integration` for automated close/undo testing in an isolated browser.
+2. For manual testing, use a dedicated test profile or a brand-new Edge window with only test tabs.
+3. Run `tabctl analyze` (add `--github` only when you accept slower analysis).
+4. Use `tabctl close --tab <tabId> --confirm` for a single test tab.
+5. Run `tabctl undo <txid>` to restore.
 
 ## Undo history sanity checks (synthetic)
 You can validate undo with a single safe tab by inserting a synthetic record.
@@ -171,34 +189,13 @@ Then run:
 
 This should open a single tab in a new window.
 
-## Mocking strategy (for destructive paths)
-When testing `archive --all` or `close --apply` behavior, use a mocked host instead of a live browser.
+## Integration tests (isolated headless Chrome)
+The integration test launches a headless Chrome with its own `--user-data-dir`, loads the extension via CDP, and runs real CLI commands against it. No real tabs are touched.
 
-Suggested approach:
-- Start a local UNIX socket server that returns canned JSON responses.
-- Point the CLI at it with `TABCTL_SOCKET=/path/to/mock.sock`.
-- Verify CLI formatting and error handling without touching Edge.
+Run:
+- `npm run test:integration`
 
-Minimal Node mock example:
-
-```
-// Run with: node mock-socket.js
-const net = require("net");
-const fs = require("fs");
-const path = require("path");
-const sock = "/tmp/tabctl-mock.sock";
-if (fs.existsSync(sock)) fs.unlinkSync(sock);
-net.createServer((socket) => {
-  socket.on("data", (buf) => {
-    const req = JSON.parse(String(buf).trim());
-    const res = { ok: true, action: req.action, requestId: req.id, data: { mock: true } };
-    socket.write(JSON.stringify(res) + "\n");
-  });
-}).listen(sock, () => console.log("Mock listening", sock));
-```
-
-Then:
-- `TABCTL_SOCKET=/tmp/tabctl-mock.sock tabctl archive --all`
+This covers destructive paths (close, undo) safely. To test additional destructive commands (archive, dedupe), add them to `src/scripts/integration-test.ts` rather than using mock sockets or manual browser testing.
 
 ## Hard stop rules
 - Never run `tabctl archive --all` or `tabctl close --apply` in a normal profile.

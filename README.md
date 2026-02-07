@@ -60,7 +60,7 @@ Use the CLI to generate the manifest and wrapper:
 tabctl setup --browser edge --extension-id <YOUR_EXTENSION_ID>
 ```
 
-This writes the manifest to:
+This writes the manifest and registers a profile. The first profile registered becomes the default.
 `~/Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.erwinkroon.tabctl.json`
 
 The manifest points to a wrapper script at:
@@ -71,6 +71,39 @@ If `node` is not on PATH for Edge, pass an explicit path:
 ```bash
 tabctl setup --browser edge --extension-id <YOUR_EXTENSION_ID> --node /usr/local/bin/node
 ```
+
+## Multi-Browser Setup
+
+tabctl supports multiple browser profiles. Each profile connects to a different browser or browser user profile.
+
+### Quick Start
+
+```bash
+# Setup for Edge
+tabctl setup --browser edge --extension-id <edge-id>
+
+# Setup for Chrome (with custom name)
+tabctl setup --browser chrome --extension-id <chrome-id> --name chrome-work
+
+# List profiles
+tabctl profile-list
+
+# Switch default
+tabctl profile-switch edge
+
+# One-off command with different profile
+tabctl list --profile chrome-work
+```
+
+### How It Works
+
+Each profile gets its own:
+- Native host manifest and wrapper script
+- Unix socket for CLI-host communication
+- Undo history log
+- Data directory
+
+Policy is shared across all profiles.
 
 ## 3) Run the CLI
 The CLI connects to the host over a local UNIX socket. It only works when Edge is open and the extension is active.
@@ -237,6 +270,7 @@ See [CLI.md](CLI.md#configuration) for full details.
 ## Runtime state
 - Socket: `<dataDir>/tabctl.sock` (default: `~/.local/state/tabctl/tabctl.sock`)
 - Undo log: `<dataDir>/undo.jsonl` (default: `~/.local/state/tabctl/undo.jsonl`)
+- Profile registry: `<configDir>/profiles.json`
 
 ## Security
 - The native host is locked to your extension ID.

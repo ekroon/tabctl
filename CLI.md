@@ -43,6 +43,7 @@ tabctl policy --init
 - `--help`: command-specific help
 - `--json`: JSON output
 - `--pretty`: pretty-print JSON (default: true)
+- `--profile <name>`: override active profile for this command
 - `--format` is only supported by `report` (use `--json` elsewhere)
 
 ## Option Groups
@@ -301,16 +302,20 @@ Options:
 - `--confirm`
 
 ### setup
-Install the native host manifest (macOS only).
+Install the native host manifest and register a profile (macOS only).
 Options:
 - `--browser edge|chrome` (required)
 - `--extension-id <id>` (required; or `TABCTL_EXTENSION_ID`)
 - `--node <path>` (optional; or `TABCTL_NODE`)
+- `--name <name>` (optional; defaults to browser name)
+- `--dev` (coming soon; dev/CI mode via CDP)
+
+Each run creates or updates a profile in `profiles.json`. The first profile registered becomes the default.
 
 Run once per browser:
 ```bash
 tabctl setup --browser edge --extension-id <edge-id>
-tabctl setup --browser chrome --extension-id <chrome-id>
+tabctl setup --browser chrome --extension-id <chrome-id> --name chrome-work
 ```
 
 ### policy
@@ -393,6 +398,31 @@ Environment:
 - `TABCTL_VERSION_MODE=release` (force release version without git sha)
 - `TABCTL_VERSION_MODE=dev` (force dev version with git sha)
 
+### profile-list
+List configured profiles.
+```bash
+tabctl profile-list
+```
+
+### profile-show
+Show active profile details (name, browser, data directory, socket path, etc.).
+```bash
+tabctl profile-show
+tabctl profile-show --json
+```
+
+### profile-switch
+Switch the default profile.
+```bash
+tabctl profile-switch <name>
+```
+
+### profile-remove
+Remove a profile from the registry. Does not delete native host manifests.
+```bash
+tabctl profile-remove <name>
+```
+
 ### ping
 Check host/extension connectivity.
 ```bash
@@ -409,10 +439,22 @@ Notes:
 | `TABCTL_CONFIG_DIR` | Override config directory (default: `$XDG_CONFIG_HOME/tabctl`) |
 | `TABCTL_EXTENSION_ID` | Extension ID for `setup` command |
 | `TABCTL_NODE` | Node binary path for `setup` command |
+| `TABCTL_PROFILE` | Override active profile (same as `--profile` flag) |
 | `TABCTL_VERSION_MODE` | `release` or `dev` for version output |
+
+## Profiles
+Each `tabctl setup` run registers a profile in `<configDir>/profiles.json`. A profile stores the browser type, extension ID, and data directory. The first profile registered becomes the default.
+
+Profile resolution order:
+1. `--profile <name>` flag (or `TABCTL_PROFILE` env var)
+2. Default profile from `profiles.json`
+3. Legacy mode (no profiles configured)
+
+Each profile gets its own data directory with a separate socket and undo log. Policy is shared across all profiles.
 
 ## Runtime state
 - Socket: `<dataDir>/tabctl.sock` (default: `~/.local/state/tabctl/tabctl.sock`)
 - Undo log: `<dataDir>/undo.jsonl` (default: `~/.local/state/tabctl/undo.jsonl`)
+- Profile registry: `<configDir>/profiles.json`
 
 See [Configuration](#configuration) for how the data directory is resolved.

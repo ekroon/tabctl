@@ -1877,13 +1877,15 @@ test("setup writes native host manifest", async () => {
     extensionId,
     "--node",
     nodePath,
-  ], undefined, { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state") });
+  ], undefined, { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state"), XDG_CONFIG_HOME: path.join(homeDir, ".config") });
 
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim()) as { ok: boolean; data: Record<string, unknown> };
+  const output = JSON.parse(result.stdout.trim()) as { ok: boolean; action?: string; data: Record<string, unknown> };
   assert.equal(output.ok, true);
+  assert.equal(output.action, "setup");
+  assert.equal(output.data.profileName, "edge");
 
-  const wrapperPath = path.join(homeDir, ".local", "state", "tabctl", "tabctl-host.sh");
+  const wrapperPath = path.join(homeDir, ".local", "state", "tabctl", "profiles", "edge", "tabctl-host.sh");
   const manifestPath = path.join(
     homeDir,
     "Library",
@@ -1897,6 +1899,7 @@ test("setup writes native host manifest", async () => {
   assert.ok(fs.existsSync(wrapperPath));
   assert.ok(fs.existsSync(manifestPath));
 
+  // Manifest uses standard host name
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { name?: string; path?: string; allowed_origins?: string[] };
   assert.equal(manifest.name, "com.erwinkroon.tabctl");
   assert.equal(manifest.path, wrapperPath);
@@ -1906,6 +1909,15 @@ test("setup writes native host manifest", async () => {
   const hostPath = path.resolve(__dirname, "../../host/host.js");
   assert.ok(wrapper.includes(nodePath));
   assert.ok(wrapper.includes(hostPath));
+  assert.ok(wrapper.includes('export TABCTL_PROFILE="edge"'));
+
+  // Profile registered
+  assert.equal(output.data.isDefault, true);
+  const profilesPath = path.join(homeDir, ".config", "tabctl", "profiles.json");
+  assert.ok(fs.existsSync(profilesPath));
+  const profiles = JSON.parse(fs.readFileSync(profilesPath, "utf8"));
+  assert.equal(profiles.default, "edge");
+  assert.ok(profiles.profiles.edge);
 });
 
 test("policy init creates default file", async () => {
@@ -2213,4 +2225,344 @@ test("move-tab returns txid", async () => {
   assert.equal(output.component, "host");
   assert.equal(output.data?.extensionVersion, "0.1.0");
   assert.equal(output.data?.hostBaseVersion, "0.1.0");
+});
+
+// --- Profile integration tests ---
+
+test("profile-list shows empty when no profiles", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-profile-test-"));
+  const result = await runCli(["profile-list", "--json"], undefined, {
+    TABCTL_CONFIG_DIR: tmpDir,
+  });
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, true);
+  assert.equal(output.action, "profile-list");
+  assert.deepEqual(output.data.profiles, []);
+});
+
+test("profile-show shows legacy mode when no profiles", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-profile-test-"));
+  const result = await runCli(["profile-show", "--json"], undefined, {
+    TABCTL_CONFIG_DIR: tmpDir,
+  });
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, true);
+  assert.equal(output.action, "profile-show");
+  assert.equal(output.data.mode, "legacy");
+});
+
+test("profile-switch fails for unknown profile", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-profile-test-"));
+  const result = await runCli(["profile-switch", "nonexistent"], undefined, {
+    TABCTL_CONFIG_DIR: tmpDir,
+  });
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+
+  assert.notEqual(result.status, 0);
+});
+
+test("profile-show with configured profile shows profile name", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-profile-test-"));
+  const profiles = {
+    default: "test-profile",
+    profiles: {
+      "test-profile": {
+        browser: "edge",
+        extensionId: "test-ext-id",
+        nodePath: process.execPath,
+        hostPath: "/tmp/fake-host.js",
+        dataDir: path.join(tmpDir, "data"),
+      },
+    },
+  };
+  fs.writeFileSync(path.join(tmpDir, "profiles.json"), JSON.stringify(profiles, null, 2));
+
+  const result = await runCli(["profile-show", "--json"], undefined, {
+    TABCTL_CONFIG_DIR: tmpDir,
+  });
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, true);
+  assert.equal(output.action, "profile-show");
+  assert.equal(output.data.name, "test-profile");
+  assert.equal(output.data.browser, "edge");
+});
+
+// --- Additional profile integration tests ---
+
+function makeTwoProfileConfig(tmpDir: string) {
+  const profiles = {
+    default: "edge",
+    profiles: {
+      edge: {
+        browser: "edge",
+        extensionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        nodePath: "/usr/bin/node",
+        hostPath: "/tmp/fake-host.js",
+        dataDir: path.join(tmpDir, "data-edge"),
+      },
+      chrome: {
+        browser: "chrome",
+        extensionId: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        nodePath: "/usr/bin/node",
+        hostPath: "/tmp/fake-host.js",
+        dataDir: path.join(tmpDir, "data-chrome"),
+      },
+    },
+  };
+  fs.writeFileSync(path.join(tmpDir, "profiles.json"), JSON.stringify(profiles, null, 2));
+  return profiles;
+}
+
+test("profile-switch success updates default", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-profile-test-"));
+  try {
+    makeTwoProfileConfig(tmpDir);
+    const result = await runCli(["profile-switch", "chrome"], undefined, {
+      TABCTL_CONFIG_DIR: tmpDir,
+    });
+
+    assert.equal(result.status, 0);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.ok, true);
+    assert.equal(output.action, "profile-switch");
+    assert.equal(output.data.name, "chrome");
+
+    const updated = JSON.parse(fs.readFileSync(path.join(tmpDir, "profiles.json"), "utf8"));
+    assert.equal(updated.default, "chrome");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("profile-remove success removes profile", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-profile-test-"));
+  try {
+    makeTwoProfileConfig(tmpDir);
+    const result = await runCli(["profile-remove", "chrome"], undefined, {
+      TABCTL_CONFIG_DIR: tmpDir,
+    });
+
+    assert.equal(result.status, 0);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.ok, true);
+    assert.equal(output.action, "profile-remove");
+
+    const updated = JSON.parse(fs.readFileSync(path.join(tmpDir, "profiles.json"), "utf8"));
+    assert.equal(updated.default, "edge");
+    assert.ok(updated.profiles.edge);
+    assert.equal(updated.profiles.chrome, undefined);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("--profile flag overrides active profile", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-profile-test-"));
+  try {
+    makeTwoProfileConfig(tmpDir);
+    const result = await runCli(["profile-show", "--profile", "chrome", "--json"], undefined, {
+      TABCTL_CONFIG_DIR: tmpDir,
+    });
+
+    assert.equal(result.status, 0);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.data.name, "chrome");
+    assert.equal(output.data.browser, "chrome");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("TABCTL_PROFILE env overrides active profile", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-profile-test-"));
+  try {
+    makeTwoProfileConfig(tmpDir);
+    const result = await runCli(["profile-show", "--json"], undefined, {
+      TABCTL_CONFIG_DIR: tmpDir,
+      TABCTL_PROFILE: "chrome",
+    });
+
+    assert.equal(result.status, 0);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.data.name, "chrome");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("setup --name creates custom-named profile", async () => {
+  if (process.platform !== "darwin") {
+    return;
+  }
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-name-"));
+  try {
+    const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const result = await runCli([
+      "setup",
+      "--browser", "edge",
+      "--extension-id", extensionId,
+      "--name", "my-edge",
+      "--node", process.execPath,
+    ], undefined, {
+      HOME: homeDir,
+      XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
+      XDG_CONFIG_HOME: path.join(homeDir, ".config"),
+    });
+
+    assert.equal(result.status, 0);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.ok, true);
+    assert.equal(output.data.profileName, "my-edge");
+
+    const profilesPath = path.join(homeDir, ".config", "tabctl", "profiles.json");
+    const profiles = JSON.parse(fs.readFileSync(profilesPath, "utf8"));
+    assert.ok(profiles.profiles["my-edge"]);
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("output includes profile and browser fields", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-profile-test-"));
+  try {
+    const profiles = {
+      default: "edge",
+      profiles: {
+        edge: {
+          browser: "edge",
+          extensionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          nodePath: "/usr/bin/node",
+          hostPath: "/tmp/fake-host.js",
+          dataDir: path.join(tmpDir, "data"),
+        },
+      },
+    };
+    fs.writeFileSync(path.join(tmpDir, "profiles.json"), JSON.stringify(profiles, null, 2));
+
+    const result = await runCli(["profile-list", "--json"], undefined, {
+      TABCTL_CONFIG_DIR: tmpDir,
+    });
+
+    assert.equal(result.status, 0);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.profile, "edge");
+    assert.equal(output.browser, "edge");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("profile-list with multiple profiles shows all", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-profile-test-"));
+  try {
+    const profiles = {
+      default: "edge",
+      profiles: {
+        edge: {
+          browser: "edge",
+          extensionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          nodePath: "/usr/bin/node",
+          hostPath: "/tmp/fake-host.js",
+          dataDir: path.join(tmpDir, "data-edge"),
+        },
+        chrome: {
+          browser: "chrome",
+          extensionId: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          nodePath: "/usr/bin/node",
+          hostPath: "/tmp/fake-host.js",
+          dataDir: path.join(tmpDir, "data-chrome"),
+        },
+        "chrome-work": {
+          browser: "chrome",
+          extensionId: "cccccccccccccccccccccccccccccccc",
+          nodePath: "/usr/bin/node",
+          hostPath: "/tmp/fake-host.js",
+          dataDir: path.join(tmpDir, "data-chrome-work"),
+        },
+      },
+    };
+    fs.writeFileSync(path.join(tmpDir, "profiles.json"), JSON.stringify(profiles, null, 2));
+
+    const result = await runCli(["profile-list", "--json"], undefined, {
+      TABCTL_CONFIG_DIR: tmpDir,
+    });
+
+    assert.equal(result.status, 0);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.data.profiles.length, 3);
+
+    const defaultProfile = output.data.profiles.find((p: { name: string }) => p.name === "edge");
+    assert.ok(defaultProfile);
+    assert.equal(defaultProfile.isDefault, true);
+
+    const nonDefaults = output.data.profiles.filter((p: { isDefault: boolean }) => !p.isDefault);
+    assert.equal(nonDefaults.length, 2);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("profile-show isDefault is false when using --profile override", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-profile-test-"));
+  try {
+    makeTwoProfileConfig(tmpDir);
+    const result = await runCli(["profile-show", "--profile", "chrome", "--json"], undefined, {
+      TABCTL_CONFIG_DIR: tmpDir,
+    });
+
+    assert.equal(result.status, 0);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.data.name, "chrome");
+    assert.equal(output.data.isDefault, false);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("setup second profile does not nest under first profile dataDir", async () => {
+  if (process.platform !== "darwin") {
+    return;
+  }
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-nest-"));
+  try {
+    const envOverrides = {
+      HOME: homeDir,
+      XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
+      XDG_CONFIG_HOME: path.join(homeDir, ".config"),
+    };
+    const baseStateDir = path.join(homeDir, ".local", "state", "tabctl");
+
+    // First setup creates "edge" as default
+    await runCli([
+      "setup", "--browser", "edge",
+      "--extension-id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "--node", process.execPath,
+    ], undefined, envOverrides);
+
+    // Second setup creates "chrome"
+    const result = await runCli([
+      "setup", "--browser", "chrome",
+      "--extension-id", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "--node", process.execPath,
+    ], undefined, envOverrides);
+
+    assert.equal(result.status, 0);
+    const output = JSON.parse(result.stdout.trim());
+    const chromeDataDir = output.data.dataDir as string;
+
+    // Must be baseStateDir/profiles/chrome, NOT nested under edge's dataDir
+    assert.equal(chromeDataDir, path.join(baseStateDir, "profiles", "chrome"));
+    assert.ok(fs.existsSync(chromeDataDir));
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
 });

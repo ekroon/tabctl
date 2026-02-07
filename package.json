@@ -11,7 +11,8 @@
     "bump:minor": "node scripts/bump-version.js minor",
     "bump:patch": "node scripts/bump-version.js patch",
     "test": "npm run build && node --test tests/unit/*.js",
-    "test:unit": "npm run build && node --test tests/unit/*.js"
+    "test:unit": "npm run build && node --test tests/unit/*.js",
+    "test:integration": "node build/scripts/integration-test.js"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.277",

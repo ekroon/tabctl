@@ -1,6 +1,16 @@
 import { VERSION } from "../../shared/version";
+import { getActiveProfile } from "../../shared/profiles";
 
 export function printJson(payload: Record<string, unknown>, pretty = true): void {
+  try {
+    const active = getActiveProfile();
+    if (active) {
+      payload.profile = active.name;
+      payload.browser = active.profile.browser;
+    }
+  } catch {
+    // Don't let profile errors break output
+  }
   const output = pretty ? JSON.stringify(payload, null, 2) : JSON.stringify(payload);
   process.stdout.write(`${output}\n`);
 }

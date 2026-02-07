@@ -243,6 +243,7 @@ export const COMMANDS: Record<string, CommandMeta> = {
       { flag: "--browser edge|chrome", desc: "Browser type" },
       { flag: "--extension-id <id>", desc: "Extension ID to connect to" },
       { flag: "--node <path>", desc: "Path to Node.js executable" },
+      { flag: "--name <name>", desc: "Profile name (default: browser type)" },
     ],
   },
   policy: {
@@ -295,6 +296,28 @@ export const COMMANDS: Record<string, CommandMeta> = {
     options: [
       { flag: "--agent <name>", desc: "Target agent(s)", repeatable: true },
       { flag: "--global", desc: "Show global skill info" },
+    ],
+  },
+  "profile-list": {
+    description: "List configured profiles",
+  },
+  profile: {
+    description: "Alias for profile-list",
+    aliases: ["profile-list"],
+  },
+  "profile-show": {
+    description: "Show active profile details",
+  },
+  "profile-switch": {
+    description: "Switch the default profile",
+    options: [
+      { flag: "<name>", desc: "Profile name (positional)" },
+    ],
+  },
+  "profile-remove": {
+    description: "Remove a profile",
+    options: [
+      { flag: "<name>", desc: "Profile name (positional)" },
     ],
   },
   version: {
@@ -365,11 +388,14 @@ export function getAllowedFlags(): Set<string> {
     }
   }
 
+  flags.add("profile");
+
   return flags;
 }
 
 export function getCommandAllowedFlags(command: string): Set<string> {
   const flags = new Set<string>(GLOBAL_FLAGS);
+  flags.add("profile");
   const meta = COMMANDS[command];
 
   const addOptions = (options: readonly OptionDef[] | undefined) => {

@@ -5,10 +5,12 @@ import fs from "fs";
 export type TabctlConfig = {
   configDir: string;
   dataDir: string;
+  baseDataDir: string;
   socketPath: string;
   undoLog: string;
   wrapperDir: string;
   policyPath: string;
+  activeProfileName?: string;
 };
 
 let cached: TabctlConfig | undefined;
@@ -24,8 +26,9 @@ export function expandEnvVars(value: string): string {
   });
 }
 
-export function resolveConfig(): TabctlConfig {
-  if (cached) return cached;
+export function resolveConfig(profileName?: string): TabctlConfig {
+  // Use cache only for no-arg calls (legacy mode)
+  if (!profileName && cached) return cached;
 
   // Config dir resolution
   const configDir = process.env.TABCTL_CONFIG_DIR
@@ -56,14 +59,64 @@ export function resolveConfig(): TabctlConfig {
     );
   }
 
-  cached = {
+  const baseDataDir = dataDir;
+
+  // Profile resolution (read profiles.json inline to avoid circular import)
+  const explicitProfile = profileName;
+  const effectiveProfile = profileName || process.env.TABCTL_PROFILE;
+  let activeProfileName: string | undefined;
+
+  if (effectiveProfile) {
+    try {
+      const raw = fs.readFileSync(path.join(configDir, "profiles.json"), "utf-8");
+      const registry = JSON.parse(raw) as { default: string | null; profiles: Record<string, { dataDir: string }> };
+      const profile = registry.profiles[effectiveProfile];
+      if (profile) {
+        dataDir = profile.dataDir;
+        activeProfileName = effectiveProfile;
+      } else if (explicitProfile) {
+        throw new Error(`Profile "${explicitProfile}" not found in profiles.json`);
+      }
+    } catch (err) {
+      // Re-throw profile-not-found errors
+      if (err instanceof Error && err.message.includes("not found in profiles.json")) {
+        throw err;
+      }
+      // If profiles.json is missing/malformed and profile was explicitly requested, error
+      if (explicitProfile) {
+        throw new Error(`Profile "${explicitProfile}" not found: no profiles.json`);
+      }
+      // Otherwise (env var only), silently fall through to legacy mode
+    }
+  } else {
+    // No explicit profile — check for a default in profiles.json
+    try {
+      const raw = fs.readFileSync(path.join(configDir, "profiles.json"), "utf-8");
+      const registry = JSON.parse(raw) as { default: string | null; profiles: Record<string, { dataDir: string }> };
+      if (registry.default && registry.profiles[registry.default]) {
+        dataDir = registry.profiles[registry.default].dataDir;
+        activeProfileName = registry.default;
+      }
+    } catch {
+      // No profiles.json — legacy mode
+    }
+  }
+
+  const result: TabctlConfig = {
     configDir,
     dataDir,
+    baseDataDir,
     socketPath: process.env.TABCTL_SOCKET || path.join(dataDir, "tabctl.sock"),
     undoLog: path.join(dataDir, "undo.jsonl"),
     wrapperDir: dataDir,
     policyPath: path.join(configDir, "policy.json"),
+    activeProfileName,
   };
 
-  return cached;
+  // Only cache no-arg calls
+  if (!profileName) {
+    cached = result;
+  }
+
+  return result;
 }

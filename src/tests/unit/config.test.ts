@@ -202,3 +202,96 @@ test("config.json relative dataDir throws error", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
+
+// --- Profile-aware config tests ---
+
+function writeProfiles(dir: string, registry: Record<string, unknown>): void {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "profiles.json"), JSON.stringify(registry), "utf-8");
+}
+
+test("resolveConfig with profile uses profile dataDir", () => {
+  withCleanEnv(() => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-profcfg-"));
+    const profileDataDir = path.join(dir, "profile-data");
+    writeProfiles(dir, {
+      default: "myprofile",
+      profiles: { myprofile: { dataDir: profileDataDir } },
+    });
+    process.env.TABCTL_CONFIG_DIR = dir;
+
+    const cfg = resolveConfig("myprofile");
+    assert.equal(cfg.dataDir, profileDataDir);
+    assert.equal(cfg.socketPath, path.join(profileDataDir, "tabctl.sock"));
+    assert.equal(cfg.undoLog, path.join(profileDataDir, "undo.jsonl"));
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+test("resolveConfig with TABCTL_PROFILE env uses profile", () => {
+  withCleanEnv(() => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-profenv-"));
+    const profileDataDir = path.join(dir, "env-profile-data");
+    writeProfiles(dir, {
+      default: null,
+      profiles: { envprof: { dataDir: profileDataDir } },
+    });
+    process.env.TABCTL_CONFIG_DIR = dir;
+    process.env.TABCTL_PROFILE = "envprof";
+
+    const cfg = resolveConfig();
+    assert.equal(cfg.dataDir, profileDataDir);
+    assert.equal(cfg.activeProfileName, "envprof");
+
+    delete process.env.TABCTL_PROFILE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+test("resolveConfig without profiles falls back to legacy", () => {
+  withCleanEnv(() => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-noprof-"));
+    process.env.TABCTL_CONFIG_DIR = dir;
+    // No profiles.json exists
+
+    const cfg = resolveConfig();
+    assert.equal(cfg.configDir, dir);
+    assert.equal(cfg.dataDir, path.join(dir, "data"));
+    assert.equal(cfg.activeProfileName, undefined);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+test("resolveConfig with unknown profile name throws", () => {
+  withCleanEnv(() => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-unkprof-"));
+    writeProfiles(dir, {
+      default: null,
+      profiles: { existing: { dataDir: "/tmp/existing" } },
+    });
+    process.env.TABCTL_CONFIG_DIR = dir;
+
+    assert.throws(() => resolveConfig("nonexistent"), /not found/);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+test("resolveConfig activeProfileName is set when profile active", () => {
+  withCleanEnv(() => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-actprof-"));
+    const profileDataDir = path.join(dir, "active-data");
+    writeProfiles(dir, {
+      default: "myprof",
+      profiles: { myprof: { dataDir: profileDataDir } },
+    });
+    process.env.TABCTL_CONFIG_DIR = dir;
+
+    const cfg = resolveConfig("myprof");
+    assert.equal(cfg.activeProfileName, "myprof");
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});

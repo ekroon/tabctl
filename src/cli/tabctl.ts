@@ -11,7 +11,7 @@ import { resolveScopeFlags, buildScopeArgs, selectTabsFromSnapshot } from "./lib
 import { resolvePagination } from "./lib/pagination";
 import { buildTabIndex, buildWindowTitleIndex } from "./lib/snapshot";
 import { printHelp } from "./lib/help";
-import { runSetup, runSkillInstall, runVersion, runPolicy, runList, runGroupList, runPing, runHistory, runUndo } from "./lib/commands";
+import { runSetup, runSkillInstall, runVersion, runPolicy, runList, runGroupList, runPing, runHistory, runUndo, runProfileList, runProfileShow, runProfileSwitch, runProfileRemove } from "./lib/commands";
 import {
   buildAnalyzeParams,
   buildInspectParams,
@@ -36,12 +36,18 @@ const createId = createRequestId;
 async function main() {
   setupStdoutErrorHandling();
   let { command, options, warnings } = parseArgs(process.argv.slice(2));
+  if (typeof options.profile === "string" && options.profile) {
+    process.env.TABCTL_PROFILE = options.profile;
+  }
   if (command === "dedupe" && (options as Record<string, unknown>).close) {
     errorOut("dedupe does not support --close; use --confirm or close --apply <analysisId>.");
   }
   const prettyOutput = options.pretty !== false;
   if (command === "groups" || command === "group") {
     command = "group-list";
+  }
+  if (command === "profile" || command === "profiles") {
+    command = "profile-list";
   }
   if (command === "list" && options.groups === true) {
     command = "group-list";
@@ -201,6 +207,26 @@ async function main() {
 
   if (command === "undo") {
     await runUndo(options, prettyOutput);
+    return;
+  }
+
+  if (command === "profile-list") {
+    runProfileList(options, prettyOutput);
+    return;
+  }
+
+  if (command === "profile-show") {
+    runProfileShow(options, prettyOutput);
+    return;
+  }
+
+  if (command === "profile-switch") {
+    runProfileSwitch(options, prettyOutput);
+    return;
+  }
+
+  if (command === "profile-remove") {
+    runProfileRemove(options, prettyOutput);
     return;
   }
 

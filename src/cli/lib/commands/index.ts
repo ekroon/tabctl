@@ -20,6 +20,9 @@ export {
   runGroupList,
 } from "./list";
 
+// Profile commands (profile-list, profile-show, profile-switch, profile-remove)
+export { runProfileList, runProfileShow, runProfileSwitch, runProfileRemove } from "./profile";
+
 // Parameter builders for all commands
 export {
   buildAnalyzeParams,

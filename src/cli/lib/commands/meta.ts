@@ -13,6 +13,8 @@ import { printJson, errorOut } from "../output";
 import { sendRequest, createRequestId } from "../client";
 import { defaultPolicyPath, defaultPolicyTemplate, summarizePolicy, type Policy } from "../policy";
 import type { Options, PolicyContext } from "../types";
+import { addProfile, validateProfileName, loadProfiles } from "../../../shared/profiles";
+import { syncExtension } from "../../../shared/extension-sync";
 
 // ============================================================================
 // Setup Command
@@ -82,18 +84,21 @@ function resolveManifestDir(browser: "edge" | "chrome"): string {
   return path.join(home, "Library", "Application Support", "Google", "Chrome", "NativeMessagingHosts");
 }
 
-function writeWrapper(nodePath: string, hostPath: string): string {
-  const { wrapperDir } = resolveConfig();
+function writeWrapper(nodePath: string, hostPath: string, profileName: string | null, wrapperDir: string): string {
   fs.mkdirSync(wrapperDir, { recursive: true, mode: 0o700 });
   const wrapperPath = path.join(wrapperDir, "tabctl-host.sh");
   const escapedNode = nodePath.replace(/"/g, "\\\"");
   const escapedHost = hostPath.replace(/"/g, "\\\"");
-  const wrapper = [
+  const lines = [
     "#!/usr/bin/env bash",
     "set -euo pipefail",
-    `exec \"${escapedNode}\" \"${escapedHost}\"`,
-    "",
-  ].join("\n");
+  ];
+  if (profileName) {
+    lines.push(`export TABCTL_PROFILE="${profileName}"`);
+  }
+  lines.push(`exec \"${escapedNode}\" \"${escapedHost}\"`);
+  lines.push("");
+  const wrapper = lines.join("\n");
   fs.writeFileSync(wrapperPath, wrapper, "utf8");
   fs.chmodSync(wrapperPath, 0o700);
   return wrapperPath;
@@ -112,7 +117,35 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
   const extensionId = resolveExtensionId(options);
   const nodePath = resolveNodePath(options);
   const hostPath = resolveHostPath();
-  const wrapperPath = writeWrapper(nodePath, hostPath);
+
+  // Profile name: --name flag or browser type
+  const profileName = typeof options.name === "string" && options.name.trim()
+    ? options.name.trim().toLowerCase()
+    : browser;
+
+  try {
+    validateProfileName(profileName);
+  } catch (err) {
+    errorOut((err as Error).message);
+  }
+
+  // Sync extension to stable path
+  const config = resolveConfig();
+  let extensionSync;
+  try {
+    extensionSync = syncExtension(config.baseDataDir);
+  } catch {
+    extensionSync = null;
+  }
+
+  // Profile data dir (use baseDataDir to avoid nesting under another profile)
+  const profileDataDir = path.join(config.baseDataDir, "profiles", profileName);
+  fs.mkdirSync(profileDataDir, { recursive: true, mode: 0o700 });
+
+  // Write profile-specific wrapper
+  const wrapperPath = writeWrapper(nodePath, hostPath, profileName, profileDataDir);
+
+  // Write manifest with standard host name
   const manifestDir = resolveManifestDir(browser);
   fs.mkdirSync(manifestDir, { recursive: true });
 
@@ -126,15 +159,30 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
   };
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
 
+  // Register profile
+  const registry = addProfile(profileName, {
+    browser,
+    extensionId,
+    nodePath,
+    hostPath,
+    dataDir: profileDataDir,
+  });
+
   printJson({
     ok: true,
+    action: "setup",
     data: {
+      profileName,
       browser,
       extensionId,
       manifestPath,
       hostPath,
       nodePath,
       wrapperPath,
+      dataDir: profileDataDir,
+      isDefault: registry.default === profileName,
+      extensionDir: extensionSync?.extensionDir || null,
+      extensionSynced: extensionSync?.synced || false,
     },
   }, prettyOutput);
 }
