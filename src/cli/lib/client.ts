@@ -1,6 +1,5 @@
-import fs from "fs";
 import net from "net";
-import { SOCKET_PATH, LEGACY_SOCKET_PATH } from "./constants";
+import { resolveConfig } from "./constants";
 import type { ProgressCallback } from "./types";
 
 export function createRequestId(): string {
@@ -12,8 +11,7 @@ export function sendRequest(
   onProgress?: ProgressCallback
 ): Promise<Record<string, unknown>> {
   return new Promise<Record<string, unknown>>((resolve, reject) => {
-    const socketPath = process.env.TABCTL_SOCKET
-      || (fs.existsSync(SOCKET_PATH) ? SOCKET_PATH : LEGACY_SOCKET_PATH);
+    const { socketPath } = resolveConfig();
     const client = net.createConnection(socketPath);
     let buffer = "";
 

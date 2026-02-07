@@ -1,6 +1,6 @@
 import fs from "fs";
-import os from "os";
-import path from "path";
+
+import { resolveConfig } from "../../shared/config";
 
 export type Policy = {
   protect?: {
@@ -17,12 +17,8 @@ export type PolicyContext = {
   path?: string;
 };
 
-function configHome(): string {
-  return process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
-}
-
 export function defaultPolicyPath(): string {
-  return path.join(configHome(), "tabctl", "policy.json");
+  return resolveConfig().policyPath;
 }
 
 export function defaultPolicyTemplate(): Policy {

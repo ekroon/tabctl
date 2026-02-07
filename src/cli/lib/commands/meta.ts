@@ -8,7 +8,7 @@ import os from "os";
 import path from "path";
 import { spawnSync } from "node:child_process";
 
-import { VERSION, BASE_VERSION, GIT_SHA, DIRTY, HOST_NAME, HOST_DESCRIPTION, EXTENSION_ID_PATTERN, SKILL_NAME, SKILL_REPO } from "../constants";
+import { VERSION, BASE_VERSION, GIT_SHA, DIRTY, HOST_NAME, HOST_DESCRIPTION, EXTENSION_ID_PATTERN, SKILL_NAME, SKILL_REPO, resolveConfig } from "../constants";
 import { printJson, errorOut } from "../output";
 import { sendRequest, createRequestId } from "../client";
 import { defaultPolicyPath, defaultPolicyTemplate, summarizePolicy, type Policy } from "../policy";
@@ -83,8 +83,7 @@ function resolveManifestDir(browser: "edge" | "chrome"): string {
 }
 
 function writeWrapper(nodePath: string, hostPath: string): string {
-  const stateHome = process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
-  const wrapperDir = path.join(stateHome, "tabctl");
+  const { wrapperDir } = resolveConfig();
   fs.mkdirSync(wrapperDir, { recursive: true, mode: 0o700 });
   const wrapperPath = path.join(wrapperDir, "tabctl-host.sh");
   const escapedNode = nodePath.replace(/"/g, "\\\"");

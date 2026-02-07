@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import fs from "fs";
 import net from "net";
-import os from "os";
 import path from "path";
 import crypto from "crypto";
 import { VERSION, BASE_VERSION, GIT_SHA, DIRTY } from "../shared/version";
+import { resolveConfig } from "../shared/config";
 import {
   appendUndoRecord,
   readUndoRecords,
@@ -13,10 +13,16 @@ import {
   findLatestUndoRecord,
 } from "./lib/undo";
 
-const STATE_HOME = process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
-const SOCKET_DIR = path.join(STATE_HOME, "tabctl");
-const SOCKET_PATH = path.join(SOCKET_DIR, "tabctl.sock");
-const UNDO_LOG = path.join(SOCKET_DIR, "undo.jsonl");
+let config;
+try {
+  config = resolveConfig();
+} catch (err) {
+  process.stderr.write(`[tabctl-host] Fatal: ${(err as Error).message}\n`);
+  process.exit(1);
+}
+const SOCKET_DIR = config.dataDir;
+const SOCKET_PATH = config.socketPath;
+const UNDO_LOG = config.undoLog;
 const REQUEST_TIMEOUT_MS = 30000;
 const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 const HISTORY_LIMIT_DEFAULT = 20;

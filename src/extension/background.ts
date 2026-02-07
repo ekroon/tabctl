@@ -44,7 +44,7 @@ const state = {
 };
 
 function log(...args: Array<unknown>) {
-  console.log("[TabArchive]", ...args);
+  console.log("[tabctl]", ...args);
 }
 
 function sendResponse(id: string, ok: boolean, payload: unknown) {

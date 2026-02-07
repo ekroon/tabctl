@@ -4,11 +4,13 @@ import os from "os";
 import path from "path";
 import test from "node:test";
 import { evaluateTab, loadPolicy } from "../../cli/lib/policy";
+import { resetConfig } from "../../shared/config";
 
 test("loadPolicy returns null when file missing", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-policy-"));
   const previous = process.env.XDG_CONFIG_HOME;
   process.env.XDG_CONFIG_HOME = dir;
+  resetConfig();
   const policyPath = path.join(dir, "tabctl", "policy.json");
   const context = loadPolicy();
   assert.equal(context.policy, null);
@@ -18,12 +20,14 @@ test("loadPolicy returns null when file missing", () => {
   } else {
     delete process.env.XDG_CONFIG_HOME;
   }
+  resetConfig();
 });
 
 test("loadPolicy parses policy file", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-policy-"));
   const previous = process.env.XDG_CONFIG_HOME;
   process.env.XDG_CONFIG_HOME = dir;
+  resetConfig();
   const policyDir = path.join(dir, "tabctl");
   fs.mkdirSync(policyDir, { recursive: true });
   const policyPath = path.join(policyDir, "policy.json");
@@ -38,6 +42,7 @@ test("loadPolicy parses policy file", () => {
   } else {
     delete process.env.XDG_CONFIG_HOME;
   }
+  resetConfig();
 });
 
 test("evaluateTab protects pinned and group titles", () => {

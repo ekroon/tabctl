@@ -9,8 +9,27 @@ tabctl policy --init
 tabctl skill
 ```
 
+## Configuration
+
+### Config directory
+`TABCTL_CONFIG_DIR` → `$XDG_CONFIG_HOME/tabctl` → `~/.config/tabctl`
+
+Set `TABCTL_CONFIG_DIR` to override where tabctl looks for `config.json` and `policy.json`.
+
+### config.json
+Optional file in the config directory. Supported fields:
+
+| Field | Description |
+|-------|-------------|
+| `dataDir` | Override the data directory (socket, undo log, host wrapper) |
+
+### Data directory resolution
+1. `config.json` → `dataDir` (if set)
+2. `<configDir>/data/` (when `TABCTL_CONFIG_DIR` is set)
+3. `$XDG_STATE_HOME/tabctl` → `~/.local/state/tabctl`
+
 ## Policy (enforced when present)
-- Policy file: `$XDG_CONFIG_HOME/tabctl/policy.json` (or `~/.config/tabctl/policy.json`)
+- Policy file: `<configDir>/policy.json` (default: `~/.config/tabctl/policy.json`)
 - If the file is missing, no policy is applied.
 - Protected tabs are excluded from outputs and actions.
 - The default policy protects pinned tabs and group title `🔒`.
@@ -383,6 +402,17 @@ tabctl ping
 Notes:
 - Use `--group-id -1` or `--ungrouped` to target ungrouped tabs.
  - `screenshot --out` writes per-tab folders into the target directory.
+## Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `TABCTL_CONFIG_DIR` | Override config directory (default: `$XDG_CONFIG_HOME/tabctl`) |
+| `TABCTL_EXTENSION_ID` | Extension ID for `setup` command |
+| `TABCTL_NODE` | Node binary path for `setup` command |
+| `TABCTL_VERSION_MODE` | `release` or `dev` for version output |
+
 ## Runtime state
-- Socket: `$XDG_STATE_HOME/tabctl/tabctl.sock` (or `~/.local/state/tabctl/tabctl.sock`)
-- Undo log: `$XDG_STATE_HOME/tabctl/undo.jsonl` (or `~/.local/state/tabctl/undo.jsonl`)
+- Socket: `<dataDir>/tabctl.sock` (default: `~/.local/state/tabctl/tabctl.sock`)
+- Undo log: `<dataDir>/undo.jsonl` (default: `~/.local/state/tabctl/undo.jsonl`)
+
+See [Configuration](#configuration) for how the data directory is resolved.

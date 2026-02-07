@@ -1,7 +1,6 @@
 node_modules/
 build/
 .tabctl/
-.tabarchive/
 *.log
 *.sock
 .DS_Store
@@ -14,4 +13,4 @@ build/
 /extension/manifest.json
 /tests/unit/*.js
 /src/shared/version.ts
-/shared/version.js
+/shared/*.js

@@ -60,22 +60,16 @@ Use the CLI to generate the manifest and wrapper:
 tabctl setup --browser edge --extension-id <YOUR_EXTENSION_ID>
 ```
 
-You can also use the helper script:
-
-```bash
-bash scripts/setup-native-host.sh <YOUR_EXTENSION_ID>
-```
-
 This writes the manifest to:
 `~/Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.erwinkroon.tabctl.json`
 
 The manifest points to a wrapper script at:
-`$XDG_STATE_HOME/tabctl/tabctl-host.sh` (or `~/.local/state/tabctl/tabctl-host.sh`)
+`<dataDir>/tabctl-host.sh` (default: `~/.local/state/tabctl/tabctl-host.sh`)
 
 If `node` is not on PATH for Edge, pass an explicit path:
 
 ```bash
-TABCTL_NODE=/usr/local/bin/node bash scripts/setup-native-host.sh <YOUR_EXTENSION_ID>
+tabctl setup --browser edge --extension-id <YOUR_EXTENSION_ID> --node /usr/local/bin/node
 ```
 
 ## 3) Run the CLI
@@ -185,7 +179,9 @@ npx skills add https://github.com/ekroon/tabctl --skill tabctl -a opencode
 
 ## Policy (protect tabs)
 By default the CLI loads a policy file from:
-`$XDG_CONFIG_HOME/tabctl/policy.json` (or `~/.config/tabctl/policy.json`)
+`<configDir>/policy.json` (default: `~/.config/tabctl/policy.json`)
+
+Set `TABCTL_CONFIG_DIR` to override the config directory.
 
 This is a **protection-only** policy that marks tabs as ineligible for agent actions.
 Example:
@@ -205,7 +201,7 @@ Create a default policy file:
 tabctl policy --init
 ```
 
-The shell setup script also installs a default policy if none exists; `tabctl setup` does not.
+`tabctl setup` does not install a default policy.
 See `config/policy.example.json` for a starter template.
 
 ## Install tabctl on PATH
@@ -231,9 +227,16 @@ Notes:
 - `tabctl history --json` returns a JSON array in `data`.
 - `--format` is only supported by `report` (use `--json` elsewhere).
 
+## Configuration
+Config directory: `TABCTL_CONFIG_DIR` → `$XDG_CONFIG_HOME/tabctl` → `~/.config/tabctl`
+
+An optional `config.json` in the config directory can set `dataDir` to override where state files (socket, undo log) are stored. When `TABCTL_CONFIG_DIR` is set but no `dataDir` is configured, data defaults to `<configDir>/data/`; otherwise it uses `$XDG_STATE_HOME/tabctl` (or `~/.local/state/tabctl`).
+
+See [CLI.md](CLI.md#configuration) for full details.
+
 ## Runtime state
-- Socket: `$XDG_STATE_HOME/tabctl/tabctl.sock` (or `~/.local/state/tabctl/tabctl.sock`)
-- Undo log: `$XDG_STATE_HOME/tabctl/undo.jsonl` (or `~/.local/state/tabctl/undo.jsonl`)
+- Socket: `<dataDir>/tabctl.sock` (default: `~/.local/state/tabctl/tabctl.sock`)
+- Undo log: `<dataDir>/undo.jsonl` (default: `~/.local/state/tabctl/undo.jsonl`)
 
 ## Security
 - The native host is locked to your extension ID.

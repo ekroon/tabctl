@@ -57,7 +57,7 @@ tabctl dedupe --window 123 --confirm # Execute after review
 ## Principles (read first)
 - Only mutate tabs that the test itself created.
 - Never run `archive --all` or `close --apply` in a normal browsing session.
-- Use a unique, recognizable prefix for test groups and windows, e.g. `TEST-TabArchive-<timestamp>`.
+- Use a unique, recognizable prefix for test groups and windows, e.g. `TEST-Tabctl-<timestamp>`.
 - Prefer `list`, `analyze`, and `report` for smoke tests; use `close` and `archive` only in a controlled test window.
 - Always add or update tests for new features.
 - Always end work by running unit tests and a minimal smoke test in a new window you create (see Required end-of-task checks).
@@ -70,7 +70,7 @@ tabctl dedupe --window 123 --confirm # Execute after review
 ## Preconditions
 - Edge is open.
 - The extension is loaded (`extension/`) and connected to the native host.
-- The native host manifest is installed (use `scripts/setup-native-host.sh`).
+- The native host manifest is installed (use `tabctl setup --browser edge --extension-id <id>`).
 - For development, prefer the repo script (`node ./cli/tabctl.js`) so a stable global `tabctl` can stay installed.
 
 ## Unit tests (no Edge required)
@@ -119,7 +119,7 @@ Only use a dedicated test window and clearly labeled groups.
 ### Setup a test window
 1. Create a new Edge window.
 2. Open three safe URLs: `https://example.com`, `https://example.org`, `https://example.net`.
-3. Group the first two tabs and name the group `TEST-TabArchive-<timestamp>`.
+3. Group the first two tabs and name the group `TEST-Tabctl-<timestamp>`.
 4. Leave the third tab ungrouped.
 
 ### Archive test
@@ -128,7 +128,7 @@ Only use a dedicated test window and clearly labeled groups.
    `tabctl archive --window <windowId>`
 3. Confirm in Edge:
    - A single Archive window exists.
-   - A group named `W# - TEST-TabArchive-<timestamp>` exists.
+   - A group named `W# - TEST-Tabctl-<timestamp>` exists.
    - An `W# - Ungrouped` group exists for the ungrouped tab.
 4. Undo:
    `tabctl undo <txid>`
