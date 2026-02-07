@@ -153,6 +153,7 @@ async function main(): Promise<void> {
       "--no-default-browser-check",
       "--disable-gpu",
       "--disable-background-timer-throttling",
+      "--no-sandbox",
       `--disable-extensions-except=${extensionDir}`,
       `--load-extension=${extensionDir}`,
       "--user-data-dir=" + userDataDir,
