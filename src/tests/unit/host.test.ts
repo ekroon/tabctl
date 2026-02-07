@@ -7,6 +7,8 @@ import { spawn } from "node:child_process";
 import test from "node:test";
 import { readUndoRecords } from "../../host/lib/undo";
 
+const pkgVersion = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../package.json"), "utf8")).version;
+
 type NativeMessage = Record<string, unknown>;
 
 function encodeNativeMessage(message: NativeMessage) {
@@ -197,17 +199,19 @@ test("host responds to version", async () => {
     const version = data?.version as string | undefined;
     assert.ok(version);
     if (version && version.includes("-dev.")) {
-      assert.match(version, /^0\.1\.0-dev\.[0-9a-f]{8}(\.dirty)?$/);
+      const re = new RegExp(`^${pkgVersion.replace(/\./g, "\\.")}-dev\\.[0-9a-f]{8}(\\.dirty)?$`);
+      assert.match(version, re);
     } else {
-      assert.equal(version, "0.1.0");
+      assert.equal(version, pkgVersion);
     }
     assert.equal(data?.component, "host");
     if (typeof response.version === "string" && response.version.includes("-dev.")) {
-      assert.match(response.version, /^0\.1\.0-dev\.[0-9a-f]{8}(\.dirty)?$/);
+      const re = new RegExp(`^${pkgVersion.replace(/\./g, "\\.")}-dev\\.[0-9a-f]{8}(\\.dirty)?$`);
+      assert.match(response.version, re);
     } else {
-      assert.equal(response.version, "0.1.0");
+      assert.equal(response.version, pkgVersion);
     }
-    assert.equal(data?.baseVersion, "0.1.0");
+    assert.equal(data?.baseVersion, pkgVersion);
   } finally {
     await stopHost(child);
   }
@@ -229,11 +233,12 @@ test("host responds to version (dev when built)", async () => {
     const version = data?.version as string | undefined;
     assert.ok(version);
     if (version && version.includes("-dev.")) {
-      assert.match(version, /^0\.1\.0-dev\.[0-9a-f]{8}(\.dirty)?$/);
+      const re = new RegExp(`^${pkgVersion.replace(/\./g, "\\.")}-dev\\.[0-9a-f]{8}(\\.dirty)?$`);
+      assert.match(version, re);
     } else {
-      assert.equal(version, "0.1.0");
+      assert.equal(version, pkgVersion);
     }
-    assert.equal(data?.baseVersion, "0.1.0");
+    assert.equal(data?.baseVersion, pkgVersion);
   } finally {
     await stopHost(child);
   }

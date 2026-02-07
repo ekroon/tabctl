@@ -7,6 +7,7 @@ import test from "node:test";
 import { startMockSocket, stopMockSocket } from "./socket";
 
 const cliPath = path.resolve(__dirname, "../../cli/tabctl.js");
+const pkgVersion = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../package.json"), "utf8")).version;
 const testConfigHome = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-test-config-"));
 
 async function runCli(
@@ -113,9 +114,10 @@ async function runCliWithStdin(
 function assertVersion(version: string | undefined) {
   assert.ok(version);
   if (version && version.includes("-dev.")) {
-    assert.match(version, /^0\.1\.0-dev\.[0-9a-f]{8}(\.dirty)?$/);
+    const re = new RegExp(`^${pkgVersion.replace(/\./g, "\\.")}-dev\\.[0-9a-f]{8}(\\.dirty)?$`);
+    assert.match(version, re);
   } else {
-    assert.equal(version, "0.1.0");
+    assert.equal(version, pkgVersion);
   }
 }
 
@@ -2182,7 +2184,7 @@ test("version outputs cli version", async () => {
   assert.equal(output.ok, true);
   assertVersion(output.data?.version as string | undefined);
   assert.equal(output.data?.component, "cli");
-  assert.equal(output.data?.baseVersion, "0.1.0");
+  assert.equal(output.data?.baseVersion, pkgVersion);
 });
 
 test("skill install creates project skill link", async () => {
@@ -2278,11 +2280,12 @@ test("version includes dev sha when built", async () => {
   const version = output.data?.version as string | undefined;
   assert.ok(version);
   if (version && version.includes("-dev.")) {
-    assert.match(version, /^0\.1\.0-dev\.[0-9a-f]{8}(\.dirty)?$/);
+    const re = new RegExp(`^${pkgVersion.replace(/\./g, "\\.")}-dev\\.[0-9a-f]{8}(\\.dirty)?$`);
+    assert.match(version, re);
   } else {
-    assert.equal(version, "0.1.0");
+    assert.equal(version, pkgVersion);
   }
-  assert.equal(output.data?.baseVersion, "0.1.0");
+  assert.equal(output.data?.baseVersion, pkgVersion);
 });
 
 test("undo sends undo action with txid", async () => {
