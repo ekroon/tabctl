@@ -7,7 +7,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import readline from "readline";
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 
 import { HOST_NAME, HOST_DESCRIPTION, EXTENSION_ID_PATTERN, resolveConfig } from "../constants";
 import { printJson, errorOut } from "../output";
@@ -15,6 +15,7 @@ import type { Options } from "../types";
 import { addProfile, validateProfileName } from "../../../shared/profiles";
 import { resetConfig } from "../../../shared/config";
 import { syncExtension, syncHost, deriveExtensionId, resolveInstalledExtensionDir } from "../../../shared/extension-sync";
+import { isWSL, getWindowsLocalAppData, convertToWindowsPath, getWSLDistroName } from "../../../shared/wsl";
 
 export function resolveBrowser(value: unknown): "edge" | "chrome" | null {
   if (typeof value !== "string") {
@@ -158,6 +159,16 @@ export function resolveManifestDir(browser: "edge" | "chrome"): string {
   if (!home) {
     errorOut("Home directory not found.");
   }
+  
+  // WSL: browsers run on Windows, so use Windows paths
+  if (isWSL()) {
+    const base = getWindowsLocalAppData();
+    if (browser === "edge") {
+      return path.join(base, "Microsoft", "Edge", "User Data", "NativeMessagingHosts");
+    }
+    return path.join(base, "Google", "Chrome", "User Data", "NativeMessagingHosts");
+  }
+  
   if (process.platform === "win32") {
     // Windows: registry-based is preferred, but file-based works with --user-data-dir.
     // For system-wide, we point to the per-user NativeMessagingHosts under LOCALAPPDATA.
@@ -182,8 +193,26 @@ export function resolveManifestDir(browser: "edge" | "chrome"): string {
 
 export function writeWrapper(nodePath: string, hostPath: string, profileName: string | null, wrapperDir: string): string {
   fs.mkdirSync(wrapperDir, { recursive: true });
-  if (process.platform !== "win32") {
+  if (process.platform !== "win32" && !isWSL()) {
     try { fs.chmodSync(wrapperDir, 0o700); } catch { /* ignore */ }
+  }
+
+  // WSL: create a .cmd wrapper that calls wsl.exe
+  if (isWSL()) {
+    const distro = getWSLDistroName();
+    const wrapperPath = path.join(wrapperDir, "tabctl-host.cmd");
+    
+    const lines = ["@echo off"];
+    // Set environment variable inside WSL via wsl.exe command
+    const profileEnv = profileName ? `TABCTL_PROFILE=${profileName} ` : "";
+    lines.push(`wsl.exe -d ${distro} -- ${profileEnv}"${nodePath}" "${hostPath}"`);
+    lines.push("");
+    
+    fs.writeFileSync(wrapperPath, lines.join("\r\n"), "utf8");
+    
+    // Convert the wrapper path to Windows format for the manifest
+    const windowsWrapperPath = convertToWindowsPath(wrapperPath);
+    return windowsWrapperPath;
   }
 
   if (process.platform === "win32") {
@@ -239,6 +268,35 @@ export function writeWrapper(nodePath: string, hostPath: string, profileName: st
   fs.writeFileSync(wrapperPath, wrapper, "utf8");
   fs.chmodSync(wrapperPath, 0o700);
   return wrapperPath;
+}
+
+/**
+ * Add a Windows registry entry for native messaging host.
+ * Used in WSL to register the manifest in Windows registry.
+ */
+export function addWindowsRegistryEntry(browser: "edge" | "chrome", manifestPath: string): void {
+  if (!isWSL()) {
+    throw new Error("addWindowsRegistryEntry should only be called in WSL");
+  }
+
+  // Convert the manifest path to Windows format
+  const windowsManifestPath = convertToWindowsPath(manifestPath);
+  
+  // Determine the registry key based on browser
+  const regKey = browser === "edge"
+    ? "HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\" + HOST_NAME
+    : "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\" + HOST_NAME;
+  
+  // Use reg.exe via cmd.exe to add the registry entry
+  // The value is the path to the manifest JSON file
+  const cmd = `reg.exe add "${regKey}" /ve /t REG_SZ /d "${windowsManifestPath}" /f`;
+  
+  try {
+    execSync(`cmd.exe /c ${cmd}`, { encoding: "utf-8" });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to add Windows registry entry: ${detail}`);
+  }
 }
 
 export async function runSetup(options: Options, prettyOutput: boolean): Promise<void> {
@@ -333,6 +391,17 @@ export async function runSetup(options: Options, prettyOutput: boolean): Promise
     allowed_origins: [`chrome-extension://${extensionId}/`],
   };
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+
+  // WSL: also register in Windows registry
+  if (isWSL()) {
+    try {
+      addWindowsRegistryEntry(browser, manifestPath);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`Warning: Failed to add Windows registry entry: ${detail}\n`);
+      process.stderr.write(`You may need to manually add the registry entry.\n`);
+    }
+  }
 
   // Register profile
   const profileEntry: Parameters<typeof addProfile>[1] = {

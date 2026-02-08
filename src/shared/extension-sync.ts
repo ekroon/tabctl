@@ -2,6 +2,7 @@ import path from "path";
 import fs from "fs";
 import crypto from "crypto";
 import { resolveConfig } from "./config";
+import { isWSL, getWindowsLocalAppData, convertToWindowsPath } from "./wsl";
 
 export const EXTENSION_DIR_NAME = "extension";
 export const HOST_BUNDLE_NAME = "host.bundle.js";
@@ -9,9 +10,22 @@ export const HOST_BUNDLE_NAME = "host.bundle.js";
 /**
  * Derive the Chrome/Edge extension ID for an unpacked extension path.
  * Chromium computes: SHA256(absolute_path) → first 32 hex chars → map 0-f to a-p.
+ * In WSL, use the Windows path for ID calculation since the browser runs on Windows.
  */
 export function deriveExtensionId(extensionDir: string): string {
-  const hash = crypto.createHash("sha256").update(extensionDir).digest("hex").slice(0, 32);
+  let pathForId = extensionDir;
+  
+  // In WSL, convert to Windows path for ID calculation
+  if (isWSL()) {
+    try {
+      pathForId = convertToWindowsPath(extensionDir);
+    } catch {
+      // If conversion fails, use the Unix path as fallback
+      pathForId = extensionDir;
+    }
+  }
+  
+  const hash = crypto.createHash("sha256").update(pathForId).digest("hex").slice(0, 32);
   return hash.split("").map(c => String.fromCharCode("a".charCodeAt(0) + parseInt(c, 16))).join("");
 }
 
@@ -34,6 +48,13 @@ export function resolveBundledHostPath(): string {
 
 export function resolveInstalledExtensionDir(dataDir?: string): string {
   const dir = dataDir ?? resolveConfig().baseDataDir;
+  
+  // In WSL, sync extension to Windows filesystem so Edge can load it
+  if (isWSL()) {
+    const windowsLocalAppData = getWindowsLocalAppData();
+    return path.join(windowsLocalAppData, "tabctl", EXTENSION_DIR_NAME);
+  }
+  
   return path.join(dir, EXTENSION_DIR_NAME);
 }
 
