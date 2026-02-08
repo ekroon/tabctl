@@ -27,27 +27,31 @@ describe("isWSL", () => {
 
   it("returns true when /proc/version contains microsoft", () => {
     Object.defineProperty(process, "platform", { value: "linux" });
-    fs.readFileSync = mock.fn(() => "Linux version 5.10.16.3-microsoft-standard-WSL2") as any;
+    const mockReadFile = mock.fn(() => "Linux version 5.10.16.3-microsoft-standard-WSL2");
+    fs.readFileSync = mockReadFile as unknown as typeof fs.readFileSync;
     assert.strictEqual(isWSL(), true);
   });
 
   it("returns true when /proc/version contains WSL", () => {
     Object.defineProperty(process, "platform", { value: "linux" });
-    fs.readFileSync = mock.fn(() => "Linux version 5.15.90.1-WSL") as any;
+    const mockReadFile = mock.fn(() => "Linux version 5.15.90.1-WSL");
+    fs.readFileSync = mockReadFile as unknown as typeof fs.readFileSync;
     assert.strictEqual(isWSL(), true);
   });
 
   it("returns false when /proc/version does not contain microsoft or WSL", () => {
     Object.defineProperty(process, "platform", { value: "linux" });
-    fs.readFileSync = mock.fn(() => "Linux version 6.1.0-generic") as any;
+    const mockReadFile = mock.fn(() => "Linux version 6.1.0-generic");
+    fs.readFileSync = mockReadFile as unknown as typeof fs.readFileSync;
     assert.strictEqual(isWSL(), false);
   });
 
   it("returns false when /proc/version cannot be read", () => {
     Object.defineProperty(process, "platform", { value: "linux" });
-    fs.readFileSync = mock.fn(() => {
+    const mockReadFile = mock.fn(() => {
       throw new Error("ENOENT");
-    }) as any;
+    });
+    fs.readFileSync = mockReadFile as unknown as typeof fs.readFileSync;
     assert.strictEqual(isWSL(), false);
   });
 });

@@ -59,7 +59,11 @@ export function getWindowsUsername(): string {
 export function convertToWindowsPath(wslPath: string): string {
   try {
     // Use wslpath utility (available in WSL)
-    const windowsPath = execSync(`wslpath -w "${wslPath}"`, { encoding: "utf-8" }).trim();
+    // Pass the path as stdin to avoid shell injection
+    const windowsPath = execSync("wslpath -w -", { 
+      encoding: "utf-8",
+      input: wslPath 
+    }).trim();
     return windowsPath;
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);

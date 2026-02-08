@@ -203,9 +203,13 @@ export function writeWrapper(nodePath: string, hostPath: string, profileName: st
     const wrapperPath = path.join(wrapperDir, "tabctl-host.cmd");
     
     const lines = ["@echo off"];
-    // Set environment variable inside WSL via wsl.exe command
-    const profileEnv = profileName ? `TABCTL_PROFILE=${profileName} ` : "";
-    lines.push(`wsl.exe -d ${distro} -- ${profileEnv}"${nodePath}" "${hostPath}"`);
+    // Build the wsl.exe command with proper environment variable handling
+    if (profileName) {
+      // Use wsl.exe -e to execute a command with environment variable
+      lines.push(`wsl.exe -d ${distro} -e env TABCTL_PROFILE=${profileName} "${nodePath}" "${hostPath}"`);
+    } else {
+      lines.push(`wsl.exe -d ${distro} -e "${nodePath}" "${hostPath}"`);
+    }
     lines.push("");
     
     fs.writeFileSync(wrapperPath, lines.join("\r\n"), "utf8");
@@ -287,12 +291,15 @@ export function addWindowsRegistryEntry(browser: "edge" | "chrome", manifestPath
     ? "HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\" + HOST_NAME
     : "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\" + HOST_NAME;
   
+  // Escape backslashes and quotes in the path for the registry command
+  const escapedPath = windowsManifestPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  
   // Use reg.exe via cmd.exe to add the registry entry
   // The value is the path to the manifest JSON file
-  const cmd = `reg.exe add "${regKey}" /ve /t REG_SZ /d "${windowsManifestPath}" /f`;
+  const cmd = `reg.exe add "${regKey}" /ve /t REG_SZ /d "${escapedPath}" /f`;
   
   try {
-    execSync(`cmd.exe /c ${cmd}`, { encoding: "utf-8" });
+    execSync(`cmd.exe /c "${cmd}"`, { encoding: "utf-8" });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     throw new Error(`Failed to add Windows registry entry: ${detail}`);

@@ -17,12 +17,7 @@ export function deriveExtensionId(extensionDir: string): string {
   
   // In WSL, convert to Windows path for ID calculation
   if (isWSL()) {
-    try {
-      pathForId = convertToWindowsPath(extensionDir);
-    } catch {
-      // If conversion fails, use the Unix path as fallback
-      pathForId = extensionDir;
-    }
+    pathForId = convertToWindowsPath(extensionDir);
   }
   
   const hash = crypto.createHash("sha256").update(pathForId).digest("hex").slice(0, 32);
