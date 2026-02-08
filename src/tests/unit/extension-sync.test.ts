@@ -222,6 +222,7 @@ test("syncHost overwrites when versions differ", () => {
 
 test("synced host bundle is executable", () => {
   const dir = makeTmpDir();
+  const cleanConfigHome = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-extsync-cfg-"));
   try {
     const result = syncHost(dir);
     assert.equal(result.synced, true);
@@ -232,12 +233,13 @@ test("synced host bundle is executable", () => {
       input: "{}",
       encoding: "utf-8",
       timeout: 5000,
-      env: { ...process.env, XDG_STATE_HOME: dir },
+      env: { ...process.env, XDG_STATE_HOME: dir, XDG_CONFIG_HOME: cleanConfigHome },
     });
     // Host should start and exit cleanly when stdin closes
     assert.ok(proc.stderr.includes("Listening on") || proc.stderr.includes("Extension disconnected"),
       `Host should start and run. stderr: ${proc.stderr.slice(0, 200)}`);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(cleanConfigHome, { recursive: true, force: true });
   }
 });

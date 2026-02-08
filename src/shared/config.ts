@@ -1,6 +1,31 @@
 import os from "os";
 import path from "path";
+import crypto from "crypto";
 import fs from "fs";
+
+function defaultConfigBase(): string {
+  if (process.platform === "win32") {
+    return process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+  }
+  return path.join(os.homedir(), ".config");
+}
+
+function defaultStateBase(): string {
+  if (process.platform === "win32") {
+    return process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+  }
+  return path.join(os.homedir(), ".local", "state");
+}
+
+/** Resolve the IPC socket/pipe path for the given data directory. */
+export function resolveSocketPath(dataDir: string): string {
+  if (process.platform === "win32") {
+    // Windows: use named pipes (Unix domain sockets are unreliable)
+    const hash = crypto.createHash("sha256").update(dataDir).digest("hex").slice(0, 12);
+    return `\\\\.\\pipe\\tabctl-${hash}`;
+  }
+  return path.join(dataDir, "tabctl.sock");
+}
 
 export type TabctlConfig = {
   configDir: string;
@@ -32,7 +57,7 @@ export function resolveConfig(profileName?: string): TabctlConfig {
 
   // Config dir resolution
   const configDir = process.env.TABCTL_CONFIG_DIR
-    || path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "tabctl");
+    || path.join(process.env.XDG_CONFIG_HOME || defaultConfigBase(), "tabctl");
 
   // Read optional config.json
   let fileConfig: Record<string, unknown> = {};
@@ -54,7 +79,7 @@ export function resolveConfig(profileName?: string): TabctlConfig {
     dataDir = path.join(configDir, "data");
   } else {
     dataDir = path.join(
-      process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state"),
+      process.env.XDG_STATE_HOME || defaultStateBase(),
       "tabctl",
     );
   }
@@ -106,7 +131,7 @@ export function resolveConfig(profileName?: string): TabctlConfig {
     configDir,
     dataDir,
     baseDataDir,
-    socketPath: process.env.TABCTL_SOCKET || path.join(dataDir, "tabctl.sock"),
+    socketPath: process.env.TABCTL_SOCKET || resolveSocketPath(dataDir),
     undoLog: path.join(dataDir, "undo.jsonl"),
     wrapperDir: dataDir,
     policyPath: path.join(configDir, "policy.json"),

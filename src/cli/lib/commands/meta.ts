@@ -42,7 +42,7 @@ function resolveSkillTargetDir(globalInstall: boolean): string {
 }
 
 function runSkillsCli(args: string[]): void {
-  const result = spawnSync("npx", ["skills", ...args], { stdio: "pipe" });
+  const result = spawnSync("npx", ["skills", ...args], { stdio: "pipe", shell: process.platform === "win32" });
   if (result.error) {
     errorOut(`Failed to run skills CLI: ${result.error.message}`);
   }

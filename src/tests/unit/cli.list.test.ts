@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import os from "os";
+import path from "path";
 import test from "node:test";
 import { startMockSocket, stopMockSocket } from "./socket";
 import { runCli, parseOutput, mockResponse } from "./cli-helpers";
@@ -387,7 +389,8 @@ test("undo rejects --latest with --txid", async () => {
 });
 
 test("ENOENT error includes native host hint", async () => {
-  const result = await runCli(["ping"], "/tmp/tabctl-nonexistent-socket-path.sock");
+  const nonexistentSocket = path.join(os.tmpdir(), "tabctl-nonexistent-socket-path.sock");
+  const result = await runCli(["ping"], nonexistentSocket);
   assert.equal(result.status, 1);
   const output = parseOutput(result);
   assert.equal(output.ok, false);

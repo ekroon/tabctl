@@ -4,6 +4,8 @@
  */
 
 import fs from "fs";
+import net from "net";
+import path from "path";
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Writable, Readable } from "node:stream";
 
@@ -33,13 +35,42 @@ export function waitForFile(filePath: string, timeoutMs: number): Promise<void> 
   });
 }
 
+/** Wait for a socket/named pipe to become available by attempting to connect. */
+export function waitForSocket(socketPath: string, timeoutMs: number): Promise<void> {
+  if (process.platform !== "win32") {
+    return waitForFile(socketPath, timeoutMs);
+  }
+  // On Windows, named pipes can't be detected with fs.existsSync; try connecting
+  const start = Date.now();
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (Date.now() - start > timeoutMs) {
+        return reject(new Error(`Timed out waiting for ${socketPath}`));
+      }
+      const client = net.createConnection(socketPath);
+      client.on("connect", () => { client.destroy(); resolve(); });
+      client.on("error", () => { setTimeout(check, 500); });
+    };
+    check();
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Chrome discovery
 // ---------------------------------------------------------------------------
 
 export function findChrome(): string {
   if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
-  const candidates = [
+  const candidates: string[] = process.platform === "win32" ? [
+    path.join(process.env["PROGRAMFILES"] || "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe"),
+    path.join(process.env["PROGRAMFILES(X86)"] || "C:\\Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe"),
+    path.join(process.env.LOCALAPPDATA || "", "Google", "Chrome", "Application", "chrome.exe"),
+  ] : process.platform === "linux" ? [
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/chromium",
+  ] : [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
   ];

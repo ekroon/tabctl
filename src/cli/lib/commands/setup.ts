@@ -126,10 +126,18 @@ export function resolveNodePath(options: Options): string {
   if (!path.isAbsolute(value)) {
     errorOut(`Node path must be absolute: ${value}`);
   }
-  try {
-    fs.accessSync(value, fs.constants.X_OK);
-  } catch {
-    errorOut(`Node binary not executable: ${value}`);
+  if (process.platform !== "win32") {
+    try {
+      fs.accessSync(value, fs.constants.X_OK);
+    } catch {
+      errorOut(`Node binary not executable: ${value}`);
+    }
+  } else {
+    try {
+      fs.accessSync(value, fs.constants.R_OK);
+    } catch {
+      errorOut(`Node binary not found: ${value}`);
+    }
   }
   return value;
 }
@@ -150,6 +158,22 @@ export function resolveManifestDir(browser: "edge" | "chrome"): string {
   if (!home) {
     errorOut("Home directory not found.");
   }
+  if (process.platform === "win32") {
+    // Windows: registry-based is preferred, but file-based works with --user-data-dir.
+    // For system-wide, we point to the per-user NativeMessagingHosts under LOCALAPPDATA.
+    const base = process.env.LOCALAPPDATA || path.join(home, "AppData", "Local");
+    if (browser === "edge") {
+      return path.join(base, "Microsoft", "Edge", "User Data", "NativeMessagingHosts");
+    }
+    return path.join(base, "Google", "Chrome", "User Data", "NativeMessagingHosts");
+  }
+  if (process.platform === "linux") {
+    if (browser === "edge") {
+      return path.join(home, ".config", "microsoft-edge", "NativeMessagingHosts");
+    }
+    return path.join(home, ".config", "google-chrome", "NativeMessagingHosts");
+  }
+  // macOS
   if (browser === "edge") {
     return path.join(home, "Library", "Application Support", "Microsoft Edge", "NativeMessagingHosts");
   }
@@ -157,7 +181,23 @@ export function resolveManifestDir(browser: "edge" | "chrome"): string {
 }
 
 export function writeWrapper(nodePath: string, hostPath: string, profileName: string | null, wrapperDir: string): string {
-  fs.mkdirSync(wrapperDir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(wrapperDir, { recursive: true });
+  if (process.platform !== "win32") {
+    try { fs.chmodSync(wrapperDir, 0o700); } catch { /* ignore */ }
+  }
+
+  if (process.platform === "win32") {
+    const wrapperPath = path.join(wrapperDir, "tabctl-host.cmd");
+    const lines = ["@echo off"];
+    if (profileName) {
+      lines.push(`set TABCTL_PROFILE=${profileName}`);
+    }
+    lines.push(`"${nodePath}" "${hostPath}" %*`);
+    lines.push("");
+    fs.writeFileSync(wrapperPath, lines.join("\r\n"), "utf8");
+    return wrapperPath;
+  }
+
   const wrapperPath = path.join(wrapperDir, "tabctl-host.sh");
   const escapedNode = nodePath.replace(/"/g, "\\\"");
   const escapedHost = hostPath.replace(/"/g, "\\\"");
@@ -177,10 +217,6 @@ export function writeWrapper(nodePath: string, hostPath: string, profileName: st
 }
 
 export async function runSetup(options: Options, prettyOutput: boolean): Promise<void> {
-  if (process.platform !== "darwin") {
-    errorOut("tabctl setup is only supported on macOS.");
-  }
-
   const browser = resolveBrowser(options.browser);
   if (!browser) {
     errorOut("Missing or invalid --browser (edge|chrome)");
@@ -213,9 +249,19 @@ export async function runSetup(options: Options, prettyOutput: boolean): Promise
     if (extensionSync?.extensionDir) {
       process.stderr.write(`\nExtension synced to: ${extensionSync.extensionDir}\n`);
       try {
-        const pbcopy = spawn("pbcopy", { stdio: ["pipe", "ignore", "ignore"] });
-        pbcopy.stdin.end(extensionSync.extensionDir);
-        pbcopy.on("exit", (code) => {
+        const clipArgs: string[] = [];
+        let clipCmd: string;
+        if (process.platform === "darwin") {
+          clipCmd = "pbcopy";
+        } else if (process.platform === "win32") {
+          clipCmd = "clip";
+        } else {
+          clipCmd = "xclip";
+          clipArgs.push("-selection", "clipboard");
+        }
+        const clip = spawn(clipCmd, clipArgs, { stdio: ["pipe", "ignore", "ignore"] });
+        clip.stdin.end(extensionSync.extensionDir);
+        clip.on("exit", (code) => {
           if (code === 0) process.stderr.write("(Path copied to clipboard)\n");
         });
       } catch {
@@ -238,7 +284,7 @@ export async function runSetup(options: Options, prettyOutput: boolean): Promise
 
   // Profile data dir (use baseDataDir to avoid nesting under another profile)
   const profileDataDir = path.join(config.baseDataDir, "profiles", profileName);
-  fs.mkdirSync(profileDataDir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(profileDataDir, { recursive: true });
 
   // Write profile-specific wrapper
   const wrapperPath = writeWrapper(nodePath, hostPath, profileName, profileDataDir);

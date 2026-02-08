@@ -9,14 +9,16 @@
  */
 
 import fs from "fs";
+import net from "net";
 import os from "os";
 import path from "path";
-import { spawnSync, type ChildProcess } from "node:child_process";
+import { execSync, spawnSync, type ChildProcess } from "node:child_process";
+import { resolveSocketPath } from "../shared/config";
 
 import {
   sleep,
   log,
-  waitForFile,
+  waitForSocket,
   findChrome,
   initCDP,
   sendCDP,
@@ -33,11 +35,6 @@ const GLOBAL_TIMEOUT_MS = 90_000;
 const DEFAULT_HOST_NAME = "com.erwinkroon.tabctl";
 
 async function main(): Promise<void> {
-  if (process.platform !== "darwin") {
-    log("Integration tests are macOS-only (native messaging paths).");
-    process.exit(0);
-  }
-
   // Global timeout guard
   const killTimer = setTimeout(() => {
     log("FATAL: global timeout reached – aborting");
@@ -62,6 +59,54 @@ async function main(): Promise<void> {
     // 1. Find Chrome
     const chromePath = findChrome();
     log(`Chrome: ${chromePath}`);
+
+    // 1b. Build the host wrapper.
+    const hostPath = path.resolve(__dirname, "..", "host", "host.js");
+    let wrapperPath: string;
+
+    if (process.platform === "win32") {
+      // Compile a Go launcher that proxies binary stdin/stdout between Chrome
+      // and Node. Chrome launches .cmd files through cmd.exe which corrupts the
+      // binary native messaging protocol. The Go exe acts as a transparent binary
+      // proxy, avoiding cmd.exe entirely.
+      const launcherDir = path.resolve(__dirname, "..", "host", "launcher");
+      const exePath = path.join(dataDir, "tabctl-host.exe");
+      const cfgPath = path.join(dataDir, "host-launcher.cfg");
+
+      // Write config file: node path, host path, env vars
+      fs.writeFileSync(cfgPath, [
+        process.execPath,
+        hostPath,
+        `XDG_CONFIG_HOME=${configHome}`,
+        `XDG_STATE_HOME=${stateHome}`,
+        "",
+      ].join("\r\n"));
+
+      // Compile with Go (available on GH Actions Windows runners)
+      log("Compiling native host launcher...");
+      const compileResult = spawnSync("go", ["build", "-o", exePath, "."], {
+        cwd: launcherDir,
+        encoding: "utf-8",
+        timeout: 60_000,
+        env: { ...process.env, CGO_ENABLED: "0" },
+      });
+      if (compileResult.status !== 0) {
+        throw new Error(`Failed to compile host launcher:\n${compileResult.stdout}\n${compileResult.stderr}`);
+      }
+      log("Native host launcher compiled");
+      wrapperPath = exePath;
+    } else {
+      wrapperPath = path.join(dataDir, "tabctl-host.sh");
+      const wrapper = [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        `export XDG_CONFIG_HOME="${configHome}"`,
+        `export XDG_STATE_HOME="${stateHome}"`,
+        `exec "${process.execPath}" "${hostPath}"`,
+        "",
+      ].join("\n");
+      fs.writeFileSync(wrapperPath, wrapper, { mode: 0o700 });
+    }
 
     // 2. Launch headless Chrome with CDP pipe.
     const extensionDir = path.resolve(__dirname, "..", "extension");
@@ -88,22 +133,11 @@ async function main(): Promise<void> {
 
     initCDP(chrome);
 
-    // 3. Write native messaging manifest with a placeholder. We need the
-    //    extension ID for allowed_origins, but we also need the manifest ready
-    //    quickly so connectNative() can succeed.
-    const manifestDir = path.join(userDataDir, "NativeMessagingHosts");
+    // On Windows, Chrome uses the registry; on macOS/Linux, a directory-based manifest.
+    const manifestDir = process.platform === "win32"
+      ? dataDir  // Just store the manifest file somewhere; registry points to it
+      : path.join(userDataDir, "NativeMessagingHosts");
     fs.mkdirSync(manifestDir, { recursive: true });
-    const hostPath = path.resolve(__dirname, "..", "host", "host.js");
-    const wrapperPath = path.join(dataDir, "tabctl-host.sh");
-    const wrapper = [
-      "#!/usr/bin/env bash",
-      "set -euo pipefail",
-      `export XDG_CONFIG_HOME="${configHome}"`,
-      `export XDG_STATE_HOME="${stateHome}"`,
-      `exec "${process.execPath}" "${hostPath}"`,
-      "",
-    ].join("\n");
-    fs.writeFileSync(wrapperPath, wrapper, { mode: 0o700 });
     manifestPath = path.join(manifestDir, `${DEFAULT_HOST_NAME}.json`);
 
     // 4. Load extension to discover its ID, write manifest, then find service worker.
@@ -122,24 +156,144 @@ async function main(): Promise<void> {
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
     log(`Manifest written: ${manifestPath}`);
 
+    // On Windows, register the manifest in the registry
+    if (process.platform === "win32") {
+      const regKey = `HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\${DEFAULT_HOST_NAME}`;
+      execSync(`reg add "${regKey}" /ve /t REG_SZ /d "${manifestPath}" /f`, { stdio: "pipe" });
+      log(`Registry key written: ${regKey}`);
+    }
+
     // Now find and attach to the service worker.
     const sessionId = await attachServiceWorker(extensionId, chrome, stderrBuf);
 
-    // 5. Reset port and reconnect native host.
+    // 5. Disconnect existing port (if any) and reconnect native host.
+    // On Windows, named pipes can't be re-bound while the previous host holds them,
+    // so we must disconnect first to let the previous host exit.
     await sendCDP("Runtime.evaluate", {
-      expression: "self.__tabctl.state.port = null; self.__tabctl.connectNative();",
+      expression: `
+        if (self.__tabctl.state.port) {
+          try { self.__tabctl.state.port.disconnect(); } catch(e) {}
+        }
+        self.__tabctl.state.port = null;
+      `,
+      returnByValue: true,
+    }, sessionId);
+    // Give the previous host time to exit and release the named pipe
+    await sleep(process.platform === "win32" ? 1500 : 200);
+    await sendCDP("Runtime.evaluate", {
+      expression: "self.__tabctl.connectNative();",
       returnByValue: true,
     }, sessionId);
     log("Triggered native host reconnect via CDP");
 
     // 6. Wait for the host socket (host creates it when started by Chrome)
-    const socketPath = path.join(dataDir, "tabctl.sock");
+    const socketPath = resolveSocketPath(dataDir);
     log("Waiting for host socket…");
-    await waitForFile(socketPath, 15_000);
+    await waitForSocket(socketPath, 15_000);
     log(`Socket ready: ${socketPath}`);
 
     // Brief pause for host to fully initialize
     await sleep(1000);
+
+    // Check Chrome is still alive
+    log(`Chrome process alive: ${chrome.exitCode === null}, pid=${chrome.pid}`);
+
+    // Diagnostic: check extension port state via CDP
+    const portCheck = await sendCDP("Runtime.evaluate", {
+      expression: "JSON.stringify({ portExists: !!self.__tabctl.state.port, portName: self.__tabctl.state.port?.name ?? null })",
+      returnByValue: true,
+    }, sessionId);
+    log(`Extension port state: ${JSON.stringify(portCheck?.result?.value ?? portCheck)}`);
+
+    // If port is null, try to get last error info
+    if (portCheck?.result?.value) {
+      try {
+        const parsed = JSON.parse(portCheck.result.value);
+        if (!parsed.portExists) {
+          log("Extension port is NULL — native messaging disconnected!");
+          // Try reconnecting and check lastError
+          const reconnectCheck = await sendCDP("Runtime.evaluate", {
+            expression: `
+              (async () => {
+                try {
+                  const port = chrome.runtime.connectNative("${DEFAULT_HOST_NAME}");
+                  const err = chrome.runtime.lastError;
+                  return JSON.stringify({ connected: !!port, lastError: err?.message ?? null });
+                } catch(e) {
+                  return JSON.stringify({ connected: false, error: e.message });
+                }
+              })()
+            `,
+            awaitPromise: true,
+            returnByValue: true,
+          }, sessionId);
+          log(`Reconnect attempt: ${JSON.stringify(reconnectCheck?.result?.value ?? reconnectCheck)}`);
+          await sleep(2000);
+          // Check port state again
+          const portCheck2 = await sendCDP("Runtime.evaluate", {
+            expression: "JSON.stringify({ portExists: !!self.__tabctl.state.port, portName: self.__tabctl.state.port?.name ?? null })",
+            returnByValue: true,
+          }, sessionId);
+          log(`Extension port state after reconnect: ${JSON.stringify(portCheck2?.result?.value ?? portCheck2)}`);
+          // Wait for new socket
+          await waitForSocket(socketPath, 15_000);
+          log(`Socket ready after reconnect: ${socketPath}`);
+          await sleep(1000);
+        }
+      } catch {}
+    }
+
+    // Diagnostic: raw socket ping to verify host is reachable
+    const diagResult = await new Promise<string>((resolve) => {
+      const timer = setTimeout(() => resolve("TIMEOUT"), 5000);
+      const sock = net.createConnection(socketPath);
+      sock.on("connect", () => {
+        sock.write(JSON.stringify({ id: "diag-1", action: "version" }) + "\n");
+      });
+      sock.on("data", (d) => {
+        clearTimeout(timer);
+        sock.end();
+        resolve(d.toString().trim());
+      });
+      sock.on("error", (e) => {
+        clearTimeout(timer);
+        resolve(`ERROR: ${e.message}`);
+      });
+    });
+    log(`Diagnostic socket version: ${diagResult.slice(0, 200)}`);
+
+    // Diagnostic: raw socket ping (requires extension roundtrip)
+    const diagPing = await new Promise<string>((resolve) => {
+      const timer = setTimeout(() => resolve("TIMEOUT"), 8000);
+      const sock = net.createConnection(socketPath);
+      sock.on("connect", () => {
+        sock.write(JSON.stringify({ id: "diag-2", action: "ping" }) + "\n");
+      });
+      sock.on("data", (d) => {
+        clearTimeout(timer);
+        sock.end();
+        resolve(d.toString().trim());
+      });
+      sock.on("error", (e) => {
+        clearTimeout(timer);
+        resolve(`ERROR: ${e.message}`);
+      });
+    });
+    log(`Diagnostic socket ping: ${diagPing.slice(0, 200)}`);
+
+    // Dump host stderr log on Windows (from Chrome stderr which captures Go launcher + Node output)
+    if (process.platform === "win32") {
+      // Read Go launcher log file
+      const launcherLogPath = path.join(dataDir, "launcher.log");
+      try {
+        const launcherLog = fs.readFileSync(launcherLogPath, "utf-8").trim();
+        for (const line of launcherLog.split("\n").slice(0, 50)) {
+          log(`  [launcher] ${line.trim()}`);
+        }
+      } catch {
+        log("  [launcher] log file not found");
+      }
+    }
 
     // 7. Run CLI test scenarios
     const cliPath = path.resolve(__dirname, "..", "cli", "tabctl.js");
@@ -152,6 +306,7 @@ async function main(): Promise<void> {
       XDG_CONFIG_HOME: configHome,
       XDG_STATE_HOME: stateHome,
     };
+    log(`CLI env: TABCTL_SOCKET=${socketPath}`);
 
     async function runTest(name: string, args: string[]): Promise<boolean> {
       const result = spawnSync(process.execPath, [cliPath, ...args], {
@@ -171,7 +326,8 @@ async function main(): Promise<void> {
         return false;
       } catch {
         log(`  FAIL: ${name}: non-JSON output: ${raw.slice(0, 200)}`);
-        if (result.stderr) log(`  stderr: ${result.stderr.slice(0, 200)}`);
+        log(`    status=${result.status} signal=${result.signal} error=${result.error?.message ?? "none"}`);
+        if (result.stderr) log(`    stderr: ${result.stderr.slice(0, 200)}`);
         return false;
       }
     }
@@ -261,14 +417,34 @@ async function main(): Promise<void> {
       log(`  New SW session: ${newSessionId}`);
 
       // Force reconnect in case onInstalled race
-      await sendCDP("Runtime.evaluate", {
-        expression: "self.__tabctl.state.port = null; self.__tabctl.connectNative();",
-        returnByValue: true,
-      }, newSessionId);
+      try {
+        await Promise.race([
+          (async () => {
+            await sendCDP("Runtime.evaluate", {
+              expression: `
+                if (self.__tabctl.state.port) {
+                  try { self.__tabctl.state.port.disconnect(); } catch(e) {}
+                }
+                self.__tabctl.state.port = null;
+              `,
+              returnByValue: true,
+            }, newSessionId);
+            // Give the previous host time to exit and release the named pipe
+            await sleep(process.platform === "win32" ? 1500 : 200);
+            await sendCDP("Runtime.evaluate", {
+              expression: "self.__tabctl.connectNative();",
+              returnByValue: true,
+            }, newSessionId);
+          })(),
+          sleep(8000).then(() => { throw new Error("CDP reconnect timed out"); }),
+        ]);
+      } catch (e) {
+        log(`  Warning: reconnect CDP: ${(e as Error).message}`);
+      }
 
       // 4. Wait for new socket
       log("  Waiting for socket after reload...");
-      await waitForFile(socketPath, 15_000);
+      await waitForSocket(socketPath, 15_000);
       await sleep(1000);
 
       // 5. Verify ping works through the reloaded extension
@@ -296,6 +472,12 @@ async function main(): Promise<void> {
     }
     if (manifestPath) {
       try { fs.unlinkSync(manifestPath); } catch {}
+    }
+    // Clean up registry key on Windows
+    if (process.platform === "win32") {
+      try {
+        execSync(`reg delete "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\${DEFAULT_HOST_NAME}" /f`, { stdio: "pipe" });
+      } catch {}
     }
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 

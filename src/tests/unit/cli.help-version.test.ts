@@ -97,7 +97,13 @@ test("skill install creates project skill link", async () => {
   const npxFixture = path.join(__dirname, "fixtures", "npx");
   const fakeNpx = path.join(fakeBin, "npx");
   fs.copyFileSync(npxFixture, fakeNpx);
-  fs.chmodSync(fakeNpx, 0o755);
+  if (process.platform !== "win32") {
+    fs.chmodSync(fakeNpx, 0o755);
+  } else {
+    // Windows needs a .cmd wrapper so shell-based spawn can find it
+    const nodePath = process.execPath.replace(/\\/g, "\\\\");
+    fs.writeFileSync(path.join(fakeBin, "npx.cmd"), `@"${process.execPath}" "%~dp0npx" %*\r\n`);
+  }
   const npxCapture = path.join(testRoot, "npx-args.json");
   fs.cpSync(path.join(repoRoot, "dist", "cli"), path.join(installRoot, "cli"), { recursive: true });
   fs.cpSync(path.join(repoRoot, "dist", "shared"), path.join(installRoot, "shared"), { recursive: true });
@@ -110,7 +116,7 @@ test("skill install creates project skill link", async () => {
       XDG_CONFIG_HOME: path.join(testRoot, ".config"),
       NPX_CAPTURE_PATH: npxCapture,
     }, cliTarget, fakeNpx);
-    assert.equal(result.status, 0);
+    assert.equal(result.status, 0, `project skill: stderr=${result.stderr.slice(0, 300)}`);
     const output = parseOutput(result);
     assert.equal(output.ok, true);
     const targetDir = output.data?.targetDir as string;
@@ -140,7 +146,11 @@ test("skill install supports global scope", async () => {
   const npxFixture = path.join(__dirname, "fixtures", "npx");
   const fakeNpx = path.join(fakeBin, "npx");
   fs.copyFileSync(npxFixture, fakeNpx);
-  fs.chmodSync(fakeNpx, 0o755);
+  if (process.platform !== "win32") {
+    fs.chmodSync(fakeNpx, 0o755);
+  } else {
+    fs.writeFileSync(path.join(fakeBin, "npx.cmd"), `@"${process.execPath}" "%~dp0npx" %*\r\n`);
+  }
   const npxCapture = path.join(testRoot, "npx-args.json");
   fs.cpSync(path.join(repoRoot, "dist", "cli"), path.join(installRoot, "cli"), { recursive: true });
   fs.cpSync(path.join(repoRoot, "dist", "shared"), path.join(installRoot, "shared"), { recursive: true });
@@ -152,7 +162,7 @@ test("skill install supports global scope", async () => {
       XDG_CONFIG_HOME: configHome,
       NPX_CAPTURE_PATH: npxCapture,
     }, cliTarget, fakeNpx);
-    assert.equal(result.status, 0);
+    assert.equal(result.status, 0, `global skill: stderr=${result.stderr.slice(0, 300)}`);
     const output = parseOutput(result);
     const targetDir = output.data?.targetDir as string;
     assert.ok(targetDir);

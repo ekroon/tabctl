@@ -6,6 +6,7 @@ import path from "path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 import { readUndoRecords } from "../../host/lib/undo";
+import { resolveSocketPath } from "../../shared/config";
 
 const pkgVersion = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../../package.json"), "utf8")).version;
 
@@ -69,6 +70,24 @@ function readNativeMessage(stream: NodeJS.ReadableStream, timeoutMs = 2000): Pro
 
 async function waitForSocket(socketPath: string, timeoutMs = 2000) {
   const start = Date.now();
+  if (process.platform === "win32") {
+    // Named pipes can't be detected with fs.existsSync; try connecting
+    while (true) {
+      if (Date.now() - start > timeoutMs) {
+        throw new Error(`Timed out waiting for socket at ${socketPath}`);
+      }
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const client = net.createConnection(socketPath);
+          client.on("connect", () => { client.destroy(); resolve(); });
+          client.on("error", reject);
+        });
+        return;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+  }
   while (!fs.existsSync(socketPath)) {
     if (Date.now() - start > timeoutMs) {
       throw new Error(`Timed out waiting for socket at ${socketPath}`);
@@ -124,9 +143,10 @@ async function startHost(stateHome: string, extraEnv: Record<string, string> = {
     throw new Error("Failed to start host process");
   }
 
-  const socketPath = path.join(stateHome, "tabctl", "tabctl.sock");
+  const dataDir = path.join(stateHome, "tabctl");
+  const socketPath = resolveSocketPath(dataDir);
   await waitForSocket(socketPath);
-  const undoPath = path.join(stateHome, "tabctl", "undo.jsonl");
+  const undoPath = path.join(dataDir, "undo.jsonl");
   return { child, socketPath, undoPath };
 }
 

@@ -34,7 +34,7 @@
     "test": "npm run build && node --test --test-timeout=5000 dist/tests/unit/*.js",
     "test:unit": "npm run build && node --test --test-timeout=5000 dist/tests/unit/*.js",
     "test:integration": "node dist/scripts/integration-test.js",
-    "clean": "rm -rf dist"
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" "
   },
   "devDependencies": {
     "@types/chrome": "^0.0.277",
