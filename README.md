@@ -27,7 +27,7 @@ If you haven't run `npm link`, you can always use `node ./cli/tabctl.js` instead
 
 Run the interactive setup — it syncs the extension, tells you where to load it, and prompts for the extension ID:
 
-<!-- test: "setup interactive mode reads extension-id from stdin" -->
+<!-- test: "setup explicit --extension-id overrides auto-derived ID" -->
 ```bash
 tabctl setup --browser chrome
 ```

@@ -1,8 +1,18 @@
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 import { resolveConfig } from "./config";
 
 export const EXTENSION_DIR_NAME = "extension";
+
+/**
+ * Derive the Chrome/Edge extension ID for an unpacked extension path.
+ * Chromium computes: SHA256(absolute_path) → first 32 hex chars → map 0-f to a-p.
+ */
+export function deriveExtensionId(extensionDir: string): string {
+  const hash = crypto.createHash("sha256").update(extensionDir).digest("hex").slice(0, 32);
+  return hash.split("").map(c => String.fromCharCode("a".charCodeAt(0) + parseInt(c, 16))).join("");
+}
 
 export function resolveBundledExtensionDir(): string {
   const dir = path.resolve(__dirname, "../extension");

@@ -14,7 +14,7 @@ import { printJson, errorOut } from "../output";
 import type { Options } from "../types";
 import { addProfile, validateProfileName } from "../../../shared/profiles";
 import { resetConfig } from "../../../shared/config";
-import { syncExtension } from "../../../shared/extension-sync";
+import { syncExtension, deriveExtensionId, resolveInstalledExtensionDir } from "../../../shared/extension-sync";
 
 export function resolveBrowser(value: unknown): "edge" | "chrome" | null {
   if (typeof value !== "string") {
@@ -196,10 +196,18 @@ export async function runSetup(options: Options, prettyOutput: boolean): Promise
     extensionSync = null;
   }
 
-  // Resolve extension ID: non-interactive if provided, interactive otherwise
+  // Resolve extension ID: explicit flag, derived from install path, or interactive prompt
   let extensionId = resolveExtensionId(options, false);
   if (!extensionId) {
-    // Interactive mode
+    // Auto-derive from the installed extension path (Chromium uses SHA256 of the path)
+    const installedDir = resolveInstalledExtensionDir(config.baseDataDir);
+    if (fs.existsSync(path.join(installedDir, "manifest.json"))) {
+      extensionId = deriveExtensionId(installedDir);
+      process.stderr.write(`Extension ID derived from: ${installedDir}\n`);
+    }
+  }
+  if (!extensionId) {
+    // Interactive mode: sync hadn't happened or path doesn't exist
     if (extensionSync?.extensionDir) {
       process.stderr.write(`\nExtension synced to: ${extensionSync.extensionDir}\n`);
       try {

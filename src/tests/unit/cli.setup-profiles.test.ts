@@ -484,7 +484,7 @@ test("profile-show isDefault is false when using --profile override", async () =
 // Non-interactive setup mode is covered by "setup writes native host manifest" and
 // "setup writes native host manifest for chrome" tests above (both pass --extension-id).
 
-test("setup interactive mode reads extension-id from stdin", async () => {
+test("setup explicit --extension-id overrides auto-derived ID", async () => {
   if (process.platform !== "darwin") {
     return;
   }
@@ -497,8 +497,8 @@ test("setup interactive mode reads extension-id from stdin", async () => {
       XDG_CONFIG_HOME: path.join(homeDir, ".config"),
     };
     const result = await runCliWithStdin(
-      ["setup", "--browser", "chrome", "--node", process.execPath],
-      `${extensionId}\n`,
+      ["setup", "--browser", "chrome", "--node", process.execPath, "--extension-id", extensionId],
+      "",
       envOverrides,
     );
 
@@ -526,61 +526,64 @@ test("setup interactive mode reads extension-id from stdin", async () => {
   }
 });
 
-test("setup interactive mode rejects invalid ids and accepts valid on retry", async () => {
+test("setup auto-derived extension ID matches Chromium algorithm", async () => {
   if (process.platform !== "darwin") {
     return;
   }
-  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-retry-"));
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-derive-algo-"));
   try {
-    const validId = "dddddddddddddddddddddddddddddddd".slice(0, 32);
     const envOverrides = {
       HOME: homeDir,
       XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
       XDG_CONFIG_HOME: path.join(homeDir, ".config"),
     };
-    // First two inputs are invalid, third is valid
-    const stdinData = "bad\nXYZ\n" + validId + "\n";
     const result = await runCliWithStdin(
       ["setup", "--browser", "chrome", "--node", process.execPath],
-      stdinData,
+      "",
       envOverrides,
     );
 
     assert.equal(result.status, 0, `expected exit 0, stderr: ${result.stderr}`);
     const output = parseOutput(result) as { ok: boolean; data: Record<string, unknown> };
     assert.equal(output.ok, true);
-    assert.equal(output.data.extensionId, validId);
-    // Stderr should mention invalid attempts
-    assert.ok(result.stderr.includes("Invalid extension ID"), "expected retry message on stderr");
+
+    // Verify the derived ID matches the Chromium SHA256-based algorithm
+    const extensionDir = path.join(homeDir, ".local", "state", "tabctl", "extension");
+    const crypto = require("crypto");
+    const hash = crypto.createHash("sha256").update(extensionDir).digest("hex").slice(0, 32);
+    const expectedId = hash.split("").map((c: string) => String.fromCharCode("a".charCodeAt(0) + parseInt(c, 16))).join("");
+    assert.equal(output.data.extensionId, expectedId);
   } finally {
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
 
-test("setup interactive mode fails after 3 invalid attempts", async () => {
+test("setup interactive mode falls back to auto-derived extension ID", async () => {
   if (process.platform !== "darwin") {
     return;
   }
-  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-fail-"));
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-derive-"));
   try {
     const envOverrides = {
       HOME: homeDir,
       XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
       XDG_CONFIG_HOME: path.join(homeDir, ".config"),
     };
-    // All three inputs are invalid
-    const stdinData = "bad1\nbad2\nbad3\n";
+    // No --extension-id: auto-derive from synced extension path
     const result = await runCliWithStdin(
       ["setup", "--browser", "chrome", "--node", process.execPath],
-      stdinData,
+      "",
       envOverrides,
     );
 
-    assert.notEqual(result.status, 0, "expected non-zero exit after 3 invalid attempts");
+    assert.equal(result.status, 0, "expected success via auto-derived ID");
     assert.ok(
-      result.stderr.includes("3 attempts") || result.stdout.includes("3 attempts"),
-      "expected error message about 3 attempts",
+      result.stderr.includes("Extension ID derived from:"),
+      "expected auto-derive message on stderr",
     );
+    const output = parseOutput(result);
+    assert.ok(output.ok);
+    assert.equal(output.data.extensionId.length, 32, "extension ID should be 32 chars");
   } finally {
     fs.rmSync(homeDir, { recursive: true, force: true });
   }

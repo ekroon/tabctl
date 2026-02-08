@@ -8,6 +8,7 @@ import {
   resolveInstalledExtensionDir,
   syncExtension,
   checkExtensionSync,
+  deriveExtensionId,
 } from "../../shared/extension-sync";
 
 function makeTmpDir(): string {
@@ -107,4 +108,22 @@ test("checkExtensionSync detects matching versions", () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- deriveExtensionId ---
+
+test("deriveExtensionId matches Chromium algorithm", () => {
+  // Known test vector: SHA256 of path, first 32 hex chars, 0-f → a-p
+  const id = deriveExtensionId("/Users/erwin/.local/state/tabctl/extension");
+  assert.equal(id.length, 32);
+  assert.match(id, /^[a-p]{32}$/);
+  assert.equal(id, "mpglnmehddpkinfhheeahiicfieegcon");
+});
+
+test("deriveExtensionId produces different IDs for different paths", () => {
+  const id1 = deriveExtensionId("/path/one");
+  const id2 = deriveExtensionId("/path/two");
+  assert.notEqual(id1, id2);
+  assert.match(id1, /^[a-p]{32}$/);
+  assert.match(id2, /^[a-p]{32}$/);
 });
