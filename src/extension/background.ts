@@ -509,3 +509,6 @@ async function reportTabs(params: Record<string, unknown>) {
     },
   };
 }
+
+// Expose for CDP Runtime.evaluate (esbuild IIFE scoping hides local bindings)
+(self as any).__tabctl = { state, connectNative };

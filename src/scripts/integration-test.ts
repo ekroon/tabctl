@@ -22,6 +22,7 @@ import {
   sendCDP,
   launchChrome,
   loadExtension,
+  attachServiceWorker,
 } from "./lib/integration-cdp";
 
 // ---------------------------------------------------------------------------
@@ -63,7 +64,7 @@ async function main(): Promise<void> {
     log(`Chrome: ${chromePath}`);
 
     // 2. Launch headless Chrome with CDP pipe.
-    const extensionDir = path.resolve(__dirname, "..", "..", "extension");
+    const extensionDir = path.resolve(__dirname, "..", "extension");
     chrome = launchChrome(chromePath, userDataDir);
 
     chrome.on("exit", (code) => {
@@ -92,7 +93,7 @@ async function main(): Promise<void> {
     //    quickly so connectNative() can succeed.
     const manifestDir = path.join(userDataDir, "NativeMessagingHosts");
     fs.mkdirSync(manifestDir, { recursive: true });
-    const hostPath = path.resolve(__dirname, "..", "..", "host", "host.js");
+    const hostPath = path.resolve(__dirname, "..", "host", "host.js");
     const wrapperPath = path.join(dataDir, "tabctl-host.sh");
     const wrapper = [
       "#!/usr/bin/env bash",
@@ -105,10 +106,12 @@ async function main(): Promise<void> {
     fs.writeFileSync(wrapperPath, wrapper, { mode: 0o700 });
     manifestPath = path.join(manifestDir, `${DEFAULT_HOST_NAME}.json`);
 
-    // 4. Load extension via CDP and attach to its service worker.
-    const { extensionId, sessionId } = await loadExtension(extensionDir, chrome, stderrBuf);
+    // 4. Load extension to discover its ID, write manifest, then find service worker.
+    const extensionId = await loadExtension(extensionDir);
 
-    // Write the real manifest with the correct allowed_origins immediately.
+    // Write the manifest with correct allowed_origins immediately after getting
+    // the extension ID — connectNative() needs it ready before the service
+    // worker is discovered and attached.
     const manifest = {
       name: DEFAULT_HOST_NAME,
       description: "tabctl integration test",
@@ -119,9 +122,12 @@ async function main(): Promise<void> {
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
     log(`Manifest written: ${manifestPath}`);
 
+    // Now find and attach to the service worker.
+    const sessionId = await attachServiceWorker(extensionId, chrome, stderrBuf);
+
     // 5. Reset port and reconnect native host.
     await sendCDP("Runtime.evaluate", {
-      expression: "state.port = null; connectNative();",
+      expression: "self.__tabctl.state.port = null; self.__tabctl.connectNative();",
       returnByValue: true,
     }, sessionId);
     log("Triggered native host reconnect via CDP");
@@ -136,7 +142,7 @@ async function main(): Promise<void> {
     await sleep(1000);
 
     // 7. Run CLI test scenarios
-    const cliPath = path.resolve(__dirname, "..", "..", "cli", "tabctl.js");
+    const cliPath = path.resolve(__dirname, "..", "cli", "tabctl.js");
     let passed = 0;
     let failed = 0;
 

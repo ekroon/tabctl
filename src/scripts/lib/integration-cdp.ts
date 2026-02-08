@@ -121,15 +121,19 @@ export function launchChrome(chromePath: string, userDataDir: string): ChildProc
 
 export async function loadExtension(
   extensionDir: string,
-  chrome: ChildProcess,
-  stderrBuf: { value: string },
-): Promise<{ extensionId: string; sessionId: string }> {
+): Promise<string> {
   log(`Loading extension from ${extensionDir}`);
   const loadResult = await sendCDP("Extensions.loadUnpacked", { path: extensionDir });
   const extensionId: string = loadResult.id;
   log(`Extension loaded: ${extensionId}`);
+  return extensionId;
+}
 
-  // Find the extension's service worker target
+export async function attachServiceWorker(
+  extensionId: string,
+  chrome: ChildProcess,
+  stderrBuf: { value: string },
+): Promise<string> {
   let swTarget: { targetId: string; type: string; url: string } | undefined;
   for (let attempt = 0; attempt < 20; attempt++) {
     if (chrome.exitCode !== null) {
@@ -153,5 +157,5 @@ export async function loadExtension(
     flatten: true,
   });
 
-  return { extensionId, sessionId };
+  return sessionId;
 }
