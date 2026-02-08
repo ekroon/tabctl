@@ -65,11 +65,9 @@ async function main(): Promise<void> {
     let wrapperPath: string;
 
     if (process.platform === "win32") {
-      // Compile a Go launcher that proxies binary stdin/stdout between Chrome
-      // and Node. Chrome launches .cmd files through cmd.exe which corrupts the
-      // binary native messaging protocol. The Go exe acts as a transparent binary
-      // proxy, avoiding cmd.exe entirely.
-      const launcherDir = path.resolve(__dirname, "..", "host", "launcher");
+      // Use the Go launcher binary that proxies binary stdin/stdout between
+      // Chrome and Node. Try the prebuilt binary from the platform package first,
+      // fall back to compiling from source (requires Go).
       const exePath = path.join(dataDir, "tabctl-host.exe");
       const cfgPath = path.join(dataDir, "host-launcher.cfg");
 
@@ -82,18 +80,28 @@ async function main(): Promise<void> {
         "",
       ].join("\r\n"));
 
-      // Compile with Go (available on GH Actions Windows runners)
-      log("Compiling native host launcher...");
-      const compileResult = spawnSync("go", ["build", "-o", exePath, "."], {
-        cwd: launcherDir,
-        encoding: "utf-8",
-        timeout: 60_000,
-        env: { ...process.env, CGO_ENABLED: "0" },
-      });
-      if (compileResult.status !== 0) {
-        throw new Error(`Failed to compile host launcher:\n${compileResult.stdout}\n${compileResult.stderr}`);
+      let prebuilt: string | undefined;
+      try {
+        prebuilt = require.resolve("tabctl-win32-x64/tabctl-host.exe");
+      } catch { /* not installed */ }
+
+      if (prebuilt) {
+        fs.copyFileSync(prebuilt, exePath);
+        log("Using prebuilt native host launcher");
+      } else {
+        const launcherDir = path.resolve(__dirname, "..", "host", "launcher");
+        log("Compiling native host launcher...");
+        const compileResult = spawnSync("go", ["build", "-o", exePath, "."], {
+          cwd: launcherDir,
+          encoding: "utf-8",
+          timeout: 60_000,
+          env: { ...process.env, CGO_ENABLED: "0" },
+        });
+        if (compileResult.status !== 0) {
+          throw new Error(`Failed to compile host launcher:\n${compileResult.stdout}\n${compileResult.stderr}`);
+        }
+        log("Native host launcher compiled");
       }
-      log("Native host launcher compiled");
       wrapperPath = exePath;
     } else {
       wrapperPath = path.join(dataDir, "tabctl-host.sh");
@@ -280,20 +288,6 @@ async function main(): Promise<void> {
       });
     });
     log(`Diagnostic socket ping: ${diagPing.slice(0, 200)}`);
-
-    // Dump host stderr log on Windows (from Chrome stderr which captures Go launcher + Node output)
-    if (process.platform === "win32") {
-      // Read Go launcher log file
-      const launcherLogPath = path.join(dataDir, "launcher.log");
-      try {
-        const launcherLog = fs.readFileSync(launcherLogPath, "utf-8").trim();
-        for (const line of launcherLog.split("\n").slice(0, 50)) {
-          log(`  [launcher] ${line.trim()}`);
-        }
-      } catch {
-        log("  [launcher] log file not found");
-      }
-    }
 
     // 7. Run CLI test scenarios
     const cliPath = path.resolve(__dirname, "..", "cli", "tabctl.js");

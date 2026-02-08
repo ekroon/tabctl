@@ -8,7 +8,6 @@ const root = process.cwd();
 
 const artifacts = [
   ["src/host/host.sh", "dist/host/host.sh"],
-  ["src/host/host.cmd", "dist/host/host.cmd"],
   ["src/host/launcher", "dist/host/launcher"],
   ["src/tests/unit/fixtures", "dist/tests/unit/fixtures"],
 ];

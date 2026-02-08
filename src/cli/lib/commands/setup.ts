@@ -187,6 +187,31 @@ export function writeWrapper(nodePath: string, hostPath: string, profileName: st
   }
 
   if (process.platform === "win32") {
+    // Prefer the Go launcher binary from the platform package.
+    // Falls back to a .cmd wrapper if unavailable (dev/testing only —
+    // .cmd wrappers don't work for Chrome native messaging).
+    let exeSrc: string | undefined;
+    try {
+      exeSrc = require.resolve("tabctl-win32-x64/tabctl-host.exe");
+    } catch {
+      // Not installed
+    }
+
+    if (exeSrc) {
+      const exeDst = path.join(wrapperDir, "tabctl-host.exe");
+      fs.copyFileSync(exeSrc, exeDst);
+
+      const cfgLines = [nodePath, hostPath];
+      if (profileName) {
+        cfgLines.push(`TABCTL_PROFILE=${profileName}`);
+      }
+      cfgLines.push("");
+      fs.writeFileSync(path.join(wrapperDir, "host-launcher.cfg"), cfgLines.join("\r\n"), "utf8");
+
+      return exeDst;
+    }
+
+    // Fallback: .cmd wrapper (won't work with Chrome native messaging)
     const wrapperPath = path.join(wrapperDir, "tabctl-host.cmd");
     const lines = ["@echo off"];
     if (profileName) {
