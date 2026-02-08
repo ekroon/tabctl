@@ -168,7 +168,7 @@ export const COMMANDS: Record<string, CommandMeta> = {
   setup: {
     description: "Configure tabctl connection",
     options: [
-      { flag: "--browser edge|chrome", desc: "Browser type" },
+      { flag: "--browser edge|chrome|chrome-canary|chrome-beta|chrome-dev|chromium|brave|opera|vivaldi", desc: "Browser type" },
       { flag: "--extension-id <id>", desc: "Extension ID to connect to" },
       { flag: "--node <path>", desc: "Path to Node.js executable" },
       { flag: "--name <name>", desc: "Profile name (default: browser type)" },

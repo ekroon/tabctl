@@ -66,7 +66,7 @@ test("help supports json output", async () => {
   const close = output.data?.commands?.find((cmd: { name: string; options?: string[] }) => cmd?.name === "close");
   assert.ok(close?.options?.includes("--dry-run"));
   const setup = output.data?.commands?.find((cmd: { name: string; options?: string[] }) => cmd?.name === "setup");
-  assert.ok(setup?.options?.includes("--browser edge|chrome"));
+  assert.ok(setup?.options?.includes("--browser edge|chrome|chrome-canary|chrome-beta|chrome-dev|chromium|brave|opera|vivaldi"));
 });
 
 test("command-specific help filters output", async () => {

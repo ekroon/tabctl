@@ -3,7 +3,7 @@ import fs from "fs";
 import { resolveConfig } from "./config";
 
 export type ProfileEntry = {
-  browser: "edge" | "chrome";
+  browser: "edge" | "chrome" | "chrome-canary" | "chrome-beta" | "chrome-dev" | "chromium" | "brave" | "opera" | "vivaldi";
   extensionId: string;
   nodePath: string;
   hostPath: string;

@@ -16,13 +16,14 @@ import { addProfile, validateProfileName } from "../../../shared/profiles";
 import { resetConfig } from "../../../shared/config";
 import { syncExtension, syncHost, deriveExtensionId, resolveInstalledExtensionDir } from "../../../shared/extension-sync";
 
-export function resolveBrowser(value: unknown): "edge" | "chrome" | null {
+export function resolveBrowser(value: unknown): "edge" | "chrome" | "chrome-canary" | "chrome-beta" | "chrome-dev" | "chromium" | "brave" | "opera" | "vivaldi" | null {
   if (typeof value !== "string") {
     return null;
   }
   const trimmed = value.trim().toLowerCase();
-  if (trimmed === "edge" || trimmed === "chrome") {
-    return trimmed;
+  const valid = ["edge", "chrome", "chrome-canary", "chrome-beta", "chrome-dev", "chromium", "brave", "opera", "vivaldi"];
+  if (valid.includes(trimmed)) {
+    return trimmed as "edge" | "chrome" | "chrome-canary" | "chrome-beta" | "chrome-dev" | "chromium" | "brave" | "opera" | "vivaldi";
   }
   return null;
 }
@@ -46,7 +47,19 @@ export function resolveExtensionId(options: Options, required: boolean): string 
 
 export async function promptExtensionId(browser: string): Promise<string> {
   const maxAttempts = 3;
-  const extPage = browser === "chrome" ? "chrome://extensions" : "edge://extensions";
+  // Map browser to extensions page URL (all Chromium browsers use chrome:// or edge:// scheme)
+  let extPage: string;
+  if (browser === "edge") {
+    extPage = "edge://extensions";
+  } else if (browser === "opera") {
+    extPage = "opera://extensions";
+  } else if (browser === "vivaldi") {
+    extPage = "vivaldi://extensions";
+  } else {
+    // chrome, chrome-canary, chrome-beta, chrome-dev, chromium, brave all use chrome://extensions
+    extPage = "chrome://extensions";
+  }
+  
   const instructions = [
     "",
     "Next steps:",
@@ -153,31 +166,59 @@ function resolveHostPath(dataDir: string): string {
   }
 }
 
-export function resolveManifestDir(browser: "edge" | "chrome"): string {
+export function resolveManifestDir(browser: "edge" | "chrome" | "chrome-canary" | "chrome-beta" | "chrome-dev" | "chromium" | "brave" | "opera" | "vivaldi"): string {
   const home = os.homedir();
   if (!home) {
     errorOut("Home directory not found.");
   }
+  
   if (process.platform === "win32") {
     // Windows: registry-based is preferred, but file-based works with --user-data-dir.
     // For system-wide, we point to the per-user NativeMessagingHosts under LOCALAPPDATA.
     const base = process.env.LOCALAPPDATA || path.join(home, "AppData", "Local");
-    if (browser === "edge") {
-      return path.join(base, "Microsoft", "Edge", "User Data", "NativeMessagingHosts");
-    }
-    return path.join(base, "Google", "Chrome", "User Data", "NativeMessagingHosts");
+    
+    const browserPaths: Record<string, string> = {
+      "edge": path.join(base, "Microsoft", "Edge", "User Data", "NativeMessagingHosts"),
+      "chrome": path.join(base, "Google", "Chrome", "User Data", "NativeMessagingHosts"),
+      "chrome-canary": path.join(base, "Google", "Chrome SxS", "User Data", "NativeMessagingHosts"),
+      "chrome-beta": path.join(base, "Google", "Chrome Beta", "User Data", "NativeMessagingHosts"),
+      "chrome-dev": path.join(base, "Google", "Chrome Dev", "User Data", "NativeMessagingHosts"),
+      "chromium": path.join(base, "Chromium", "User Data", "NativeMessagingHosts"),
+      "brave": path.join(base, "BraveSoftware", "Brave-Browser", "User Data", "NativeMessagingHosts"),
+      "opera": path.join(base, "Opera Software", "Opera Stable", "User Data", "NativeMessagingHosts"),
+      "vivaldi": path.join(base, "Vivaldi", "User Data", "NativeMessagingHosts"),
+    };
+    return browserPaths[browser];
   }
+  
   if (process.platform === "linux") {
-    if (browser === "edge") {
-      return path.join(home, ".config", "microsoft-edge", "NativeMessagingHosts");
-    }
-    return path.join(home, ".config", "google-chrome", "NativeMessagingHosts");
+    const browserPaths: Record<string, string> = {
+      "edge": path.join(home, ".config", "microsoft-edge", "NativeMessagingHosts"),
+      "chrome": path.join(home, ".config", "google-chrome", "NativeMessagingHosts"),
+      "chrome-canary": path.join(home, ".config", "google-chrome-canary", "NativeMessagingHosts"),
+      "chrome-beta": path.join(home, ".config", "google-chrome-beta", "NativeMessagingHosts"),
+      "chrome-dev": path.join(home, ".config", "google-chrome-unstable", "NativeMessagingHosts"),
+      "chromium": path.join(home, ".config", "chromium", "NativeMessagingHosts"),
+      "brave": path.join(home, ".config", "BraveSoftware", "Brave-Browser", "NativeMessagingHosts"),
+      "opera": path.join(home, ".config", "opera", "NativeMessagingHosts"),
+      "vivaldi": path.join(home, ".config", "vivaldi", "NativeMessagingHosts"),
+    };
+    return browserPaths[browser];
   }
+  
   // macOS
-  if (browser === "edge") {
-    return path.join(home, "Library", "Application Support", "Microsoft Edge", "NativeMessagingHosts");
-  }
-  return path.join(home, "Library", "Application Support", "Google", "Chrome", "NativeMessagingHosts");
+  const browserPaths: Record<string, string> = {
+    "edge": path.join(home, "Library", "Application Support", "Microsoft Edge", "NativeMessagingHosts"),
+    "chrome": path.join(home, "Library", "Application Support", "Google", "Chrome", "NativeMessagingHosts"),
+    "chrome-canary": path.join(home, "Library", "Application Support", "Google", "Chrome Canary", "NativeMessagingHosts"),
+    "chrome-beta": path.join(home, "Library", "Application Support", "Google", "Chrome Beta", "NativeMessagingHosts"),
+    "chrome-dev": path.join(home, "Library", "Application Support", "Google", "Chrome Dev", "NativeMessagingHosts"),
+    "chromium": path.join(home, "Library", "Application Support", "Chromium", "NativeMessagingHosts"),
+    "brave": path.join(home, "Library", "Application Support", "BraveSoftware", "Brave-Browser", "NativeMessagingHosts"),
+    "opera": path.join(home, "Library", "Application Support", "com.operasoftware.Opera", "NativeMessagingHosts"),
+    "vivaldi": path.join(home, "Library", "Application Support", "Vivaldi", "NativeMessagingHosts"),
+  };
+  return browserPaths[browser];
 }
 
 export function writeWrapper(nodePath: string, hostPath: string, profileName: string | null, wrapperDir: string): string {
@@ -241,10 +282,25 @@ export function writeWrapper(nodePath: string, hostPath: string, profileName: st
   return wrapperPath;
 }
 
+function getBrowserDisplayName(browser: string): string {
+  const displayNames: Record<string, string> = {
+    "edge": "Edge",
+    "chrome": "Chrome",
+    "chrome-canary": "Chrome Canary",
+    "chrome-beta": "Chrome Beta",
+    "chrome-dev": "Chrome Dev",
+    "chromium": "Chromium",
+    "brave": "Brave",
+    "opera": "Opera",
+    "vivaldi": "Vivaldi",
+  };
+  return displayNames[browser] || browser;
+}
+
 export async function runSetup(options: Options, prettyOutput: boolean): Promise<void> {
   const browser = resolveBrowser(options.browser);
   if (!browser) {
-    errorOut("Missing or invalid --browser (edge|chrome)");
+    errorOut("Missing or invalid --browser (edge|chrome|chrome-canary|chrome-beta|chrome-dev|chromium|brave|opera|vivaldi)");
   }
 
   const nodePath = resolveNodePath(options);
@@ -381,7 +437,7 @@ export async function runSetup(options: Options, prettyOutput: boolean): Promise
   }
   process.stderr.write([
     `Verify connection: tabctl --profile ${profileName} ping`,
-    `If ping fails, ensure the ${browser === "edge" ? "Edge" : "Chrome"} extension is active.`,
+    `If ping fails, ensure the ${getBrowserDisplayName(browser)} extension is active.`,
     "",
   ].join("\n"));
 }
