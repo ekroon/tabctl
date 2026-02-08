@@ -27,6 +27,7 @@ const { delay, executeWithTimeout, isScriptableUrl, isGitHubIssueOrPr, detectGit
 const groups = require("./lib/groups") as typeof import("./lib/groups");
 const tabs = require("./lib/tabs") as typeof import("./lib/tabs");
 const { getMostRecentFocusedWindowId, normalizeTabIndex } = tabs;
+const move = require("./lib/move") as typeof import("./lib/move");
 const inspect = require("./lib/inspect") as typeof import("./lib/inspect");
 const { DESCRIPTION_MAX_LENGTH } = inspect;
 const undoHandlers = require("./lib/undo-handlers") as typeof import("./lib/undo-handlers");
@@ -35,6 +36,7 @@ type GroupDeps = import("./lib/groups").GroupDeps;
 type GroupMatch = import("./lib/groups").GroupMatch;
 type WindowSnapshot = import("./lib/groups").WindowSnapshot;
 type TabDeps = import("./lib/tabs").TabDeps;
+type MoveDeps = import("./lib/move").MoveDeps;
 type InspectDeps = import("./lib/inspect").InspectDeps;
 type ArchiveDeps = import("./lib/archive").ArchiveDeps;
 
@@ -225,9 +227,9 @@ async function handleAction(action: string, params: Record<string, unknown>, req
     case "group-assign":
       return await groupAssign(params);
     case "move-tab":
-      return await tabs.moveTab(params, tabDeps);
+      return await move.moveTab(params, moveDeps);
     case "move-group":
-      return await tabs.moveGroup(params, tabDeps);
+      return await move.moveGroup(params, moveDeps);
     case "merge-window":
       return await archive.mergeWindow(params, archiveDeps);
     case "archive":
@@ -403,6 +405,14 @@ const tabDeps: TabDeps = {
   getTabSnapshot,
   selectTabsByScope,
   sendProgress,
+  log,
+  resolveWindowIdFromParams,
+  resolveGroupByTitle,
+  resolveGroupById,
+};
+
+const moveDeps: MoveDeps = {
+  getTabSnapshot,
   log,
   resolveWindowIdFromParams,
   resolveGroupByTitle,
