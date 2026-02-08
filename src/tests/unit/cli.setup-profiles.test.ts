@@ -26,9 +26,15 @@ test("setup writes native host manifest", async () => {
   assert.equal(output.data.profileName, "edge");
 
   const isWin = process.platform === "win32";
-  const wrapperName = isWin ? "tabctl-host.cmd" : "tabctl-host.sh";
-  const wrapperPath = path.join(homeDir, ".local", "state", "tabctl", "profiles", "edge", wrapperName);
-  assert.equal(output.data.wrapperPath, wrapperPath);
+  const wrapperPath = output.data.wrapperPath as string;
+  const profileDir = path.join(homeDir, ".local", "state", "tabctl", "profiles", "edge");
+  assert.ok(wrapperPath.startsWith(profileDir), "wrapper should be under profile dir");
+  if (isWin) {
+    // .exe when platform package is available, .cmd fallback otherwise
+    assert.ok(wrapperPath.endsWith(".exe") || wrapperPath.endsWith(".cmd"), "Windows wrapper should be .exe or .cmd");
+  } else {
+    assert.ok(wrapperPath.endsWith(".sh"), "Unix wrapper should be .sh");
+  }
   assert.ok(fs.existsSync(wrapperPath));
 
   // Manifest path depends on platform; just verify the file exists
@@ -41,14 +47,24 @@ test("setup writes native host manifest", async () => {
   assert.equal(manifest.path, wrapperPath);
   assert.deepEqual(manifest.allowed_origins, [`chrome-extension://${extensionId}/`]);
 
-  const wrapper = fs.readFileSync(wrapperPath, "utf8");
   const hostPath = path.join(homeDir, ".local", "state", "tabctl", "host.bundle.js");
-  assert.ok(wrapper.includes(nodePath));
-  assert.ok(wrapper.includes(hostPath));
-  if (isWin) {
-    assert.ok(wrapper.includes("set TABCTL_PROFILE=edge"));
+  if (wrapperPath.endsWith(".exe")) {
+    // .exe uses a .cfg file, not embedded paths
+    const cfgPath = path.join(profileDir, "host-launcher.cfg");
+    assert.ok(fs.existsSync(cfgPath), "cfg file should exist for .exe wrapper");
+    const cfg = fs.readFileSync(cfgPath, "utf8");
+    assert.ok(cfg.includes(nodePath));
+    assert.ok(cfg.includes(hostPath));
+    assert.ok(cfg.includes("TABCTL_PROFILE=edge"));
   } else {
-    assert.ok(wrapper.includes('export TABCTL_PROFILE="edge"'));
+    const wrapper = fs.readFileSync(wrapperPath, "utf8");
+    assert.ok(wrapper.includes(nodePath));
+    assert.ok(wrapper.includes(hostPath));
+    if (isWin) {
+      assert.ok(wrapper.includes("set TABCTL_PROFILE=edge"));
+    } else {
+      assert.ok(wrapper.includes('export TABCTL_PROFILE="edge"'));
+    }
   }
 
   // Profile registered
@@ -81,9 +97,14 @@ test("setup writes native host manifest for chrome", async () => {
   assert.equal(output.data.profileName, "chrome");
 
   const isWin = process.platform === "win32";
-  const wrapperName = isWin ? "tabctl-host.cmd" : "tabctl-host.sh";
-  const wrapperPath = path.join(homeDir, ".local", "state", "tabctl", "profiles", "chrome", wrapperName);
-  assert.equal(output.data.wrapperPath, wrapperPath);
+  const wrapperPath = output.data.wrapperPath as string;
+  const profileDir = path.join(homeDir, ".local", "state", "tabctl", "profiles", "chrome");
+  assert.ok(wrapperPath.startsWith(profileDir), "wrapper should be under profile dir");
+  if (isWin) {
+    assert.ok(wrapperPath.endsWith(".exe") || wrapperPath.endsWith(".cmd"), "Windows wrapper should be .exe or .cmd");
+  } else {
+    assert.ok(wrapperPath.endsWith(".sh"), "Unix wrapper should be .sh");
+  }
   assert.ok(fs.existsSync(wrapperPath));
 
   // Manifest path depends on platform; just verify the file exists
@@ -96,14 +117,23 @@ test("setup writes native host manifest for chrome", async () => {
   assert.equal(manifest.path, wrapperPath);
   assert.deepEqual(manifest.allowed_origins, [`chrome-extension://${extensionId}/`]);
 
-  const wrapper = fs.readFileSync(wrapperPath, "utf8");
   const hostPath = path.join(homeDir, ".local", "state", "tabctl", "host.bundle.js");
-  assert.ok(wrapper.includes(nodePath));
-  assert.ok(wrapper.includes(hostPath));
-  if (isWin) {
-    assert.ok(wrapper.includes("set TABCTL_PROFILE=chrome"));
+  if (wrapperPath.endsWith(".exe")) {
+    const cfgPath = path.join(profileDir, "host-launcher.cfg");
+    assert.ok(fs.existsSync(cfgPath), "cfg file should exist for .exe wrapper");
+    const cfg = fs.readFileSync(cfgPath, "utf8");
+    assert.ok(cfg.includes(nodePath));
+    assert.ok(cfg.includes(hostPath));
+    assert.ok(cfg.includes("TABCTL_PROFILE=chrome"));
   } else {
-    assert.ok(wrapper.includes('export TABCTL_PROFILE="chrome"'));
+    const wrapper = fs.readFileSync(wrapperPath, "utf8");
+    assert.ok(wrapper.includes(nodePath));
+    assert.ok(wrapper.includes(hostPath));
+    if (isWin) {
+      assert.ok(wrapper.includes("set TABCTL_PROFILE=chrome"));
+    } else {
+      assert.ok(wrapper.includes('export TABCTL_PROFILE="chrome"'));
+    }
   }
 
   // Profile registered with browser: "chrome"
