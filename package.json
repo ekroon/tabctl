@@ -27,7 +27,7 @@
     "dist/extension"
   ],
   "scripts": {
-    "build": "node scripts/gen-version.js && tsc -p tsconfig.json && node scripts/copy-artifacts.js && node scripts/bundle-extension.js",
+    "build": "node scripts/gen-version.js && tsc -p tsconfig.json && node scripts/copy-artifacts.js && node scripts/build-launcher.js && node scripts/bundle-extension.js",
     "bump:major": "node scripts/bump-version.js major",
     "bump:minor": "node scripts/bump-version.js minor",
     "bump:patch": "node scripts/bump-version.js patch",
