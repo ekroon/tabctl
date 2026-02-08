@@ -5,11 +5,15 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ekroon/tabctl",
+    "url": "git+https://github.com/ekroon/tabctl.git",
     "directory": "packages/win32-x64"
   },
-  "os": ["win32"],
-  "cpu": ["x64"],
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
   "files": [
     "tabctl-host.exe"
   ]
