@@ -709,3 +709,134 @@ test("setup non-default profile prints usage hints on stderr", async () => {
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
+
+// --- Tests for new Chromium-based browser support ---
+
+test("setup writes native host manifest for chrome-canary", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-canary-"));
+  const extensionId = "cccccccccccccccccccccccccccccccc";
+  const nodePath = process.execPath;
+  try {
+    const result = await runCli([
+      "setup",
+      "--browser",
+      "chrome-canary",
+      "--extension-id",
+      extensionId,
+      "--node",
+      nodePath,
+    ], undefined, { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state"), XDG_CONFIG_HOME: path.join(homeDir, ".config") });
+
+    assert.equal(result.status, 0);
+    const output = parseOutput(result) as { ok: boolean; action?: string; data: Record<string, unknown> };
+    assert.equal(output.ok, true);
+    assert.equal(output.action, "setup");
+    assert.equal(output.data.profileName, "chrome-canary");
+
+    // Manifest should exist
+    const manifestPath = output.data.manifestPath as string;
+    assert.ok(fs.existsSync(manifestPath));
+
+    // Profile registered with browser: "chrome-canary"
+    const profilesPath = path.join(homeDir, ".config", "tabctl", "profiles.json");
+    assert.ok(fs.existsSync(profilesPath));
+    const profiles = JSON.parse(fs.readFileSync(profilesPath, "utf8"));
+    assert.equal(profiles.profiles["chrome-canary"].browser, "chrome-canary");
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("setup writes native host manifest for brave", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-brave-"));
+  const extensionId = "dddddddddddddddddddddddddddddddd";
+  const nodePath = process.execPath;
+  try {
+    const result = await runCli([
+      "setup",
+      "--browser",
+      "brave",
+      "--extension-id",
+      extensionId,
+      "--node",
+      nodePath,
+    ], undefined, { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state"), XDG_CONFIG_HOME: path.join(homeDir, ".config") });
+
+    assert.equal(result.status, 0);
+    const output = parseOutput(result) as { ok: boolean; action?: string; data: Record<string, unknown> };
+    assert.equal(output.ok, true);
+    assert.equal(output.action, "setup");
+    assert.equal(output.data.profileName, "brave");
+
+    // Manifest should exist
+    const manifestPath = output.data.manifestPath as string;
+    assert.ok(fs.existsSync(manifestPath));
+
+    // Profile registered with browser: "brave"
+    const profilesPath = path.join(homeDir, ".config", "tabctl", "profiles.json");
+    assert.ok(fs.existsSync(profilesPath));
+    const profiles = JSON.parse(fs.readFileSync(profilesPath, "utf8"));
+    assert.equal(profiles.profiles.brave.browser, "brave");
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("setup writes native host manifest for chromium", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-chromium-"));
+  const extensionId = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+  const nodePath = process.execPath;
+  try {
+    const result = await runCli([
+      "setup",
+      "--browser",
+      "chromium",
+      "--extension-id",
+      extensionId,
+      "--node",
+      nodePath,
+    ], undefined, { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state"), XDG_CONFIG_HOME: path.join(homeDir, ".config") });
+
+    assert.equal(result.status, 0);
+    const output = parseOutput(result) as { ok: boolean; action?: string; data: Record<string, unknown> };
+    assert.equal(output.ok, true);
+    assert.equal(output.action, "setup");
+    assert.equal(output.data.profileName, "chromium");
+
+    // Manifest should exist
+    const manifestPath = output.data.manifestPath as string;
+    assert.ok(fs.existsSync(manifestPath));
+
+    // Profile registered with browser: "chromium"
+    const profilesPath = path.join(homeDir, ".config", "tabctl", "profiles.json");
+    assert.ok(fs.existsSync(profilesPath));
+    const profiles = JSON.parse(fs.readFileSync(profilesPath, "utf8"));
+    assert.equal(profiles.profiles.chromium.browser, "chromium");
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("setup rejects invalid browser type", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-invalid-"));
+  const extensionId = "ffffffffffffffffffffffffffffffff";
+  const nodePath = process.execPath;
+  try {
+    const result = await runCli([
+      "setup",
+      "--browser",
+      "invalid-browser",
+      "--extension-id",
+      extensionId,
+      "--node",
+      nodePath,
+    ], undefined, { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state"), XDG_CONFIG_HOME: path.join(homeDir, ".config") });
+
+    assert.notEqual(result.status, 0);
+    const output = parseOutput(result);
+    assert.equal(output.ok, false);
+    assert.ok(output.error?.message.includes("Missing or invalid --browser"));
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
