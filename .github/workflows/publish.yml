@@ -50,10 +50,6 @@ jobs:
       - name: Publish tabctl-win32-x64
         run: npm publish --provenance --access public
         working-directory: packages/win32-x64
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish tabctl
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
