@@ -238,6 +238,10 @@ async function handleAction(action: string, params: Record<string, unknown>, req
       return await screenshot.screenshotTabs(params, requestId, deps);
     case "undo":
       return await undoHandlers.undoTransaction(params, deps);
+    case "reload":
+      // Defer reload to allow the response to be sent first
+      setTimeout(() => chrome.runtime.reload(), 100);
+      return { reloading: true };
     default:
       throw new Error(`Unknown action: ${action}`);
   }

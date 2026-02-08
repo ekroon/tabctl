@@ -146,14 +146,16 @@ async function main(): Promise<void> {
     let passed = 0;
     let failed = 0;
 
+    const cliEnv = {
+      ...process.env,
+      TABCTL_SOCKET: socketPath,
+      XDG_CONFIG_HOME: configHome,
+      XDG_STATE_HOME: stateHome,
+    };
+
     async function runTest(name: string, args: string[]): Promise<boolean> {
       const result = spawnSync(process.execPath, [cliPath, ...args], {
-        env: {
-          ...process.env,
-          TABCTL_SOCKET: socketPath,
-          XDG_CONFIG_HOME: configHome,
-          XDG_STATE_HOME: stateHome,
-        },
+        env: cliEnv,
         encoding: "utf-8",
         timeout: 10_000,
       });
@@ -220,6 +222,66 @@ async function main(): Promise<void> {
 
     if (await runTest("undo --latest", ["undo", "--latest", "--json"])) passed++;
     else failed++;
+
+    // -- Reload test ---------------------------------------------------------
+    // Validates the upgrade chain: extension reload → new SW → reconnect → ping
+    log("");
+    log("--- Reload cycle test ---");
+
+    // 1. Send "reload" action via CLI → host → extension
+    const reloadResult = spawnSync(process.execPath, [cliPath, "reload", "--json"], {
+      env: cliEnv,
+      encoding: "utf-8",
+      timeout: 10_000,
+    });
+    const reloadRaw = (reloadResult.stdout || "").trim();
+    let reloadOk = false;
+    try {
+      const reloadOutput = JSON.parse(reloadRaw);
+      reloadOk = reloadOutput.ok && reloadOutput.data?.reloading;
+    } catch {}
+
+    if (reloadOk) {
+      log("  PASS: reload action accepted");
+      passed++;
+    } else {
+      log(`  FAIL: reload action: ${reloadRaw.slice(0, 200)}`);
+      failed++;
+    }
+
+    // 2. Wait for extension to reload and host to restart
+    //    The old host exits (extension killed the native port).
+    //    The extension reloads → onInstalled → connectNative() → new host starts.
+    await sleep(3000);
+
+    // 3. Re-attach to the new service worker (old session is dead)
+    log("  Looking for new service worker after reload...");
+    try {
+      const newSessionId = await attachServiceWorker(extensionId, chrome, stderrBuf);
+      log(`  New SW session: ${newSessionId}`);
+
+      // Force reconnect in case onInstalled race
+      await sendCDP("Runtime.evaluate", {
+        expression: "self.__tabctl.state.port = null; self.__tabctl.connectNative();",
+        returnByValue: true,
+      }, newSessionId);
+
+      // 4. Wait for new socket
+      log("  Waiting for socket after reload...");
+      await waitForFile(socketPath, 15_000);
+      await sleep(1000);
+
+      // 5. Verify ping works through the reloaded extension
+      if (await runTest("ping after reload", ["ping", "--json"])) passed++;
+      else failed++;
+
+      // 6. Verify version is consistent
+      if (await runTest("version after reload", ["version", "--json"])) passed++;
+      else failed++;
+    } catch (e) {
+      log(`  FAIL: reload cycle: ${(e as Error).message}`);
+      failed += 2; // count ping + version as failed
+    }
 
     // -- Summary -------------------------------------------------------------
     log("");

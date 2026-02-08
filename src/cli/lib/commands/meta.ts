@@ -10,7 +10,7 @@ import path from "path";
 import { spawnSync } from "node:child_process";
 
 import { VERSION, BASE_VERSION, GIT_SHA, DIRTY, SKILL_NAME, SKILL_REPO } from "../constants";
-import { printJson, errorOut } from "../output";
+import { printJson, errorOut, emitVersionWarnings } from "../output";
 import { sendRequest, createRequestId } from "../client";
 import { defaultPolicyPath, defaultPolicyTemplate, summarizePolicy, type Policy } from "../policy";
 import { formatCliArgValue } from "../scope";
@@ -174,6 +174,7 @@ export async function runHistory(options: Options, prettyOutput: boolean): Promi
     },
   });
 
+  emitVersionWarnings(response, "history");
   printJson(response, prettyOutput);
   if (!response.ok) {
     process.exit(1);
@@ -213,6 +214,7 @@ export async function runUndo(options: Options, prettyOutput: boolean): Promise<
     },
   });
 
+  emitVersionWarnings(response, "undo");
   printJson(response, prettyOutput);
   if (!response.ok) {
     process.exit(1);
@@ -237,6 +239,7 @@ export async function runPing(prettyOutput: boolean): Promise<void> {
     },
   });
 
+  emitVersionWarnings(response, "ping");
   printJson(response, prettyOutput);
   if (!response.ok) {
     process.exit(1);

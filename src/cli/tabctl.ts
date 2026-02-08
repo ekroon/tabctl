@@ -312,6 +312,10 @@ async function main() {
       action = "screenshot";
       params = buildScreenshotParams(options);
       break;
+    case "reload":
+      action = "reload";
+      params = {};
+      break;
     default:
       errorOut(`Unknown command: ${command}`);
   }

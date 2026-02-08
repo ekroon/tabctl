@@ -49,7 +49,7 @@ test("setup writes native host manifest", async () => {
   assert.deepEqual(manifest.allowed_origins, [`chrome-extension://${extensionId}/`]);
 
   const wrapper = fs.readFileSync(wrapperPath, "utf8");
-  const hostPath = path.resolve(__dirname, "../../host/host.js");
+  const hostPath = path.join(homeDir, ".local", "state", "tabctl", "host.bundle.js");
   assert.ok(wrapper.includes(nodePath));
   assert.ok(wrapper.includes(hostPath));
   assert.ok(wrapper.includes('export TABCTL_PROFILE="edge"'));
@@ -108,7 +108,7 @@ test("setup writes native host manifest for chrome", async () => {
   assert.deepEqual(manifest.allowed_origins, [`chrome-extension://${extensionId}/`]);
 
   const wrapper = fs.readFileSync(wrapperPath, "utf8");
-  const hostPath = path.resolve(__dirname, "../../host/host.js");
+  const hostPath = path.join(homeDir, ".local", "state", "tabctl", "host.bundle.js");
   assert.ok(wrapper.includes(nodePath));
   assert.ok(wrapper.includes(hostPath));
   assert.ok(wrapper.includes('export TABCTL_PROFILE="chrome"'));

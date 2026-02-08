@@ -9,6 +9,9 @@ import {
   syncExtension,
   checkExtensionSync,
   deriveExtensionId,
+  readHostVersion,
+  resolveInstalledHostPath,
+  syncHost,
 } from "../../shared/extension-sync";
 
 function makeTmpDir(): string {
@@ -126,4 +129,115 @@ test("deriveExtensionId produces different IDs for different paths", () => {
   assert.notEqual(id1, id2);
   assert.match(id1, /^[a-p]{32}$/);
   assert.match(id2, /^[a-p]{32}$/);
+});
+
+// --- readHostVersion ---
+
+test("readHostVersion reads BASE_VERSION from bundled host", () => {
+  const dir = makeTmpDir();
+  try {
+    const hostPath = path.join(dir, "host.bundle.js");
+    fs.writeFileSync(hostPath, `
+      var BASE_VERSION = "1.2.3";
+      var VERSION = "1.2.3-dev.abc123.dirty";
+      // rest of host code
+    `, "utf-8");
+    assert.equal(readHostVersion(hostPath), "1.2.3");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readHostVersion returns null for missing file", () => {
+  assert.equal(readHostVersion("/nonexistent/host.bundle.js"), null);
+});
+
+test("readHostVersion returns null when no VERSION in file", () => {
+  const dir = makeTmpDir();
+  try {
+    const hostPath = path.join(dir, "host.bundle.js");
+    fs.writeFileSync(hostPath, "console.log('hello');", "utf-8");
+    assert.equal(readHostVersion(hostPath), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- resolveInstalledHostPath ---
+
+test("resolveInstalledHostPath returns dataDir/host.bundle.js", () => {
+  const dataDir = "/tmp/my-tabctl-data";
+  const result = resolveInstalledHostPath(dataDir);
+  assert.equal(result, path.join(dataDir, "host.bundle.js"));
+});
+
+// --- syncHost ---
+
+test("syncHost copies bundled host when not present", () => {
+  const dir = makeTmpDir();
+  try {
+    const result = syncHost(dir);
+    assert.equal(result.synced, true);
+    assert.ok(fs.existsSync(result.hostPath));
+    assert.ok(result.bundledVersion, "bundledVersion should be set");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("syncHost skips when versions match", () => {
+  const dir = makeTmpDir();
+  try {
+    const first = syncHost(dir);
+    assert.equal(first.synced, true);
+
+    const second = syncHost(dir);
+    assert.equal(second.synced, false);
+    assert.equal(second.bundledVersion, second.installedVersion);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("syncHost overwrites when versions differ", () => {
+  const dir = makeTmpDir();
+  try {
+    // First sync
+    const first = syncHost(dir);
+    assert.equal(first.synced, true);
+
+    // Tamper with installed version
+    const content = fs.readFileSync(first.hostPath, "utf-8");
+    fs.writeFileSync(first.hostPath, content.replace(/BASE_VERSION\s*=\s*"[^"]*"/, 'BASE_VERSION = "0.0.0"'));
+
+    // Second sync should detect mismatch and re-copy
+    const second = syncHost(dir);
+    assert.equal(second.synced, true);
+    assert.equal(second.installedVersion, "0.0.0");
+    assert.notEqual(second.bundledVersion, "0.0.0");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("synced host bundle is executable", () => {
+  const dir = makeTmpDir();
+  try {
+    const result = syncHost(dir);
+    assert.equal(result.synced, true);
+
+    // Verify the bundle actually runs (will exit when stdin closes)
+    const { spawnSync } = require("child_process");
+    const proc = spawnSync(process.execPath, [result.hostPath], {
+      input: "{}",
+      encoding: "utf-8",
+      timeout: 5000,
+      env: { ...process.env, XDG_STATE_HOME: dir },
+    });
+    // Host should start and exit cleanly when stdin closes
+    assert.ok(proc.stderr.includes("Listening on") || proc.stderr.includes("Extension disconnected"),
+      `Host should start and run. stderr: ${proc.stderr.slice(0, 200)}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

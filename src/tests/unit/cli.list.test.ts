@@ -394,3 +394,43 @@ test("ENOENT error includes native host hint", async () => {
   assert.ok(output.error.message.includes("ENOENT"), "error message should contain ENOENT");
   assert.equal(output.error.hint, "Native host not running. Ensure the browser extension is loaded and active. If you recently upgraded, run: tabctl setup");
 });
+
+test("reload sends reload action", async () => {
+  const { socketPath, server, sockets, requests } = await startMockSocket((req) => (mockResponse(req, { reloading: true })));
+
+  const result = await runCli(["reload", "--json"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const output = parseOutput(result);
+  assert.equal(output.ok, true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].action, "reload");
+  assert.equal(output.data.reloading, true);
+});
+
+test("version mismatch triggers auto-upgrade message on stderr", async () => {
+  // Mock host responds with a different version than the CLI
+  const { socketPath, server, sockets } = await startMockSocket((req) => ({
+    ok: true,
+    action: req.action,
+    requestId: req.id,
+    version: "0.0.1",
+    data: { extensionVersion: "0.0.1", extensionComponent: "extension" },
+  }));
+
+  const result = await runCli(["ping", "--json"], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  // Should contain upgrade or stale message on stderr
+  assert.ok(
+    result.stderr.includes("upgraded:") || result.stderr.includes("stale"),
+    `expected upgrade or stale message on stderr, got: ${result.stderr}`,
+  );
+  // Should also trigger reload
+  assert.ok(
+    result.stderr.includes("Reloading") || result.stderr.includes("reloading"),
+    `expected reloading message on stderr, got: ${result.stderr}`,
+  );
+});
