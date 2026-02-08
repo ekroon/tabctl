@@ -25,7 +25,7 @@ If you haven't run `npm link`, you can always use `node ./cli/tabctl.js` instead
 
 ### 2. Set up your browser
 
-Run the interactive setup — it syncs the extension, tells you where to load it, and prompts for the extension ID:
+Run setup — it syncs the extension, tells you where to load it, and auto-derives the extension ID:
 
 <!-- test: "setup explicit --extension-id overrides auto-derived ID" -->
 ```bash
@@ -36,11 +36,11 @@ This will:
 1. Copy the extension to a stable location (`~/.local/state/tabctl/extension/`)
 2. Print the path (and copy it to your clipboard)
 3. Ask you to load it as an unpacked extension in `chrome://extensions`
-4. Prompt you to paste the extension ID
+4. Auto-derive the extension ID from the installed path
 
 > **Edge?** Use `--browser edge` and load from `edge://extensions` instead.
 
-If you already know your extension ID, skip the interactive flow:
+If you need to override the auto-derived ID (e.g. for a custom extension path):
 
 <!-- test: "setup writes native host manifest for chrome" -->
 ```bash
@@ -167,10 +167,10 @@ tabctl supports multiple browser profiles. Each profile connects to a different 
 <!-- test: "setup writes native host manifest", "setup writes native host manifest for chrome", "setup --name creates custom-named profile", "profile-list with multiple profiles shows all", "profile-switch success updates default", "--profile flag overrides active profile" -->
 ```bash
 # Setup for Edge
-tabctl setup --browser edge --extension-id <edge-id>
+tabctl setup --browser edge
 
 # Setup for Chrome (with custom name)
-tabctl setup --browser chrome --extension-id <chrome-id> --name chrome-work
+tabctl setup --browser chrome --name chrome-work
 
 # List profiles
 tabctl profile-list

@@ -489,7 +489,7 @@ test("profile-show isDefault is false when using --profile override", async () =
   }
 });
 
-// Non-interactive setup mode is covered by "setup writes native host manifest" and
+// Basic setup is covered by "setup writes native host manifest" and
 // "setup writes native host manifest for chrome" tests above (both pass --extension-id).
 
 test("setup explicit --extension-id overrides auto-derived ID", async () => {
@@ -560,7 +560,7 @@ test("setup auto-derived extension ID matches Chromium algorithm", async () => {
   }
 });
 
-test("setup interactive mode falls back to auto-derived extension ID", async () => {
+test("setup without --extension-id falls back to auto-derived extension ID", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-derive-"));
   try {
     const envOverrides = {

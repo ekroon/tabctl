@@ -305,7 +305,7 @@ Options:
 Install the native host manifest and register a profile (macOS only).
 Options:
 - `--browser edge|chrome` (required)
-- `--extension-id <id>` (required; or `TABCTL_EXTENSION_ID`)
+- `--extension-id <id>` (optional; auto-derived from installed extension path, or `TABCTL_EXTENSION_ID`)
 - `--node <path>` (optional; or `TABCTL_NODE`)
 - `--name <name>` (optional; defaults to browser name)
 - `--dev` (coming soon; dev/CI mode via CDP)
@@ -314,8 +314,8 @@ Each run creates or updates a profile in `profiles.json`. The first profile regi
 
 Run once per browser:
 ```bash
-tabctl setup --browser edge --extension-id <edge-id>
-tabctl setup --browser chrome --extension-id <chrome-id> --name chrome-work
+tabctl setup --browser edge
+tabctl setup --browser chrome --name chrome-work
 ```
 
 ### policy

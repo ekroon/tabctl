@@ -1,13 +1,11 @@
 /**
- * Setup command handler: interactive browser profile configuration.
+ * Setup command handler: browser profile configuration.
  * Extracted from meta.ts for modularity.
  */
 
 import fs from "fs";
 import os from "os";
 import path from "path";
-import readline from "readline";
-import { spawn } from "node:child_process";
 
 import { HOST_NAME, HOST_DESCRIPTION, EXTENSION_ID_PATTERN, resolveConfig } from "../constants";
 import { printJson, errorOut } from "../output";
@@ -42,77 +40,6 @@ export function resolveExtensionId(options: Options, required: boolean): string 
     errorOut(`Extension ID looks unusual: ${raw}`);
   }
   return value;
-}
-
-export async function promptExtensionId(browser: string): Promise<string> {
-  const maxAttempts = 3;
-  const extPage = browser === "chrome" ? "chrome://extensions" : "edge://extensions";
-  const instructions = [
-    "",
-    "Next steps:",
-    `  1. Open ${extPage}`,
-    "  2. Enable Developer mode",
-    '  3. Click "Load unpacked" and select the path above',
-    "  4. Copy the extension ID shown on the extensions page",
-    "",
-  ].join("\n");
-  process.stderr.write(instructions);
-
-  // Collect lines from stdin and provide them on demand
-  const lines: string[] = [];
-  let closed = false;
-  let waiting: ((line: string | null) => void) | null = null;
-
-  const rl = readline.createInterface({ input: process.stdin, output: process.stderr, terminal: false });
-  rl.on("line", (line) => {
-    if (waiting) {
-      const cb = waiting;
-      waiting = null;
-      cb(line.trim());
-    } else {
-      lines.push(line.trim());
-    }
-  });
-  rl.on("close", () => {
-    closed = true;
-    if (waiting) {
-      const cb = waiting;
-      waiting = null;
-      cb(null);
-    }
-  });
-
-  const nextLine = (prompt: string): Promise<string | null> => {
-    process.stderr.write(prompt);
-    if (lines.length > 0) {
-      return Promise.resolve(lines.shift()!);
-    }
-    if (closed) return Promise.resolve(null);
-    return new Promise((resolve) => { waiting = resolve; });
-  };
-
-  try {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const raw = await nextLine("Paste the extension ID: ");
-      if (raw === null) {
-        errorOut("No input received (stdin closed).");
-      }
-      const value = raw.toLowerCase();
-      if (EXTENSION_ID_PATTERN.test(value)) {
-        return value;
-      }
-      const remaining = maxAttempts - attempt;
-      if (remaining > 0) {
-        process.stderr.write(`Invalid extension ID (expected 32 lowercase a-p characters). ${remaining} attempt(s) remaining.\n`);
-      } else {
-        errorOut("Invalid extension ID after 3 attempts.");
-      }
-    }
-  } finally {
-    rl.close();
-  }
-  // unreachable due to errorOut, but satisfies TypeScript
-  return "";
 }
 
 export function resolveNodePath(options: Options): string {
@@ -241,7 +168,7 @@ export function writeWrapper(nodePath: string, hostPath: string, profileName: st
   return wrapperPath;
 }
 
-export async function runSetup(options: Options, prettyOutput: boolean): Promise<void> {
+export function runSetup(options: Options, prettyOutput: boolean): void {
   const browser = resolveBrowser(options.browser);
   if (!browser) {
     errorOut("Missing or invalid --browser (edge|chrome)");
@@ -263,37 +190,15 @@ export async function runSetup(options: Options, prettyOutput: boolean): Promise
   let extensionId = resolveExtensionId(options, false);
   if (!extensionId) {
     // Auto-derive from the installed extension path (Chromium uses SHA256 of the path)
-    const installedDir = resolveInstalledExtensionDir(config.baseDataDir);
+    // Prefer the just-synced path; fall back to resolving independently
+    const installedDir = extensionSync?.extensionDir ?? resolveInstalledExtensionDir(config.baseDataDir);
     if (fs.existsSync(path.join(installedDir, "manifest.json"))) {
       extensionId = deriveExtensionId(installedDir);
       process.stderr.write(`Extension ID derived from: ${installedDir}\n`);
     }
   }
   if (!extensionId) {
-    // Interactive mode: sync hadn't happened or path doesn't exist
-    if (extensionSync?.extensionDir) {
-      process.stderr.write(`\nExtension synced to: ${extensionSync.extensionDir}\n`);
-      try {
-        const clipArgs: string[] = [];
-        let clipCmd: string;
-        if (process.platform === "darwin") {
-          clipCmd = "pbcopy";
-        } else if (process.platform === "win32") {
-          clipCmd = "clip";
-        } else {
-          clipCmd = "xclip";
-          clipArgs.push("-selection", "clipboard");
-        }
-        const clip = spawn(clipCmd, clipArgs, { stdio: ["pipe", "ignore", "ignore"] });
-        clip.stdin.end(extensionSync.extensionDir);
-        clip.on("exit", (code) => {
-          if (code === 0) process.stderr.write("(Path copied to clipboard)\n");
-        });
-      } catch {
-        // clipboard copy is best-effort
-      }
-    }
-    extensionId = await promptExtensionId(browser);
+    errorOut("Could not derive extension ID (extension not synced). Use --extension-id <id> or set TABCTL_EXTENSION_ID.");
   }
 
   // Profile name: --name flag or browser type
