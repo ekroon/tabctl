@@ -23,5 +23,5 @@ export const DEFAULT_PAGE_LIMIT = 100;
 export const SKILL_NAME = "tabctl";
 export const SKILL_REPO = process.env.TABCTL_SKILL_REPO || "https://github.com/ekroon/tabctl";
 
-export const SUPPORTED_SIGNALS = ["page-meta", "github-state", "selector"] as const;
+export const SUPPORTED_SIGNALS = ["page-meta", "selector"] as const;
 export const SUPPORTED_SIGNAL_SET = new Set<string>(SUPPORTED_SIGNALS);

@@ -397,12 +397,6 @@ async function main() {
   const onProgress = showProgress
     ? (message: Record<string, unknown>) => {
       const data = message.data as Record<string, unknown> | undefined;
-      if (data?.phase === "github") {
-        const processed = data.processed as number;
-        const total = data.total as number;
-        const matched = data.matched as number;
-        process.stderr.write(`[tabctl] github ${processed}/${total} (matched ${matched})\n`);
-      }
       if (data?.phase === "inspect") {
         const processed = data.processed as number;
         const total = data.total as number;

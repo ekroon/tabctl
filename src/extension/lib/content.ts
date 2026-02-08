@@ -42,40 +42,6 @@ export async function executeWithTimeout<T>(
   }
 }
 
-export function isGitHubIssueOrPr(url: string | null) {
-  if (!url) {
-    return false;
-  }
-  return /^https:\/\/github\.com\/[^/]+\/[^/]+\/(issues|pull)\/\d+/.test(url);
-}
-
-export async function detectGitHubState(tabId: number, timeoutMs: number) {
-  const result = await executeWithTimeout(tabId, timeoutMs, () => {
-    const stateEl =
-      document.querySelector(".gh-header-meta .State") ||
-      document.querySelector(".State") ||
-      document.querySelector(".js-issue-state");
-
-    if (!stateEl) {
-      return null;
-    }
-
-    const text = (stateEl.textContent || "").trim().toLowerCase();
-    if (text.includes("merged")) {
-      return "merged";
-    }
-    if (text.includes("closed")) {
-      return "closed";
-    }
-    if (text.includes("open")) {
-      return "open";
-    }
-    return null;
-  });
-
-  return typeof result === "string" ? result : null;
-}
-
 export async function extractPageMeta(tabId: number, timeoutMs: number, descriptionMaxLength: number) {
   const result = await executeWithTimeout(tabId, timeoutMs, () => {
     const pickContent = (selector: string) => {

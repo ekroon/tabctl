@@ -38,14 +38,11 @@ export function buildAnalyzeParams(options: Options): Record<string, unknown> {
 
   return {
     staleDays: options["stale-days"] ? Number(options["stale-days"]) : undefined,
-    checkGitHub: Boolean(options.github),
     tabIds,
     groupTitle,
     groupId,
     windowId,
     all,
-    githubConcurrency: options["github-concurrency"] ? Number(options["github-concurrency"]) : undefined,
-    githubTimeoutMs: options["github-timeout-ms"] ? Number(options["github-timeout-ms"]) : undefined,
     progress: Boolean(options.progress),
   };
 }

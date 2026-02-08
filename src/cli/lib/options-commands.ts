@@ -20,9 +20,6 @@ export const COMMANDS: Record<string, CommandMeta> = {
     groups: ["scope"],
     options: [
       { flag: "--stale-days <n>", desc: "Days threshold for stale tabs" },
-      { flag: "--github", desc: "Enable GitHub PR/issue status checking" },
-      { flag: "--github-concurrency <n>", desc: "Max concurrent GitHub API requests" },
-      { flag: "--github-timeout-ms <ms>", desc: "Timeout for GitHub API requests" },
       { flag: "--window-title", desc: "Include active window title in output" },
       { flag: "--progress", desc: "Show progress during analysis" },
     ],
@@ -32,9 +29,6 @@ export const COMMANDS: Record<string, CommandMeta> = {
     groups: ["scope"],
     options: [
       { flag: "--stale-days <n>", desc: "Days threshold for stale tabs" },
-      { flag: "--github", desc: "Enable GitHub PR/issue status checking" },
-      { flag: "--github-concurrency <n>", desc: "Max concurrent GitHub API requests" },
-      { flag: "--github-timeout-ms <ms>", desc: "Timeout for GitHub API requests" },
       { flag: "--include-stale", desc: "Include stale tabs in deduplication" },
       { flag: "--window-title", desc: "Include active window title in output" },
       { flag: "--progress", desc: "Show progress during analysis" },
