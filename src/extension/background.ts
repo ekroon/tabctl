@@ -26,13 +26,16 @@ const content = require("./lib/content") as typeof import("./lib/content");
 const { delay, executeWithTimeout, isScriptableUrl, isGitHubIssueOrPr, detectGitHubState, extractPageMeta, extractSelectorSignal, waitForTabLoad, waitForDomReady, waitForSettle, waitForTabReady, SETTLE_STABILITY_MS, SETTLE_POLL_INTERVAL_MS } = content;
 const groups = require("./lib/groups") as typeof import("./lib/groups");
 const tabs = require("./lib/tabs") as typeof import("./lib/tabs");
-const { DESCRIPTION_MAX_LENGTH, getMostRecentFocusedWindowId, normalizeTabIndex } = tabs;
+const { getMostRecentFocusedWindowId, normalizeTabIndex } = tabs;
+const inspect = require("./lib/inspect") as typeof import("./lib/inspect");
+const { DESCRIPTION_MAX_LENGTH } = inspect;
 const undoHandlers = require("./lib/undo-handlers") as typeof import("./lib/undo-handlers");
 const archive = require("./lib/archive") as typeof import("./lib/archive");
 type GroupDeps = import("./lib/groups").GroupDeps;
 type GroupMatch = import("./lib/groups").GroupMatch;
 type WindowSnapshot = import("./lib/groups").WindowSnapshot;
 type TabDeps = import("./lib/tabs").TabDeps;
+type InspectDeps = import("./lib/inspect").InspectDeps;
 type ArchiveDeps = import("./lib/archive").ArchiveDeps;
 
 type AnyRecord = Record<string, any>;
@@ -204,9 +207,9 @@ async function handleAction(action: string, params: Record<string, unknown>, req
     case "list":
       return await getTabSnapshot();
     case "analyze":
-      return await tabs.analyzeTabs(params, requestId, tabDeps);
+      return await inspect.analyzeTabs(params, requestId, inspectDeps);
     case "inspect":
-      return await tabs.inspectTabs(params, requestId, tabDeps);
+      return await inspect.inspectTabs(params, requestId, inspectDeps);
     case "focus":
       return await tabs.focusTab(params);
     case "refresh":
@@ -404,6 +407,12 @@ const tabDeps: TabDeps = {
   resolveWindowIdFromParams,
   resolveGroupByTitle,
   resolveGroupById,
+};
+
+const inspectDeps: InspectDeps = {
+  getTabSnapshot,
+  selectTabsByScope,
+  sendProgress,
 };
 
 async function listGroups(params: Record<string, unknown>) {
