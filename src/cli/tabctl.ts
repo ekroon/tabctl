@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-import { evaluateTab, loadPolicy, summarizePolicy } from "./lib/policy";
+import { loadPolicy, summarizePolicy } from "./lib/policy";
 import { VERSION, BASE_VERSION, GIT_SHA, DIRTY } from "./lib/constants";
 import { printJson, errorOut, setupStdoutErrorHandling, emitVersionWarnings } from "./lib/output";
 import { parseArgs, normalizeSignals, validateSignals } from "./lib/args";
 import { sendRequest, createRequestId, fetchSnapshot } from "./lib/client";
-import { selectTabsFromSnapshot } from "./lib/scope";
 import { printHelp } from "./lib/help";
 import { annotateEntries, annotateCandidates, extractDedupePlan, buildDedupeOutput, formatReport, writeScreenshots } from "./lib/response";
+import { applyPolicyFilter } from "./lib/policy-filter";
 import { runSetup, runSkillInstall, runVersion, runPolicy, runList, runGroupList, runPing, runHistory, runUndo, runProfileList, runProfileShow, runProfileSwitch, runProfileRemove } from "./lib/commands";
 import {
   buildAnalyzeParams,
@@ -354,228 +354,16 @@ async function main() {
       errorOut("Failed to load tabs for policy evaluation");
     }
 
-    const selection = selectTabsFromSnapshot(snapshot, params);
-    if ((selection as { error?: Record<string, unknown> }).error) {
-      printJson({ ok: false, error: (selection as { error: Record<string, unknown> }).error }, prettyOutput);
+    const filterResult = applyPolicyFilter(command, params, snapshot, policyContext, policySummary);
+
+    if (filterResult.earlyResponse && !filterResult.earlyResponse.ok) {
+      printJson(filterResult.earlyResponse, prettyOutput);
       process.exit(1);
     }
 
-    const selectedTabs = (selection as { tabs: Array<Record<string, unknown>> }).tabs;
-    const eligibleTabs = selectedTabs.filter((tab) => evaluateTab(tab, policyContext.policy).eligible);
-    const protectedTabs = selectedTabs.filter((tab) => !evaluateTab(tab, policyContext.policy).eligible);
-    const eligibleIds = eligibleTabs.map((tab) => tab.tabId).filter((id) => typeof id === "number") as number[];
-
-    if (command === "focus" || command === "refresh") {
-      if (!eligibleIds.length) {
-        errorOut(`Tab is protected by policy and cannot be ${command === "focus" ? "focused" : "refreshed"} via CLI`);
-      }
-      params = {
-        tabId: eligibleIds[0],
-      };
-    } else if (command === "close" || command === "archive") {
-      if (!eligibleIds.length) {
-        earlyResponse = {
-          ok: true,
-          action: command,
-          data: {
-            summary: { eligible: 0, protected: protectedTabs.length },
-            protected: protectedTabs.map((tab) => ({
-              tabId: tab.tabId,
-              windowId: tab.windowId,
-              groupId: tab.groupId,
-              groupTitle: tab.groupTitle,
-              title: tab.title,
-              url: tab.url,
-              pinned: tab.pinned,
-            })),
-            policy: policySummary,
-          },
-        };
-      } else if (command === "close") {
-        params = {
-          mode: "direct",
-          confirmed: true,
-          tabIds: eligibleIds,
-        };
-        } else if (command === "archive") {
-          params = {
-            tabIds: eligibleIds,
-          };
-        }
-
-      policyInfo = {
-        protected: protectedTabs.map((tab) => ({
-          tabId: tab.tabId,
-          windowId: tab.windowId,
-          groupId: tab.groupId,
-          groupTitle: tab.groupTitle,
-          title: tab.title,
-          url: tab.url,
-          pinned: tab.pinned,
-        })),
-      };
-    } else if (command === "move-tab" || command === "move-group" || command === "group-assign") {
-      if (!eligibleIds.length || (command === "move-group" && protectedTabs.length > 0)) {
-        earlyResponse = {
-          ok: true,
-          action: command,
-          data: {
-            summary: { eligible: eligibleIds.length, protected: protectedTabs.length },
-            protected: protectedTabs.map((tab) => ({
-              tabId: tab.tabId,
-              windowId: tab.windowId,
-              groupId: tab.groupId,
-              groupTitle: tab.groupTitle,
-              title: tab.title,
-              url: tab.url,
-              pinned: tab.pinned,
-            })),
-            policy: policySummary,
-          },
-        };
-      } else if (command === "move-tab" || command === "group-assign") {
-        params = {
-          ...params,
-          tabId: eligibleIds[0],
-          tabIds: eligibleIds,
-        };
-      }
-
-      policyInfo = {
-        protected: protectedTabs.map((tab) => ({
-          tabId: tab.tabId,
-          windowId: tab.windowId,
-          groupId: tab.groupId,
-          groupTitle: tab.groupTitle,
-          title: tab.title,
-          url: tab.url,
-          pinned: tab.pinned,
-        })),
-      };
-      } else if (command === "merge-window") {
-        if (!eligibleIds.length) {
-          earlyResponse = {
-            ok: true,
-            action: command,
-            data: {
-              summary: { eligible: 0, protected: protectedTabs.length },
-              protected: protectedTabs.map((tab) => ({
-                tabId: tab.tabId,
-                windowId: tab.windowId,
-                groupId: tab.groupId,
-                groupTitle: tab.groupTitle,
-                title: tab.title,
-                url: tab.url,
-                pinned: tab.pinned,
-              })),
-              policy: policySummary,
-            },
-          };
-        }
-
-        params = {
-          ...params,
-          tabIds: eligibleIds,
-        };
-
-        policyInfo = {
-          protected: protectedTabs.map((tab) => ({
-            tabId: tab.tabId,
-            windowId: tab.windowId,
-            groupId: tab.groupId,
-            groupTitle: tab.groupTitle,
-            title: tab.title,
-            url: tab.url,
-            pinned: tab.pinned,
-          })),
-        };
-      } else if (command === "group-update" || command === "group-ungroup") {
-      if (!eligibleIds.length || protectedTabs.length > 0) {
-        earlyResponse = {
-          ok: true,
-          action: command,
-          data: {
-            summary: { eligible: eligibleIds.length, protected: protectedTabs.length },
-            protected: protectedTabs.map((tab) => ({
-              tabId: tab.tabId,
-              windowId: tab.windowId,
-              groupId: tab.groupId,
-              groupTitle: tab.groupTitle,
-              title: tab.title,
-              url: tab.url,
-              pinned: tab.pinned,
-            })),
-            policy: policySummary,
-          },
-        };
-      }
-
-      policyInfo = {
-        protected: protectedTabs.map((tab) => ({
-          tabId: tab.tabId,
-          windowId: tab.windowId,
-          groupId: tab.groupId,
-          groupTitle: tab.groupTitle,
-          title: tab.title,
-          url: tab.url,
-          pinned: tab.pinned,
-        })),
-      };
-    } else {
-      if (!eligibleIds.length) {
-        const generatedAt = Date.now();
-        if (command === "analyze") {
-          earlyResponse = {
-            ok: true,
-            action: command,
-            data: {
-              generatedAt,
-              staleDays: params.staleDays || 0,
-              totals: { tabs: 0, analyzed: 0, candidates: 0 },
-              meta: { durationMs: 0, githubChecked: 0, githubTotal: 0, githubMatched: 0, githubTimeoutMs: params.githubTimeoutMs || 0 },
-              candidates: [],
-              analysisId: null,
-              policy: policySummary,
-            },
-          };
-        } else if (command === "screenshot") {
-          earlyResponse = {
-            ok: true,
-            action: command,
-            data: {
-              generatedAt,
-              entries: [],
-              totals: { tabs: 0, tiles: 0 },
-              meta: {
-                durationMs: 0,
-                mode: params.mode || "viewport",
-                format: params.format || "png",
-                tileMaxDim: params.tileMaxDim || null,
-                maxBytes: params.maxBytes || null,
-              },
-              policy: policySummary,
-            },
-          };
-        } else {
-          earlyResponse = {
-            ok: true,
-            action: command,
-            data: {
-              generatedAt,
-              entries: [],
-              totals: { tabs: 0, signals: 0, tasks: 0 },
-              meta: { durationMs: 0, signalTimeoutMs: params.signalTimeoutMs || 0, selectorCount: 0 },
-              policy: policySummary,
-            },
-          };
-        }
-      } else {
-        params = {
-          ...params,
-          tabIds: eligibleIds,
-        };
-      }
-    }
+    params = filterResult.params;
+    policyInfo = filterResult.policyInfo;
+    earlyResponse = filterResult.earlyResponse;
   }
 
   const request = {
