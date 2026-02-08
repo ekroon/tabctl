@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import test from "node:test";
 import { readUndoRecords } from "../../host/lib/undo";
 
-const pkgVersion = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../package.json"), "utf8")).version;
+const pkgVersion = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../../package.json"), "utf8")).version;
 
 type NativeMessage = Record<string, unknown>;
 
@@ -112,9 +112,11 @@ function sendSocketRequest(socketPath: string, request: NativeMessage): Promise<
 }
 
 async function startHost(stateHome: string, extraEnv: Record<string, string> = {}) {
+  // Isolate from real profiles.json so socket uses stateHome-based path
+  const cleanConfigHome = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-hostcfg-"));
   const hostPath = path.resolve(__dirname, "../../host/host.js");
   const child = spawn(process.execPath, [hostPath], {
-    env: { ...process.env, ...extraEnv, XDG_STATE_HOME: stateHome },
+    env: { ...process.env, ...extraEnv, XDG_STATE_HOME: stateHome, XDG_CONFIG_HOME: cleanConfigHome },
     stdio: ["pipe", "pipe", "pipe"],
   });
 

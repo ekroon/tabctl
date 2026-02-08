@@ -1,16 +1,12 @@
 #!/usr/bin/env node
-import fs from "fs";
-import path from "path";
-import { renderCsv, renderMarkdown } from "./lib/report";
-import { evaluateTab, loadPolicy, summarizePolicy } from "./lib/policy";
+import { loadPolicy, summarizePolicy } from "./lib/policy";
 import { VERSION, BASE_VERSION, GIT_SHA, DIRTY } from "./lib/constants";
 import { printJson, errorOut, setupStdoutErrorHandling, emitVersionWarnings } from "./lib/output";
 import { parseArgs, normalizeSignals, validateSignals } from "./lib/args";
 import { sendRequest, createRequestId, fetchSnapshot } from "./lib/client";
-import { resolveScopeFlags, buildScopeArgs, selectTabsFromSnapshot } from "./lib/scope";
-import { resolvePagination } from "./lib/pagination";
-import { buildTabIndex, buildWindowTitleIndex } from "./lib/snapshot";
 import { printHelp } from "./lib/help";
+import { annotateEntries, annotateCandidates, extractDedupePlan, buildDedupeOutput, formatReport, writeScreenshots } from "./lib/response";
+import { applyPolicyFilter } from "./lib/policy-filter";
 import { runSetup, runSkillInstall, runVersion, runPolicy, runList, runGroupList, runPing, runHistory, runUndo, runProfileList, runProfileShow, runProfileSwitch, runProfileRemove } from "./lib/commands";
 import {
   buildAnalyzeParams,
@@ -358,228 +354,16 @@ async function main() {
       errorOut("Failed to load tabs for policy evaluation");
     }
 
-    const selection = selectTabsFromSnapshot(snapshot, params);
-    if ((selection as { error?: Record<string, unknown> }).error) {
-      printJson({ ok: false, error: (selection as { error: Record<string, unknown> }).error }, prettyOutput);
+    const filterResult = applyPolicyFilter(command, params, snapshot, policyContext, policySummary);
+
+    if (filterResult.earlyResponse && !filterResult.earlyResponse.ok) {
+      printJson(filterResult.earlyResponse, prettyOutput);
       process.exit(1);
     }
 
-    const selectedTabs = (selection as { tabs: Array<Record<string, unknown>> }).tabs;
-    const eligibleTabs = selectedTabs.filter((tab) => evaluateTab(tab, policyContext.policy).eligible);
-    const protectedTabs = selectedTabs.filter((tab) => !evaluateTab(tab, policyContext.policy).eligible);
-    const eligibleIds = eligibleTabs.map((tab) => tab.tabId).filter((id) => typeof id === "number") as number[];
-
-    if (command === "focus" || command === "refresh") {
-      if (!eligibleIds.length) {
-        errorOut(`Tab is protected by policy and cannot be ${command === "focus" ? "focused" : "refreshed"} via CLI`);
-      }
-      params = {
-        tabId: eligibleIds[0],
-      };
-    } else if (command === "close" || command === "archive") {
-      if (!eligibleIds.length) {
-        earlyResponse = {
-          ok: true,
-          action: command,
-          data: {
-            summary: { eligible: 0, protected: protectedTabs.length },
-            protected: protectedTabs.map((tab) => ({
-              tabId: tab.tabId,
-              windowId: tab.windowId,
-              groupId: tab.groupId,
-              groupTitle: tab.groupTitle,
-              title: tab.title,
-              url: tab.url,
-              pinned: tab.pinned,
-            })),
-            policy: policySummary,
-          },
-        };
-      } else if (command === "close") {
-        params = {
-          mode: "direct",
-          confirmed: true,
-          tabIds: eligibleIds,
-        };
-        } else if (command === "archive") {
-          params = {
-            tabIds: eligibleIds,
-          };
-        }
-
-      policyInfo = {
-        protected: protectedTabs.map((tab) => ({
-          tabId: tab.tabId,
-          windowId: tab.windowId,
-          groupId: tab.groupId,
-          groupTitle: tab.groupTitle,
-          title: tab.title,
-          url: tab.url,
-          pinned: tab.pinned,
-        })),
-      };
-    } else if (command === "move-tab" || command === "move-group" || command === "group-assign") {
-      if (!eligibleIds.length || (command === "move-group" && protectedTabs.length > 0)) {
-        earlyResponse = {
-          ok: true,
-          action: command,
-          data: {
-            summary: { eligible: eligibleIds.length, protected: protectedTabs.length },
-            protected: protectedTabs.map((tab) => ({
-              tabId: tab.tabId,
-              windowId: tab.windowId,
-              groupId: tab.groupId,
-              groupTitle: tab.groupTitle,
-              title: tab.title,
-              url: tab.url,
-              pinned: tab.pinned,
-            })),
-            policy: policySummary,
-          },
-        };
-      } else if (command === "move-tab" || command === "group-assign") {
-        params = {
-          ...params,
-          tabId: eligibleIds[0],
-          tabIds: eligibleIds,
-        };
-      }
-
-      policyInfo = {
-        protected: protectedTabs.map((tab) => ({
-          tabId: tab.tabId,
-          windowId: tab.windowId,
-          groupId: tab.groupId,
-          groupTitle: tab.groupTitle,
-          title: tab.title,
-          url: tab.url,
-          pinned: tab.pinned,
-        })),
-      };
-      } else if (command === "merge-window") {
-        if (!eligibleIds.length) {
-          earlyResponse = {
-            ok: true,
-            action: command,
-            data: {
-              summary: { eligible: 0, protected: protectedTabs.length },
-              protected: protectedTabs.map((tab) => ({
-                tabId: tab.tabId,
-                windowId: tab.windowId,
-                groupId: tab.groupId,
-                groupTitle: tab.groupTitle,
-                title: tab.title,
-                url: tab.url,
-                pinned: tab.pinned,
-              })),
-              policy: policySummary,
-            },
-          };
-        }
-
-        params = {
-          ...params,
-          tabIds: eligibleIds,
-        };
-
-        policyInfo = {
-          protected: protectedTabs.map((tab) => ({
-            tabId: tab.tabId,
-            windowId: tab.windowId,
-            groupId: tab.groupId,
-            groupTitle: tab.groupTitle,
-            title: tab.title,
-            url: tab.url,
-            pinned: tab.pinned,
-          })),
-        };
-      } else if (command === "group-update" || command === "group-ungroup") {
-      if (!eligibleIds.length || protectedTabs.length > 0) {
-        earlyResponse = {
-          ok: true,
-          action: command,
-          data: {
-            summary: { eligible: eligibleIds.length, protected: protectedTabs.length },
-            protected: protectedTabs.map((tab) => ({
-              tabId: tab.tabId,
-              windowId: tab.windowId,
-              groupId: tab.groupId,
-              groupTitle: tab.groupTitle,
-              title: tab.title,
-              url: tab.url,
-              pinned: tab.pinned,
-            })),
-            policy: policySummary,
-          },
-        };
-      }
-
-      policyInfo = {
-        protected: protectedTabs.map((tab) => ({
-          tabId: tab.tabId,
-          windowId: tab.windowId,
-          groupId: tab.groupId,
-          groupTitle: tab.groupTitle,
-          title: tab.title,
-          url: tab.url,
-          pinned: tab.pinned,
-        })),
-      };
-    } else {
-      if (!eligibleIds.length) {
-        const generatedAt = Date.now();
-        if (command === "analyze") {
-          earlyResponse = {
-            ok: true,
-            action: command,
-            data: {
-              generatedAt,
-              staleDays: params.staleDays || 0,
-              totals: { tabs: 0, analyzed: 0, candidates: 0 },
-              meta: { durationMs: 0, githubChecked: 0, githubTotal: 0, githubMatched: 0, githubTimeoutMs: params.githubTimeoutMs || 0 },
-              candidates: [],
-              analysisId: null,
-              policy: policySummary,
-            },
-          };
-        } else if (command === "screenshot") {
-          earlyResponse = {
-            ok: true,
-            action: command,
-            data: {
-              generatedAt,
-              entries: [],
-              totals: { tabs: 0, tiles: 0 },
-              meta: {
-                durationMs: 0,
-                mode: params.mode || "viewport",
-                format: params.format || "png",
-                tileMaxDim: params.tileMaxDim || null,
-                maxBytes: params.maxBytes || null,
-              },
-              policy: policySummary,
-            },
-          };
-        } else {
-          earlyResponse = {
-            ok: true,
-            action: command,
-            data: {
-              generatedAt,
-              entries: [],
-              totals: { tabs: 0, signals: 0, tasks: 0 },
-              meta: { durationMs: 0, signalTimeoutMs: params.signalTimeoutMs || 0, selectorCount: 0 },
-              policy: policySummary,
-            },
-          };
-        }
-      } else {
-        params = {
-          ...params,
-          tabIds: eligibleIds,
-        };
-      }
-    }
+    params = filterResult.params;
+    policyInfo = filterResult.policyInfo;
+    earlyResponse = filterResult.earlyResponse;
   }
 
   const request = {
@@ -668,26 +452,7 @@ async function main() {
       if (policyEnabled) {
         snapshot = await getPolicySnapshot();
       }
-      const tabIndex = snapshot ? buildTabIndex(snapshot) : null;
-      const annotated = (data.entries as Array<Record<string, unknown>>).map((entry) => {
-        const tab = tabIndex?.get(entry.tabId as number) || entry;
-        const { eligible, protectedReasons } = evaluateTab(tab, policyContext.policy);
-        return {
-          ...entry,
-          eligible,
-          protectedReasons,
-        };
-      }).filter((entry) => entry.eligible !== false);
-      const scope = resolveScopeFlags(options);
-      const allScope = options.all === true || !scope.hasScope;
-      const scopeArgs = buildScopeArgs(options, allScope);
-      const pagination = resolvePagination(options, annotated.length, command, scopeArgs);
-      const start = pagination.offset;
-      const end = pagination.offset + pagination.limit;
-      data.entries = annotated.slice(start, end);
-      if (pagination.page) {
-        data.page = pagination.page;
-      }
+      annotateEntries(data, options, command, policyEnabled, policyContext.policy, snapshot);
     }
 
     if (command === "analyze" && Array.isArray(data.candidates)) {
@@ -695,23 +460,7 @@ async function main() {
       if (policyEnabled || includeWindowTitle) {
         snapshot = await getPolicySnapshot();
       }
-      const tabIndex = snapshot ? buildTabIndex(snapshot) : null;
-      const windowTitleIndex = snapshot && includeWindowTitle
-        ? buildWindowTitleIndex(snapshot, policyContext.policy)
-        : null;
-      data.candidates = (data.candidates as Array<Record<string, unknown>>).map((candidate) => {
-        const tab = tabIndex?.get(candidate.tabId as number) || candidate;
-        const { eligible, protectedReasons } = evaluateTab(tab, policyContext.policy);
-        const windowTitle = includeWindowTitle
-          ? (windowTitleIndex?.get(candidate.windowId as number) ?? null)
-          : undefined;
-        return {
-          ...candidate,
-          eligible,
-          protectedReasons,
-          ...(includeWindowTitle ? { windowTitle } : {}),
-        };
-      }).filter((candidate) => candidate.eligible !== false);
+      annotateCandidates(data, policyContext.policy, includeWindowTitle, snapshot);
     }
 
     data.policy = policySummary;
@@ -728,29 +477,7 @@ async function main() {
       return;
     }
 
-    const data = (response.data as Record<string, unknown>) || {};
-    const candidates = Array.isArray(data.candidates) ? (data.candidates as Array<Record<string, unknown>>) : [];
-    const planned = candidates.filter((candidate) => {
-      const reasons = Array.isArray(candidate.reasons) ? (candidate.reasons as Array<Record<string, unknown>>) : [];
-      const hasDuplicate = reasons.some((reason) => reason.type === "duplicate" || reason.type === "closed_issue");
-      const hasStale = reasons.some((reason) => reason.type === "stale");
-      return hasDuplicate || (includeStale && hasStale);
-    });
-
-    const planTabIds: number[] = [];
-    const expectedUrls: Record<string, string> = {};
-    for (const candidate of planned) {
-      const tabId = candidate.tabId as number;
-      if (!Number.isFinite(tabId)) {
-        continue;
-      }
-      if (!planTabIds.includes(tabId)) {
-        planTabIds.push(tabId);
-      }
-      if (typeof candidate.url === "string") {
-        expectedUrls[String(tabId)] = candidate.url;
-      }
-    }
+    const { planTabIds, expectedUrls } = extractDedupePlan(response, includeStale);
 
     let closeData: Record<string, unknown> | null = null;
     if (options.confirm === true && planTabIds.length > 0) {
@@ -775,116 +502,18 @@ async function main() {
       }
     }
 
-    const closeSummary = closeData?.summary as Record<string, unknown> | undefined;
-    const closedTabs = Number(closeSummary?.closedTabs ?? 0);
-    const skippedTabs = Number(closeSummary?.skippedTabs ?? 0);
-    const output = {
-      ok: true,
-      action: "dedupe",
-      data: {
-        analysisId: data.analysisId || null,
-        summary: {
-          candidates: candidates.length,
-          planned: planTabIds.length,
-          closed: Number.isFinite(closedTabs) ? closedTabs : 0,
-          skipped: Number.isFinite(skippedTabs) ? skippedTabs : 0,
-        },
-        plan: {
-          tabIds: planTabIds,
-          candidates: planned,
-        },
-        close: closeData,
-        nextCommand: options.confirm === true
-          ? null
-          : (planTabIds.length > 0 && data.analysisId ? `tabctl close --apply ${data.analysisId} --confirm` : null),
-        policy: data.policy,
-        policyInfo: data.policyInfo,
-      },
-    };
+    const output = buildDedupeOutput(response, includeStale, closeData, options.confirm === true);
     printJson(output, prettyOutput);
     return;
   }
 
   if (command === "report") {
-    const format = (options.format as string) || "json";
-    const data = response.data as { entries?: Array<Record<string, unknown>>; generatedAt?: number } | undefined;
-    const entries = data?.entries || [];
-    const generatedAt = data?.generatedAt;
-    const page = data && "page" in data ? (data.page as Record<string, unknown> | undefined) : undefined;
-    let content = "";
-
-    if (format === "json") {
-      content = JSON.stringify({ generatedAt, entries }, null, 2);
-    } else if (format === "csv") {
-      content = renderCsv(entries);
-    } else if (format === "md") {
-      content = renderMarkdown(entries, generatedAt);
-    } else {
-      errorOut(`Unknown report format: ${format}`);
-    }
-
-    if (options.out) {
-      fs.writeFileSync(String(options.out), content, "utf8");
-      printJson({ ok: true, data: { writtenTo: options.out, format, count: entries.length, ...(page ? { page } : {}) } }, prettyOutput);
-      return;
-    }
-
-    if (format === "json") {
-      printJson({ ok: true, data: { format, entries, ...(page ? { page } : {}) } }, prettyOutput);
-      return;
-    }
-
-    printJson({ ok: true, data: { format, entries, content, ...(page ? { page } : {}) } }, prettyOutput);
+    formatReport(response, options, prettyOutput);
     return;
   }
 
    if (command === "screenshot") {
-    const data = response.data as { entries?: Array<Record<string, unknown>> } | undefined;
-    const entries = data?.entries || [];
-    const page = data && "page" in data ? (data.page as Record<string, unknown> | undefined) : undefined;
-    const outDir = options.out
-      ? String(options.out)
-      : path.join(process.cwd(), ".tabctl", "screenshots", String(Date.now()));
-    fs.mkdirSync(outDir, { recursive: true });
-    let filesWritten = 0;
-    const sanitized = entries.map((entry) => {
-        const tabId = entry.tabId as number | string | undefined;
-        const tabDir = path.join(outDir, String(tabId ?? "unknown"));
-        fs.mkdirSync(tabDir, { recursive: true });
-        const tiles = Array.isArray(entry.tiles) ? (entry.tiles as Array<Record<string, unknown>>) : [];
-        const sanitizedTiles = tiles.map((tile) => {
-          const rawUrl = tile.dataUrl as string | undefined;
-          const { dataUrl: _ignored, ...rest } = tile as Record<string, unknown>;
-          if (!rawUrl) {
-            return { ...rest, path: null, error: "missing_data" };
-          }
-          const match = rawUrl.match(/^data:(image\/png|image\/jpeg);base64,(.+)$/);
-          if (!match) {
-            return { ...rest, path: null, error: "invalid_data_url" };
-          }
-          const mime = match[1];
-          const base64 = match[2];
-          const ext = mime === "image/jpeg" ? "jpg" : "png";
-          const index = Number.isFinite(tile.index as number) ? Number(tile.index) + 1 : filesWritten + 1;
-          const total = Number.isFinite(tile.total as number) ? Number(tile.total) : null;
-          const suffix = total && total > 1 ? `-of-${total}` : "";
-          const filename = `screenshot-${index}${suffix}.${ext}`;
-          const filePath = path.join(tabDir, filename);
-          const buffer = Buffer.from(base64, "base64");
-          fs.writeFileSync(filePath, buffer);
-          filesWritten += 1;
-          return {
-            ...rest,
-            path: filePath,
-            bytes: buffer.length,
-          };
-        });
-        return {
-          ...entry,
-          tiles: sanitizedTiles,
-        };
-      });
-    printJson({ ok: true, data: { writtenTo: outDir, files: filesWritten, entries: sanitized, ...(page ? { page } : {}) } }, prettyOutput);
+    writeScreenshots(response, options, prettyOutput);
     return;
   }
 

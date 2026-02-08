@@ -5,7 +5,7 @@ import path from "path";
 
 test("README test links reference existing tests", () => {
   // Collect all test names from source test files
-  const srcTestDir = path.resolve(__dirname, "../../src/tests/unit");
+  const srcTestDir = path.resolve(__dirname, "../../../src/tests/unit");
   const testFiles = fs
     .readdirSync(srcTestDir)
     .filter((f) => f.endsWith(".test.ts") && f !== "readme-links.test.ts");
@@ -24,7 +24,7 @@ test("README test links reference existing tests", () => {
   assert.ok(allTestNames.size > 0, "Should find at least one test name in test files");
 
   // Parse README for <!-- test: "..." --> comments
-  const readmePath = path.resolve(__dirname, "../../README.md");
+  const readmePath = path.resolve(__dirname, "../../../README.md");
   const readme = fs.readFileSync(readmePath, "utf-8");
 
   const commentPattern = /<!-- test: ((?:"[^"]+",?\s*)+) -->/g;

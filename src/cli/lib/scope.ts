@@ -1,4 +1,5 @@
 import { errorOut } from "./output";
+import { buildWindowLabelIndex, listGroupSummaries } from "./snapshot";
 import type { Options, ScopeFlags, ScopeParams, SelectionResult } from "./types";
 
 export function formatCliArgValue(value: unknown): string {
@@ -103,40 +104,6 @@ export function extractScopeParams(options: Options): ScopeParams {
     windowId: scope.windowId != null ? scope.windowId : undefined,
     all: options.all === true,
   };
-}
-
-// Helper to build window label index (needed by selectTabsFromSnapshot)
-function buildWindowLabelIndex(snapshot: Record<string, unknown>): Map<number, string> {
-  const windowLabels = new Map<number, string>();
-  const windows = (snapshot.windows as Array<Record<string, unknown>>) || [];
-  windows.forEach((win, index) => {
-    const windowId = win.windowId as number;
-    if (typeof windowId === "number") {
-      windowLabels.set(windowId, `W${index + 1}`);
-    }
-  });
-  return windowLabels;
-}
-
-// Helper to list group summaries (needed by selectTabsFromSnapshot)
-function listGroupSummaries(
-  snapshot: Record<string, unknown>,
-  windowLabels: Map<number, string>
-): Array<Record<string, unknown>> {
-  const windows = (snapshot.windows as Array<Record<string, unknown>>) || [];
-  const summaries: Array<Record<string, unknown>> = [];
-  for (const win of windows) {
-    const groups = (win.groups as Array<Record<string, unknown>>) || [];
-    for (const group of groups) {
-      summaries.push({
-        windowId: win.windowId,
-        windowLabel: windowLabels.get(win.windowId as number) ?? null,
-        groupId: group.groupId,
-        title: typeof group.title === "string" ? group.title : null,
-      });
-    }
-  }
-  return summaries;
 }
 
 export function selectTabsFromSnapshot(
