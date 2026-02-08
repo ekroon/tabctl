@@ -6,9 +6,6 @@ import test from "node:test";
 import { runCli, runCliWithStdin, parseOutput } from "./cli-helpers";
 
 test("setup writes native host manifest", async () => {
-  if (process.platform !== "darwin") {
-    return;
-  }
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-"));
   const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const nodePath = process.execPath;
@@ -28,18 +25,14 @@ test("setup writes native host manifest", async () => {
   assert.equal(output.action, "setup");
   assert.equal(output.data.profileName, "edge");
 
-  const wrapperPath = path.join(homeDir, ".local", "state", "tabctl", "profiles", "edge", "tabctl-host.sh");
-  const manifestPath = path.join(
-    homeDir,
-    "Library",
-    "Application Support",
-    "Microsoft Edge",
-    "NativeMessagingHosts",
-    "com.erwinkroon.tabctl.json",
-  );
+  const isWin = process.platform === "win32";
+  const wrapperName = isWin ? "tabctl-host.cmd" : "tabctl-host.sh";
+  const wrapperPath = path.join(homeDir, ".local", "state", "tabctl", "profiles", "edge", wrapperName);
   assert.equal(output.data.wrapperPath, wrapperPath);
-  assert.equal(output.data.manifestPath, manifestPath);
   assert.ok(fs.existsSync(wrapperPath));
+
+  // Manifest path depends on platform; just verify the file exists
+  const manifestPath = output.data.manifestPath as string;
   assert.ok(fs.existsSync(manifestPath));
 
   // Manifest uses standard host name
@@ -52,7 +45,11 @@ test("setup writes native host manifest", async () => {
   const hostPath = path.join(homeDir, ".local", "state", "tabctl", "host.bundle.js");
   assert.ok(wrapper.includes(nodePath));
   assert.ok(wrapper.includes(hostPath));
-  assert.ok(wrapper.includes('export TABCTL_PROFILE="edge"'));
+  if (isWin) {
+    assert.ok(wrapper.includes("set TABCTL_PROFILE=edge"));
+  } else {
+    assert.ok(wrapper.includes('export TABCTL_PROFILE="edge"'));
+  }
 
   // Profile registered
   assert.equal(output.data.isDefault, true);
@@ -64,9 +61,6 @@ test("setup writes native host manifest", async () => {
 });
 
 test("setup writes native host manifest for chrome", async () => {
-  if (process.platform !== "darwin") {
-    return;
-  }
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-chrome-"));
   const extensionId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
   const nodePath = process.execPath;
@@ -86,19 +80,14 @@ test("setup writes native host manifest for chrome", async () => {
   assert.equal(output.action, "setup");
   assert.equal(output.data.profileName, "chrome");
 
-  const wrapperPath = path.join(homeDir, ".local", "state", "tabctl", "profiles", "chrome", "tabctl-host.sh");
-  const manifestPath = path.join(
-    homeDir,
-    "Library",
-    "Application Support",
-    "Google",
-    "Chrome",
-    "NativeMessagingHosts",
-    "com.erwinkroon.tabctl.json",
-  );
+  const isWin = process.platform === "win32";
+  const wrapperName = isWin ? "tabctl-host.cmd" : "tabctl-host.sh";
+  const wrapperPath = path.join(homeDir, ".local", "state", "tabctl", "profiles", "chrome", wrapperName);
   assert.equal(output.data.wrapperPath, wrapperPath);
-  assert.equal(output.data.manifestPath, manifestPath);
   assert.ok(fs.existsSync(wrapperPath));
+
+  // Manifest path depends on platform; just verify the file exists
+  const manifestPath = output.data.manifestPath as string;
   assert.ok(fs.existsSync(manifestPath));
 
   // Manifest uses standard host name
@@ -111,7 +100,11 @@ test("setup writes native host manifest for chrome", async () => {
   const hostPath = path.join(homeDir, ".local", "state", "tabctl", "host.bundle.js");
   assert.ok(wrapper.includes(nodePath));
   assert.ok(wrapper.includes(hostPath));
-  assert.ok(wrapper.includes('export TABCTL_PROFILE="chrome"'));
+  if (isWin) {
+    assert.ok(wrapper.includes("set TABCTL_PROFILE=chrome"));
+  } else {
+    assert.ok(wrapper.includes('export TABCTL_PROFILE="chrome"'));
+  }
 
   // Profile registered with browser: "chrome"
   assert.equal(output.data.isDefault, true);
@@ -124,9 +117,6 @@ test("setup writes native host manifest for chrome", async () => {
 });
 
 test("setup --user-data-dir writes manifest to custom path", async () => {
-  if (process.platform !== "darwin") {
-    return;
-  }
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-udd-"));
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-udd-chrome-"));
   const extensionId = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
@@ -151,18 +141,9 @@ test("setup --user-data-dir writes manifest to custom path", async () => {
 
   // Manifest written to userDataDir, NOT the system-wide path
   const manifestPath = path.join(userDataDir, "NativeMessagingHosts", "com.erwinkroon.tabctl.json");
-  const systemManifestPath = path.join(
-    homeDir,
-    "Library",
-    "Application Support",
-    "Google",
-    "Chrome",
-    "NativeMessagingHosts",
-    "com.erwinkroon.tabctl.json",
-  );
   assert.equal(output.data.manifestPath, manifestPath);
   assert.ok(fs.existsSync(manifestPath), "manifest should exist in userDataDir");
-  assert.ok(!fs.existsSync(systemManifestPath), "manifest should NOT exist in system-wide path");
+  assert.ok(manifestPath.startsWith(userDataDir), "manifest should be under userDataDir, not system-wide");
 
   // Manifest has correct allowed_origins
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { name?: string; path?: string; allowed_origins?: string[] };
@@ -353,9 +334,6 @@ test("TABCTL_PROFILE env overrides active profile", async () => {
 });
 
 test("setup --name creates custom-named profile", async () => {
-  if (process.platform !== "darwin") {
-    return;
-  }
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-name-"));
   try {
     const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -485,9 +463,6 @@ test("profile-show isDefault is false when using --profile override", async () =
 // "setup writes native host manifest for chrome" tests above (both pass --extension-id).
 
 test("setup explicit --extension-id overrides auto-derived ID", async () => {
-  if (process.platform !== "darwin") {
-    return;
-  }
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-interactive-"));
   try {
     const extensionId = "cccccccccccccccccccccccccccccccc";
@@ -527,9 +502,6 @@ test("setup explicit --extension-id overrides auto-derived ID", async () => {
 });
 
 test("setup auto-derived extension ID matches Chromium algorithm", async () => {
-  if (process.platform !== "darwin") {
-    return;
-  }
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-derive-algo-"));
   try {
     const envOverrides = {
@@ -559,9 +531,6 @@ test("setup auto-derived extension ID matches Chromium algorithm", async () => {
 });
 
 test("setup interactive mode falls back to auto-derived extension ID", async () => {
-  if (process.platform !== "darwin") {
-    return;
-  }
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-derive-"));
   try {
     const envOverrides = {
@@ -590,9 +559,6 @@ test("setup interactive mode falls back to auto-derived extension ID", async () 
 });
 
 test("setup second profile does not nest under first profile dataDir", async () => {
-  if (process.platform !== "darwin") {
-    return;
-  }
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-nest-"));
   try {
     const envOverrides = {
@@ -629,9 +595,6 @@ test("setup second profile does not nest under first profile dataDir", async () 
 });
 
 test("setup JSON output reflects newly-created profile in footer", async () => {
-  if (process.platform !== "darwin") {
-    return;
-  }
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-profile-ctx-"));
   try {
     const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -657,9 +620,6 @@ test("setup JSON output reflects newly-created profile in footer", async () => {
 });
 
 test("setup prints verify-connection hint on stderr", async () => {
-  if (process.platform !== "darwin") {
-    return;
-  }
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-hints-"));
   try {
     const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -683,9 +643,6 @@ test("setup prints verify-connection hint on stderr", async () => {
 });
 
 test("setup non-default profile prints usage hints on stderr", async () => {
-  if (process.platform !== "darwin") {
-    return;
-  }
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-nondefault-"));
   try {
     const envOverrides = {

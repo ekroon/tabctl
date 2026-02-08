@@ -1,0 +1,16 @@
+{
+  "name": "tabctl-win32-x64",
+  "version": "0.3.0",
+  "description": "Windows x64 native messaging host binary for tabctl",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ekroon/tabctl",
+    "directory": "packages/win32-x64"
+  },
+  "os": ["win32"],
+  "cpu": ["x64"],
+  "files": [
+    "tabctl-host.exe"
+  ]
+}

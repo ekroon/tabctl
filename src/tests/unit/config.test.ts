@@ -3,7 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import test from "node:test";
-import { resolveConfig, resetConfig, expandEnvVars } from "../../shared/config";
+import { resolveConfig, resetConfig, expandEnvVars, resolveSocketPath } from "../../shared/config";
 
 /** Save and restore env vars relevant to config resolution. */
 function withCleanEnv(fn: () => void) {
@@ -44,8 +44,13 @@ test("default XDG paths when no env vars are set", () => {
     const cfg = resolveConfig();
 
     assert.equal(cfg.configDir, path.join(tmpCfg, "tabctl"));
-    assert.equal(cfg.dataDir, path.join(home, ".local", "state", "tabctl"));
-    assert.equal(cfg.socketPath, path.join(cfg.dataDir, "tabctl.sock"));
+    if (process.platform === "win32") {
+      const localAppData = process.env.LOCALAPPDATA || path.join(home, "AppData", "Local");
+      assert.equal(cfg.dataDir, path.join(localAppData, "tabctl"));
+    } else {
+      assert.equal(cfg.dataDir, path.join(home, ".local", "state", "tabctl"));
+    }
+    assert.equal(cfg.socketPath, resolveSocketPath(cfg.dataDir));
     assert.equal(cfg.undoLog, path.join(cfg.dataDir, "undo.jsonl"));
     assert.equal(cfg.policyPath, path.join(cfg.configDir, "policy.json"));
 
@@ -62,8 +67,13 @@ test("XDG_CONFIG_HOME override changes configDir only", () => {
     const home = os.homedir();
 
     assert.equal(cfg.configDir, path.join(tmpDir, "tabctl"));
-    // dataDir should still use XDG_STATE_HOME default
-    assert.equal(cfg.dataDir, path.join(home, ".local", "state", "tabctl"));
+    // dataDir should still use platform default
+    if (process.platform === "win32") {
+      const localAppData = process.env.LOCALAPPDATA || path.join(home, "AppData", "Local");
+      assert.equal(cfg.dataDir, path.join(localAppData, "tabctl"));
+    } else {
+      assert.equal(cfg.dataDir, path.join(home, ".local", "state", "tabctl"));
+    }
     assert.equal(cfg.policyPath, path.join(cfg.configDir, "policy.json"));
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -79,7 +89,7 @@ test("TABCTL_CONFIG_DIR override sets configDir and dataDir", () => {
 
     assert.equal(cfg.configDir, tmpDir);
     assert.equal(cfg.dataDir, path.join(tmpDir, "data"));
-    assert.equal(cfg.socketPath, path.join(tmpDir, "data", "tabctl.sock"));
+    assert.equal(cfg.socketPath, resolveSocketPath(path.join(tmpDir, "data")));
     assert.equal(cfg.policyPath, path.join(tmpDir, "policy.json"));
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -91,7 +101,7 @@ test("config.json dataDir override", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-cfgjson-"));
     process.env.TABCTL_CONFIG_DIR = tmpDir;
 
-    const customData = "/custom/data";
+    const customData = path.join(tmpDir, "custom-data");
     fs.writeFileSync(
       path.join(tmpDir, "config.json"),
       JSON.stringify({ dataDir: customData }),
@@ -102,7 +112,7 @@ test("config.json dataDir override", () => {
 
     assert.equal(cfg.configDir, tmpDir);
     assert.equal(cfg.dataDir, customData);
-    assert.equal(cfg.socketPath, path.join(customData, "tabctl.sock"));
+    assert.equal(cfg.socketPath, resolveSocketPath(customData));
     assert.equal(cfg.undoLog, path.join(customData, "undo.jsonl"));
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -111,7 +121,7 @@ test("config.json dataDir override", () => {
 
 test("TABCTL_SOCKET override takes precedence", () => {
   withCleanEnv(() => {
-    const customSocket = "/tmp/my-tabctl.sock";
+    const customSocket = path.join(os.tmpdir(), "my-tabctl.sock");
     process.env.TABCTL_SOCKET = customSocket;
 
     const cfg = resolveConfig();
@@ -120,7 +130,12 @@ test("TABCTL_SOCKET override takes precedence", () => {
 
     // Other paths should still use defaults
     const home = os.homedir();
-    assert.equal(cfg.configDir, path.join(home, ".config", "tabctl"));
+    if (process.platform === "win32") {
+      const appData = process.env.APPDATA || path.join(home, "AppData", "Roaming");
+      assert.equal(cfg.configDir, path.join(appData, "tabctl"));
+    } else {
+      assert.equal(cfg.configDir, path.join(home, ".config", "tabctl"));
+    }
   });
 });
 
@@ -172,10 +187,15 @@ test("config.json dataDir expands $HOME", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-config-"));
     fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ dataDir: "$HOME" }), "utf-8");
     process.env.TABCTL_CONFIG_DIR = dir;
+    // Ensure HOME is set (not always present on Windows)
+    const savedHome = process.env.HOME;
+    process.env.HOME = os.homedir();
 
     const config = resolveConfig();
     assert.equal(config.dataDir, os.homedir());
 
+    if (savedHome !== undefined) process.env.HOME = savedHome;
+    else delete process.env.HOME;
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
@@ -185,10 +205,15 @@ test("config.json dataDir expands ${HOME}", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-config-"));
     fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ dataDir: "${HOME}/my-data" }), "utf-8");
     process.env.TABCTL_CONFIG_DIR = dir;
+    // Ensure HOME is set (not always present on Windows)
+    const savedHome = process.env.HOME;
+    process.env.HOME = os.homedir();
 
     const config = resolveConfig();
-    assert.equal(config.dataDir, path.join(os.homedir(), "my-data"));
+    assert.equal(path.normalize(config.dataDir), path.join(os.homedir(), "my-data"));
 
+    if (savedHome !== undefined) process.env.HOME = savedHome;
+    else delete process.env.HOME;
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
@@ -229,7 +254,7 @@ test("resolveConfig with profile uses profile dataDir", () => {
 
     const cfg = resolveConfig("myprofile");
     assert.equal(cfg.dataDir, profileDataDir);
-    assert.equal(cfg.socketPath, path.join(profileDataDir, "tabctl.sock"));
+    assert.equal(cfg.socketPath, resolveSocketPath(profileDataDir));
     assert.equal(cfg.undoLog, path.join(profileDataDir, "undo.jsonl"));
 
     fs.rmSync(dir, { recursive: true, force: true });

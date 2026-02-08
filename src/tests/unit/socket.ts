@@ -5,13 +5,17 @@ import crypto from "crypto";
 import fs from "fs";
 
 export function createSocketPath(): string {
+  if (process.platform === "win32") {
+    const id = `${process.pid}-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
+    return `\\\\.\\pipe\\tabctl-${id}`;
+  }
   const name = `tabctl-${process.pid}-${Date.now()}-${crypto.randomBytes(3).toString("hex")}.sock`;
   return path.join(os.tmpdir(), name);
 }
 
 export async function startMockSocket(handler: (request: Record<string, unknown>) => Record<string, unknown> | void) {
   const socketPath = createSocketPath();
-  if (fs.existsSync(socketPath)) {
+  if (process.platform !== "win32" && fs.existsSync(socketPath)) {
     fs.unlinkSync(socketPath);
   }
 
@@ -77,7 +81,7 @@ export async function stopMockSocket(server: net.Server, socketPath: string, soc
     server.close(() => resolve());
   });
 
-  if (fs.existsSync(socketPath)) {
+  if (process.platform !== "win32" && fs.existsSync(socketPath)) {
     fs.unlinkSync(socketPath);
   }
 }

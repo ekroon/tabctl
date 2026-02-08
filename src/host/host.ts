@@ -83,7 +83,8 @@ process.stdin.on("end", () => {
 
 function startSocketServer() {
   ensureDir();
-  if (fs.existsSync(SOCKET_PATH)) {
+  // Named pipes on Windows don't use filesystem paths; skip cleanup
+  if (process.platform !== "win32" && fs.existsSync(SOCKET_PATH)) {
     fs.unlinkSync(SOCKET_PATH);
   }
 
@@ -116,8 +117,23 @@ function startSocketServer() {
     });
   });
 
+  let retries = 0;
+  const maxRetries = process.platform === "win32" ? 5 : 0;
+
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE" && retries < maxRetries) {
+      retries++;
+      log(`Socket in use, retrying (${retries}/${maxRetries})…`);
+      setTimeout(() => server.listen(SOCKET_PATH), 500);
+    } else {
+      throw err;
+    }
+  });
+
   server.listen(SOCKET_PATH, () => {
-    fs.chmodSync(SOCKET_PATH, 0o600);
+    if (process.platform !== "win32") {
+      try { fs.chmodSync(SOCKET_PATH, 0o600); } catch { /* ignore on platforms without chmod */ }
+    }
     log(`Listening on ${SOCKET_PATH}`);
   });
 
@@ -126,7 +142,8 @@ function startSocketServer() {
 
 function cleanupAndExit(code: number) {
   try {
-    if (fs.existsSync(SOCKET_PATH)) {
+    // Named pipes on Windows don't need filesystem cleanup
+    if (process.platform !== "win32" && fs.existsSync(SOCKET_PATH)) {
       fs.unlinkSync(SOCKET_PATH);
     }
   } catch {

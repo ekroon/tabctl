@@ -8,6 +8,7 @@ const root = process.cwd();
 
 const artifacts = [
   ["src/host/host.sh", "dist/host/host.sh"],
+  ["src/host/launcher", "dist/host/launcher"],
   ["src/tests/unit/fixtures", "dist/tests/unit/fixtures"],
 ];
 
@@ -29,5 +30,5 @@ const executables = [
 ];
 
 for (const p of executables) {
-  if (fs.existsSync(p)) fs.chmodSync(p, 0o755);
+  if (fs.existsSync(p) && process.platform !== "win32") fs.chmodSync(p, 0o755);
 }

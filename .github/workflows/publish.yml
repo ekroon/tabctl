@@ -21,6 +21,11 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           cache: 'npm'
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
       - name: Install dependencies
         run: npm ci
 
@@ -34,5 +39,21 @@ jobs:
         env:
           TABCTL_VERSION_MODE: release
 
-      - name: Publish to NPM
-        run: npm publish --provenance
+      - name: Sync platform package version
+        run: node -e "
+          const pkg = require('./package.json');
+          const win = require('./packages/win32-x64/package.json');
+          win.version = pkg.version;
+          require('fs').writeFileSync('./packages/win32-x64/package.json', JSON.stringify(win, null, 2) + '\n');
+        "
+
+      - name: Publish tabctl-win32-x64
+        run: npm publish --provenance --access public
+        working-directory: packages/win32-x64
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish tabctl
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

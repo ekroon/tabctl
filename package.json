@@ -27,19 +27,22 @@
     "dist/extension"
   ],
   "scripts": {
-    "build": "node scripts/gen-version.js && tsc -p tsconfig.json && node scripts/copy-artifacts.js && node scripts/bundle-extension.js",
+    "build": "node scripts/gen-version.js && tsc -p tsconfig.json && node scripts/copy-artifacts.js && node scripts/build-launcher.js && node scripts/bundle-extension.js",
     "bump:major": "node scripts/bump-version.js major",
     "bump:minor": "node scripts/bump-version.js minor",
     "bump:patch": "node scripts/bump-version.js patch",
     "test": "npm run build && node --test --test-timeout=5000 dist/tests/unit/*.js",
     "test:unit": "npm run build && node --test --test-timeout=5000 dist/tests/unit/*.js",
     "test:integration": "node dist/scripts/integration-test.js",
-    "clean": "rm -rf dist"
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" "
   },
   "devDependencies": {
     "@types/chrome": "^0.0.277",
     "@types/node": "^24",
     "esbuild": "^0.27.3",
     "typescript": "^5.4.5"
+  },
+  "optionalDependencies": {
+    "tabctl-win32-x64": "0.3.0"
   }
 }
