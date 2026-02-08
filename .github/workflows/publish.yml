@@ -40,12 +40,13 @@ jobs:
           TABCTL_VERSION_MODE: release
 
       - name: Sync platform package version
-        run: node -e "
-          const pkg = require('./package.json');
-          const win = require('./packages/win32-x64/package.json');
-          win.version = pkg.version;
-          require('fs').writeFileSync('./packages/win32-x64/package.json', JSON.stringify(win, null, 2) + '\n');
-        "
+        run: |
+          node -e "
+            const pkg = require('./package.json');
+            const win = require('./packages/win32-x64/package.json');
+            win.version = pkg.version;
+            require('fs').writeFileSync('./packages/win32-x64/package.json', JSON.stringify(win, null, 2) + '\n');
+          "
 
       - name: Publish tabctl-win32-x64
         run: npm publish --provenance --access public
