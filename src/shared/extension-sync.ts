@@ -52,7 +52,7 @@ export function readExtensionVersion(extensionDir: string): string | null {
   }
 }
 
-/** Read the BASE_VERSION constant from a bundled host.js file. */
+/** Read the BASE_VERSION constant from a bundled host.bundle.js file. */
 export function readHostVersion(hostPath: string): string | null {
   try {
     const content = fs.readFileSync(hostPath, "utf-8");

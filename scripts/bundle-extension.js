@@ -7,7 +7,7 @@
  * background.js.
  *
  * Host: The native messaging host is bundled into a single file so it can be
- * synced to a stable path (~/.local/state/tabctl/host.js) that survives npm
+ * synced to a stable path (~/.local/state/tabctl/host.bundle.js) that survives npm
  * upgrades without re-running `tabctl setup`.
  */
 

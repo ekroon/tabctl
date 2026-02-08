@@ -69,10 +69,10 @@ export function sendFireAndForget(payload: Record<string, unknown>): void {
   try {
     const { socketPath } = resolveConfig();
     const client = net.createConnection(socketPath);
-    // Unref so this doesn't prevent process exit
-    client.unref();
     client.on("connect", () => {
       client.write(`${JSON.stringify(payload)}\n`);
+      // Unref after write so Node can exit without waiting for response
+      client.unref();
       const timer = setTimeout(() => { client.end(); client.destroy(); }, 200);
       timer.unref();
     });

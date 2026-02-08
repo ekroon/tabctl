@@ -136,8 +136,13 @@ export function resolveNodePath(options: Options): string {
 
 function resolveHostPath(dataDir: string): string {
   // Sync host bundle to stable path so wrapper survives npm upgrades
-  const result = syncHost(dataDir);
-  return result.hostPath;
+  try {
+    const result = syncHost(dataDir);
+    return result.hostPath;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    errorOut(`Failed to resolve native host. Make sure the CLI is built (run: npm run build). Details: ${detail}`);
+  }
 }
 
 export function resolveManifestDir(browser: "edge" | "chrome"): string {
