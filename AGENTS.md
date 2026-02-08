@@ -168,7 +168,7 @@ Only use a dedicated test window and clearly labeled groups.
 Recommended safe pattern:
 1. Use `npm run test:integration` for automated close/undo testing in an isolated browser.
 2. For manual testing, use a dedicated test profile or a brand-new Edge window with only test tabs.
-3. Run `tabctl analyze` (add `--github` only when you accept slower analysis).
+3. Run `tabctl analyze`.
 4. Use `tabctl close --tab <tabId> --confirm` for a single test tab.
 5. Run `tabctl undo <txid>` to restore.
 

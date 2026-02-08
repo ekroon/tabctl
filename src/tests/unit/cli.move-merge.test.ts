@@ -74,7 +74,7 @@ test("dedupe runs analyze then close on confirm", async () => {
           generatedAt: Date.now(),
           staleDays: 30,
           totals: { tabs: 2, analyzed: 2, candidates: 1 },
-          meta: { durationMs: 0, githubChecked: 0, githubTotal: 0, githubMatched: 0, githubTimeoutMs: 4000 },
+          meta: { durationMs: 0 },
           candidates: [
             {
               tabId: 12,
@@ -115,7 +115,7 @@ test("dedupe outputs nextCommand when not confirmed", async () => {
           generatedAt: Date.now(),
           staleDays: 30,
           totals: { tabs: 2, analyzed: 2, candidates: 1 },
-          meta: { durationMs: 0, githubChecked: 0, githubTotal: 0, githubMatched: 0, githubTimeoutMs: 4000 },
+          meta: { durationMs: 0 },
           candidates: [
             {
               tabId: 12,
