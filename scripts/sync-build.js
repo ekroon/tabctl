@@ -24,6 +24,24 @@ for (const target of targets) {
   copyDir(src, dest);
 }
 
+// Copy non-TS artifacts from src/ to output dirs
+const artifacts = [
+  ["src/host/host.sh", "host/host.sh"],
+  ["src/tests/unit/fixtures", "tests/unit/fixtures"],
+];
+
+for (const [src, dest] of artifacts) {
+  const srcPath = path.join(root, src);
+  const destPath = path.join(root, dest);
+  if (!fs.existsSync(srcPath)) continue;
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
+  if (fs.statSync(srcPath).isDirectory()) {
+    fs.cpSync(srcPath, destPath, { recursive: true });
+  } else {
+    fs.copyFileSync(srcPath, destPath);
+  }
+}
+
 const executableTargets = [
   path.join(root, "host", "host.sh"),
   path.join(root, "cli", "tabctl.js"),
