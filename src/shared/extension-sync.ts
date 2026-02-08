@@ -4,6 +4,7 @@ import crypto from "crypto";
 import { resolveConfig } from "./config";
 
 export const EXTENSION_DIR_NAME = "extension";
+export const HOST_BUNDLE_NAME = "host.bundle.js";
 
 /**
  * Derive the Chrome/Edge extension ID for an unpacked extension path.
@@ -23,9 +24,22 @@ export function resolveBundledExtensionDir(): string {
   return dir;
 }
 
+export function resolveBundledHostPath(): string {
+  const p = path.resolve(__dirname, "../host", HOST_BUNDLE_NAME);
+  if (!fs.existsSync(p)) {
+    throw new Error(`Bundled host not found at ${p}`);
+  }
+  return p;
+}
+
 export function resolveInstalledExtensionDir(dataDir?: string): string {
-  const dir = dataDir ?? resolveConfig().dataDir;
+  const dir = dataDir ?? resolveConfig().baseDataDir;
   return path.join(dir, EXTENSION_DIR_NAME);
+}
+
+export function resolveInstalledHostPath(dataDir?: string): string {
+  const dir = dataDir ?? resolveConfig().baseDataDir;
+  return path.join(dir, HOST_BUNDLE_NAME);
 }
 
 export function readExtensionVersion(extensionDir: string): string | null {
@@ -33,6 +47,17 @@ export function readExtensionVersion(extensionDir: string): string | null {
     const raw = fs.readFileSync(path.join(extensionDir, "manifest.json"), "utf-8");
     const manifest = JSON.parse(raw);
     return typeof manifest.version === "string" ? manifest.version : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Read the BASE_VERSION constant from a bundled host.bundle.js file. */
+export function readHostVersion(hostPath: string): string | null {
+  try {
+    const content = fs.readFileSync(hostPath, "utf-8");
+    const match = content.match(/\bBASE_VERSION\s*=\s*"([^"]+)"/);
+    return match ? match[1] : null;
   } catch {
     return null;
   }
@@ -61,6 +86,32 @@ export function syncExtension(dataDir?: string): {
     bundledVersion,
     installedVersion,
     extensionDir: installedDir,
+  };
+}
+
+export function syncHost(dataDir?: string): {
+  synced: boolean;
+  bundledVersion: string | null;
+  installedVersion: string | null;
+  hostPath: string;
+} {
+  const bundledPath = resolveBundledHostPath();
+  const installedPath = resolveInstalledHostPath(dataDir);
+  const bundledVersion = readHostVersion(bundledPath);
+  const installedVersion = readHostVersion(installedPath);
+
+  const needsCopy = !fs.existsSync(installedPath) || bundledVersion !== installedVersion;
+
+  if (needsCopy) {
+    fs.mkdirSync(path.dirname(installedPath), { recursive: true });
+    fs.copyFileSync(bundledPath, installedPath);
+  }
+
+  return {
+    synced: needsCopy,
+    bundledVersion,
+    installedVersion,
+    hostPath: installedPath,
   };
 }
 

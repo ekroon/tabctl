@@ -63,3 +63,23 @@ export async function fetchSnapshot(): Promise<Record<string, unknown> | null> {
   }
   return response.data as Record<string, unknown> | null;
 }
+
+/** Send a request without waiting for a response (fire-and-forget). */
+export function sendFireAndForget(payload: Record<string, unknown>): void {
+  try {
+    const { socketPath } = resolveConfig();
+    const client = net.createConnection(socketPath);
+    client.on("connect", () => {
+      client.write(`${JSON.stringify(payload)}\n`);
+      // Unref after write so Node can exit without waiting for response
+      client.unref();
+      const timer = setTimeout(() => { client.end(); client.destroy(); }, 200);
+      timer.unref();
+    });
+    client.on("error", () => {
+      // Silently ignore — this is best-effort
+    });
+  } catch {
+    // Silently ignore
+  }
+}

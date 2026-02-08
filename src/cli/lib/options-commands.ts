@@ -255,4 +255,7 @@ export const COMMANDS: Record<string, CommandMeta> = {
   ping: {
     description: "Test connection to browser extension",
   },
+  reload: {
+    description: "Reload the browser extension (internal, used for upgrades)",
+  },
 } as const;

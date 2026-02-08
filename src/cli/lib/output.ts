@@ -1,5 +1,9 @@
-import { VERSION } from "../../shared/version";
+import { VERSION, BASE_VERSION } from "../../shared/version";
 import { getActiveProfile } from "../../shared/profiles";
+import { syncExtension, syncHost } from "../../shared/extension-sync";
+import { resolveConfig } from "../../shared/config";
+import { sendFireAndForget } from "./client";
+import { createRequestId } from "./client";
 
 export function printJson(payload: Record<string, unknown>, pretty = true): void {
   try {
@@ -16,6 +20,20 @@ export function printJson(payload: Record<string, unknown>, pretty = true): void
 }
 
 export function errorOut(message: string): never {
+  // On ENOENT (socket missing), try syncing host + extension before showing error
+  if (message.includes("ENOENT")) {
+    try {
+      const config = resolveConfig();
+      const hostResult = syncHost(config.baseDataDir);
+      const extResult = syncExtension(config.baseDataDir);
+      if (hostResult.synced || extResult.synced) {
+        process.stderr.write(`[tabctl] synced host and extension to ${config.baseDataDir}\n`);
+      }
+    } catch {
+      // Sync is best-effort
+    }
+  }
+
   const hints: Record<string, string> = {
     "Unknown option: --format": "Use --json for JSON output. --format is only for report.",
     "ENOENT": "Native host not running. Ensure the browser extension is loaded and active. If you recently upgraded, run: tabctl setup",
@@ -41,8 +59,24 @@ export function setupStdoutErrorHandling(): void {
 
 export function emitVersionWarnings(response: Record<string, unknown>, fallbackAction: string): void {
   const hostVersion = typeof response.version === "string" ? response.version : null;
+
+  // CLI ↔ host version mismatch: auto-upgrade (sync files + trigger reload)
   if (hostVersion && hostVersion !== VERSION) {
-    process.stderr.write(`[tabctl] version mismatch: cli ${VERSION}, host ${hostVersion}. Run: tabctl setup\n`);
+    try {
+      const config = resolveConfig();
+      const hostResult = syncHost(config.baseDataDir);
+      const extResult = syncExtension(config.baseDataDir);
+      const anySynced = hostResult.synced || extResult.synced;
+      // Send reload if we synced new files OR if the running host is stale
+      if (anySynced) {
+        process.stderr.write(`[tabctl] upgraded: ${hostVersion} → ${BASE_VERSION}. Reloading extension...\n`);
+      } else {
+        process.stderr.write(`[tabctl] host is stale (${hostVersion}), reloading extension...\n`);
+      }
+      sendFireAndForget({ id: createRequestId(), action: "reload", params: {} });
+    } catch {
+      process.stderr.write(`[tabctl] version mismatch: cli ${VERSION}, host ${hostVersion}. Run: tabctl setup\n`);
+    }
   }
 
   const data = response.data as Record<string, unknown> | undefined;

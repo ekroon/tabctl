@@ -36,7 +36,7 @@ export async function startMockSocket(handler: (request: Record<string, unknown>
         try {
           request = JSON.parse(line);
         } catch {
-          socket.write(JSON.stringify({ ok: false, error: { message: "Invalid JSON" } }) + "\n");
+          try { socket.write(JSON.stringify({ ok: false, error: { message: "Invalid JSON" } }) + "\n"); } catch {}
           continue;
         }
 
@@ -47,8 +47,12 @@ export async function startMockSocket(handler: (request: Record<string, unknown>
           requestId: request.id,
           data: {},
         };
-        socket.write(JSON.stringify(response) + "\n");
+        try { socket.write(JSON.stringify(response) + "\n"); } catch {}
       }
+    });
+
+    socket.on("error", () => {
+      // Ignore — client may disconnect before response is sent (e.g. fire-and-forget)
     });
 
     socket.on("close", () => {

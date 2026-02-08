@@ -14,7 +14,7 @@ import { printJson, errorOut } from "../output";
 import type { Options } from "../types";
 import { addProfile, validateProfileName } from "../../../shared/profiles";
 import { resetConfig } from "../../../shared/config";
-import { syncExtension, deriveExtensionId, resolveInstalledExtensionDir } from "../../../shared/extension-sync";
+import { syncExtension, syncHost, deriveExtensionId, resolveInstalledExtensionDir } from "../../../shared/extension-sync";
 
 export function resolveBrowser(value: unknown): "edge" | "chrome" | null {
   if (typeof value !== "string") {
@@ -134,13 +134,15 @@ export function resolveNodePath(options: Options): string {
   return value;
 }
 
-function resolveHostPath(): string {
-  const root = path.resolve(__dirname, "../../..");
-  const hostPath = path.join(root, "host", "host.js");
-  if (!fs.existsSync(hostPath)) {
-    errorOut(`Host script not found at ${hostPath}. Run: npm run build`);
+function resolveHostPath(dataDir: string): string {
+  // Sync host bundle to stable path so wrapper survives npm upgrades
+  try {
+    const result = syncHost(dataDir);
+    return result.hostPath;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    errorOut(`Failed to resolve native host. Make sure the CLI is built (run: npm run build). Details: ${detail}`);
   }
-  return hostPath;
 }
 
 export function resolveManifestDir(browser: "edge" | "chrome"): string {
@@ -185,10 +187,10 @@ export async function runSetup(options: Options, prettyOutput: boolean): Promise
   }
 
   const nodePath = resolveNodePath(options);
-  const hostPath = resolveHostPath();
 
-  // Sync extension to stable path (before extensionId so interactive mode can show it)
+  // Sync extension + host to stable paths (before extensionId so interactive mode can show it)
   const config = resolveConfig();
+  const hostPath = resolveHostPath(config.baseDataDir);
   let extensionSync;
   try {
     extensionSync = syncExtension(config.baseDataDir);
