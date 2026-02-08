@@ -18,7 +18,7 @@ export function printJson(payload: Record<string, unknown>, pretty = true): void
 export function errorOut(message: string): never {
   const hints: Record<string, string> = {
     "Unknown option: --format": "Use --json for JSON output. --format is only for report.",
-    "ENOENT": "Native host not running. Ensure the browser extension is loaded and active.",
+    "ENOENT": "Native host not running. Ensure the browser extension is loaded and active. If you recently upgraded, run: tabctl setup",
   };
   const hint = Object.entries(hints).find(([key]) => message.includes(key))?.[1];
   if (hint) {
@@ -42,14 +42,14 @@ export function setupStdoutErrorHandling(): void {
 export function emitVersionWarnings(response: Record<string, unknown>, fallbackAction: string): void {
   const hostVersion = typeof response.version === "string" ? response.version : null;
   if (hostVersion && hostVersion !== VERSION) {
-    process.stderr.write(`[tabctl] version mismatch: cli ${VERSION}, host ${hostVersion}\n`);
+    process.stderr.write(`[tabctl] version mismatch: cli ${VERSION}, host ${hostVersion}. Run: tabctl setup\n`);
   }
 
   const data = response.data as Record<string, unknown> | undefined;
   const extensionVersion = data && typeof data.extensionVersion === "string" ? (data.extensionVersion as string) : null;
   const extensionComponent = data && typeof data.extensionComponent === "string" ? (data.extensionComponent as string) : null;
   if (extensionVersion && hostVersion && extensionVersion !== hostVersion) {
-    process.stderr.write(`[tabctl] version mismatch: host ${hostVersion}, extension ${extensionVersion}\n`);
+    process.stderr.write(`[tabctl] version mismatch: host ${hostVersion}, extension ${extensionVersion}. Reload the extension in your browser\n`);
   }
   if (extensionComponent && extensionComponent !== "extension") {
     process.stderr.write(`[tabctl] unexpected extension component: ${extensionComponent}\n`);
@@ -58,6 +58,6 @@ export function emitVersionWarnings(response: Record<string, unknown>, fallbackA
   const action = (response.action as string | undefined) || fallbackAction;
   const extensionExpected = !["history", "version"].includes(action);
   if (extensionExpected && !extensionVersion) {
-    process.stderr.write("[tabctl] extension version unavailable; reload the extension to validate version match\n");
+    process.stderr.write("[tabctl] extension version unavailable. Reload the extension in your browser\n");
   }
 }

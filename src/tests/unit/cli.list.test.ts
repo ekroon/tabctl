@@ -392,5 +392,5 @@ test("ENOENT error includes native host hint", async () => {
   const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.ok(output.error.message.includes("ENOENT"), "error message should contain ENOENT");
-  assert.equal(output.error.hint, "Native host not running. Ensure the browser extension is loaded and active.");
+  assert.equal(output.error.hint, "Native host not running. Ensure the browser extension is loaded and active. If you recently upgraded, run: tabctl setup");
 });
