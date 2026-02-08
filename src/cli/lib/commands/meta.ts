@@ -15,6 +15,7 @@ import { sendRequest, createRequestId } from "../client";
 import { defaultPolicyPath, defaultPolicyTemplate, summarizePolicy, type Policy } from "../policy";
 import type { Options, PolicyContext } from "../types";
 import { addProfile, validateProfileName, loadProfiles } from "../../../shared/profiles";
+import { resetConfig } from "../../../shared/config";
 import { syncExtension } from "../../../shared/extension-sync";
 
 // ============================================================================
@@ -271,6 +272,10 @@ export async function runSetup(options: Options, prettyOutput: boolean): Promise
   }
   const registry = addProfile(profileName, profileEntry);
 
+  // Ensure printJson footer reflects the newly-created profile
+  resetConfig();
+  process.env.TABCTL_PROFILE = profileName;
+
   printJson({
     ok: true,
     action: "setup",
@@ -289,6 +294,21 @@ export async function runSetup(options: Options, prettyOutput: boolean): Promise
       extensionSynced: extensionSync?.synced || false,
     },
   }, prettyOutput);
+
+  if (registry.default !== profileName) {
+    process.stderr.write([
+      "",
+      `Profile "${profileName}" created (current default: "${registry.default}").`,
+      `  To use:          tabctl --profile ${profileName} <command>`,
+      `  To make default: tabctl profile-switch ${profileName}`,
+      "",
+    ].join("\n"));
+  }
+  process.stderr.write([
+    `Verify connection: tabctl --profile ${profileName} ping`,
+    `If ping fails, ensure the ${browser === "edge" ? "Edge" : "Chrome"} extension is active.`,
+    "",
+  ].join("\n"));
 }
 
 // ============================================================================

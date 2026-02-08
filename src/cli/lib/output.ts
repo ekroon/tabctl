@@ -18,8 +18,9 @@ export function printJson(payload: Record<string, unknown>, pretty = true): void
 export function errorOut(message: string): never {
   const hints: Record<string, string> = {
     "Unknown option: --format": "Use --json for JSON output. --format is only for report.",
+    "ENOENT": "Native host not running. Ensure the browser extension is loaded and active.",
   };
-  const hint = hints[message];
+  const hint = Object.entries(hints).find(([key]) => message.includes(key))?.[1];
   if (hint) {
     printJson({ ok: false, error: { message, hint } });
   } else {

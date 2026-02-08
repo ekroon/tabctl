@@ -2856,3 +2856,109 @@ test("setup second profile does not nest under first profile dataDir", async () 
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
+
+test("ENOENT error includes native host hint", async () => {
+  // errorOut with ENOENT should include the native-host hint
+  // We trigger this by attempting to connect with no socket (ENOENT)
+  const result = await runCli(["ping"], "/tmp/tabctl-nonexistent-socket-path.sock");
+  assert.equal(result.status, 1);
+  const output = JSON.parse(result.stdout.trim());
+  assert.equal(output.ok, false);
+  assert.ok(output.error.message.includes("ENOENT"), "error message should contain ENOENT");
+  assert.equal(output.error.hint, "Native host not running. Ensure the browser extension is loaded and active.");
+});
+
+test("setup JSON output reflects newly-created profile in footer", async () => {
+  if (process.platform !== "darwin") {
+    return;
+  }
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-profile-ctx-"));
+  try {
+    const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const result = await runCli([
+      "setup", "--browser", "edge",
+      "--extension-id", extensionId,
+      "--node", process.execPath,
+    ], undefined, {
+      HOME: homeDir,
+      XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
+      XDG_CONFIG_HOME: path.join(homeDir, ".config"),
+    });
+
+    assert.equal(result.status, 0);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.ok, true);
+    // The profile/browser footer fields should reflect the newly-created profile
+    assert.equal(output.profile, "edge");
+    assert.equal(output.browser, "edge");
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("setup prints verify-connection hint on stderr", async () => {
+  if (process.platform !== "darwin") {
+    return;
+  }
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-hints-"));
+  try {
+    const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const result = await runCli([
+      "setup", "--browser", "edge",
+      "--extension-id", extensionId,
+      "--node", process.execPath,
+    ], undefined, {
+      HOME: homeDir,
+      XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
+      XDG_CONFIG_HOME: path.join(homeDir, ".config"),
+    });
+
+    assert.equal(result.status, 0);
+    // Should print verify-connection hint
+    assert.ok(result.stderr.includes("Verify connection: tabctl --profile edge ping"), "expected verify hint on stderr");
+    assert.ok(result.stderr.includes("extension is active"), "expected extension hint on stderr");
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("setup non-default profile prints usage hints on stderr", async () => {
+  if (process.platform !== "darwin") {
+    return;
+  }
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-nondefault-"));
+  try {
+    const envOverrides = {
+      HOME: homeDir,
+      XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
+      XDG_CONFIG_HOME: path.join(homeDir, ".config"),
+    };
+
+    // First setup creates "edge" as default
+    await runCli([
+      "setup", "--browser", "edge",
+      "--extension-id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "--node", process.execPath,
+    ], undefined, envOverrides);
+
+    // Second setup creates "chrome" (non-default)
+    const result = await runCli([
+      "setup", "--browser", "chrome",
+      "--extension-id", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "--node", process.execPath,
+    ], undefined, envOverrides);
+
+    assert.equal(result.status, 0);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.data.isDefault, false);
+
+    // Should show non-default profile hints
+    assert.ok(result.stderr.includes('Profile "chrome" created (current default: "edge")'), "expected non-default profile message");
+    assert.ok(result.stderr.includes("tabctl --profile chrome"), "expected usage hint");
+    assert.ok(result.stderr.includes("tabctl profile-switch chrome"), "expected switch hint");
+    // Should also show verify-connection hint
+    assert.ok(result.stderr.includes("Verify connection: tabctl --profile chrome ping"), "expected verify hint");
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
