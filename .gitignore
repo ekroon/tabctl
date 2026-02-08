@@ -10,6 +10,7 @@ build/
 /host/*.js
 /host/lib/*.js
 /extension/*.js
+/extension/lib/*.js
 /extension/manifest.json
 /tests/unit/*.js
 /src/shared/version.ts
