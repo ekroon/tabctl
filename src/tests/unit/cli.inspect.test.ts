@@ -1,15 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { startMockSocket, stopMockSocket } from "./socket";
-import { runCli } from "./cli-helpers";
+import { runCli, parseOutput, mockResponse } from "./cli-helpers";
 
 test("inspect passes signal options", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { entries: [{ tabId: 42 }, { tabId: 43 }] },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { entries: [{ tabId: 42 }, { tabId: 43 }] })));
 
   const result = await runCli([
     "inspect",
@@ -42,19 +37,14 @@ test("inspect passes signal options", async () => {
   assert.equal(params?.signalConcurrency, 2);
   assert.equal(params?.signalTimeoutMs, 1500);
   assert.equal(params?.progress, true);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.ok(output.data.page);
   assert.equal(output.data.page.limit, 100);
   assert.equal(output.data.page.total, 2);
 });
 
 test("inspect auto-adds selector signal", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { entries: [] },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { entries: [] })));
 
   const result = await runCli([
     "inspect",
@@ -73,18 +63,13 @@ test("inspect auto-adds selector signal", async () => {
 test("inspect rejects unknown signal", async () => {
   const result = await runCli(["inspect", "--signal", "links"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.match(output.error.message, /Unknown signal/);
 });
 
 test("inspect passes selector attr", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { entries: [] },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { entries: [] })));
 
   const result = await runCli([
     "inspect",
@@ -101,12 +86,7 @@ test("inspect passes selector attr", async () => {
 });
 
 test("inspect selector-attr applies to non-json selectors", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { entries: [] },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { entries: [] })));
 
   const result = await runCli([
     "inspect",
@@ -125,12 +105,7 @@ test("inspect selector-attr applies to non-json selectors", async () => {
 });
 
 test("inspect selector-attr preserves explicit attr in JSON", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { entries: [] },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { entries: [] })));
 
   const result = await runCli([
     "inspect",
@@ -149,12 +124,7 @@ test("inspect selector-attr preserves explicit attr in JSON", async () => {
 });
 
 test("inspect passes wait-for options", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { entries: [] },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { entries: [] })));
 
   const result = await runCli([
     "inspect",
@@ -174,12 +144,7 @@ test("inspect passes wait-for options", async () => {
 });
 
 test("inspect passes wait-for settle option", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { entries: [] },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { entries: [] })));
 
   const result = await runCli([
     "inspect",
@@ -201,7 +166,7 @@ test("inspect passes wait-for settle option", async () => {
 test("inspect rejects invalid selector-attr", async () => {
   const result = await runCli(["inspect", "--selector", "a[href]", "--selector-attr", "blob"]); 
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.match(output.error.message, /Invalid --selector-attr/);
 });
@@ -209,18 +174,13 @@ test("inspect rejects invalid selector-attr", async () => {
 test("inspect rejects :contains selector", async () => {
   const result = await runCli(["inspect", "--selector", "a:contains(Hello)"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.match(output.error.message, /:contains\(\) is not supported/);
 });
 
 test("inspect supports --ungrouped", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { entries: [] },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { entries: [] })));
 
   const result = await runCli(["inspect", "--ungrouped"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
@@ -234,7 +194,7 @@ test("inspect supports --ungrouped", async () => {
 test("inspect rejects --ungrouped with --group-id", async () => {
   const result = await runCli(["inspect", "--ungrouped", "--group-id", "3"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.equal(output.error.message, "--ungrouped cannot be combined with --group-id");
 });

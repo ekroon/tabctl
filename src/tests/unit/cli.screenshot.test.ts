@@ -4,12 +4,12 @@ import os from "os";
 import path from "path";
 import test from "node:test";
 import { startMockSocket, stopMockSocket } from "./socket";
-import { runCli } from "./cli-helpers";
+import { runCli, parseOutput, mockResponse } from "./cli-helpers";
 
 test("screenshot rejects --ungrouped with --group-id", async () => {
   const result = await runCli(["screenshot", "--ungrouped", "--group-id", "3"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.equal(output.error.message, "--ungrouped cannot be combined with --group-id");
 });
@@ -24,12 +24,7 @@ test("screenshot passes capture options", async () => {
       dataUrl: "data:image/png;base64,SGVsbG8=",
     }],
   }];
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { entries: mockEntries },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { entries: mockEntries })));
 
   const result = await runCli([
     "screenshot",
@@ -79,7 +74,7 @@ test("screenshot passes capture options", async () => {
   assert.equal(params?.waitTimeoutMs, 7000);
   assert.equal(params?.outDir, outDir);
   assert.equal(params?.progress, true);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, true);
   assert.equal(output.data.files, 1);
   const tiles = output.data.entries?.[0]?.tiles as Array<Record<string, unknown>> | undefined;
@@ -97,12 +92,7 @@ test("screenshot defaults to .tabctl/screenshots directory", async () => {
       dataUrl: "data:image/png;base64,SGVsbG8=",
     }],
   }];
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { entries: mockEntries },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { entries: mockEntries })));
 
   const originalCwd = process.cwd();
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-cwd-"));
@@ -115,7 +105,7 @@ test("screenshot defaults to .tabctl/screenshots directory", async () => {
     ], socketPath);
 
     assert.equal(result.status, 0);
-    const output = JSON.parse(result.stdout.trim());
+    const output = parseOutput(result);
     assert.equal(output.ok, true);
     const writtenTo = String(output.data?.writtenTo || "");
     assert.ok(writtenTo.includes(path.join(tempDir, ".tabctl", "screenshots")));
@@ -132,7 +122,7 @@ test("screenshot defaults to .tabctl/screenshots directory", async () => {
 test("screenshot rejects invalid mode", async () => {
   const result = await runCli(["screenshot", "--mode", "giant"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.match(output.error.message, /Invalid --mode/);
 });
@@ -140,7 +130,7 @@ test("screenshot rejects invalid mode", async () => {
 test("screenshot rejects quality without jpeg", async () => {
   const result = await runCli(["screenshot", "--format", "png", "--quality", "50"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.match(output.error.message, /--quality requires --format jpeg/);
 });
@@ -148,7 +138,7 @@ test("screenshot rejects quality without jpeg", async () => {
 test("screenshot rejects tile-max-dim in viewport", async () => {
   const result = await runCli(["screenshot", "--mode", "viewport", "--tile-max-dim", "1000"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.match(output.error.message, /--tile-max-dim requires --mode full/);
 });
@@ -156,7 +146,7 @@ test("screenshot rejects tile-max-dim in viewport", async () => {
 test("screenshot rejects max-bytes in viewport", async () => {
   const result = await runCli(["screenshot", "--mode", "viewport", "--max-bytes", "1000"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.match(output.error.message, /--max-bytes requires --mode full/);
 });

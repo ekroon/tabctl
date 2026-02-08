@@ -109,6 +109,15 @@ export async function runCliWithStdin(
   });
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function parseOutput(result: { stdout: string }): any {
+  return JSON.parse(result.stdout.trim());
+}
+
+export function mockResponse(req: Record<string, unknown>, data: Record<string, unknown> = {}): Record<string, unknown> {
+  return { ok: true, action: req.action, requestId: req.id, data };
+}
+
 export function assertVersion(version: string | undefined) {
   assert.ok(version);
   if (version && version.includes("-dev.")) {

@@ -3,14 +3,14 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import test from "node:test";
-import { runCli, assertVersion, pkgVersion } from "./cli-helpers";
+import { runCli, assertVersion, pkgVersion, parseOutput } from "./cli-helpers";
 
 test("policy init creates default file", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-policy-init-"));
   const result = await runCli(["policy", "--init"], undefined, { XDG_CONFIG_HOME: dir });
 
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, true);
   const policyPath = path.join(dir, "tabctl", "policy.json");
   assert.ok(fs.existsSync(policyPath));
@@ -35,7 +35,7 @@ test("help supports --help flag", async () => {
 test("help supports json output", async () => {
   const result = await runCli(["help", "--json"]);
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, true);
   assert.ok(output.data?.commands);
   assertVersion(output.data?.version as string | undefined);
@@ -72,7 +72,7 @@ test("help supports json output", async () => {
 test("command-specific help filters output", async () => {
   const result = await runCli(["help", "open", "--json"]);
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, true);
   assert.equal(output.data?.commands?.length, 1);
   assert.equal(output.data?.commands?.[0]?.name, "open");
@@ -81,7 +81,7 @@ test("command-specific help filters output", async () => {
 test("version outputs cli version", async () => {
   const result = await runCli(["version"]);
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, true);
   assertVersion(output.data?.version as string | undefined);
   assert.equal(output.data?.component, "cli");
@@ -111,7 +111,7 @@ test("skill install creates project skill link", async () => {
       NPX_CAPTURE_PATH: npxCapture,
     }, cliTarget, fakeNpx);
     assert.equal(result.status, 0);
-    const output = JSON.parse(result.stdout.trim());
+    const output = parseOutput(result);
     assert.equal(output.ok, true);
     const targetDir = output.data?.targetDir as string;
     assert.ok(targetDir);
@@ -153,7 +153,7 @@ test("skill install supports global scope", async () => {
       NPX_CAPTURE_PATH: npxCapture,
     }, cliTarget, fakeNpx);
     assert.equal(result.status, 0);
-    const output = JSON.parse(result.stdout.trim());
+    const output = parseOutput(result);
     const targetDir = output.data?.targetDir as string;
     assert.ok(targetDir);
     assert.equal(output.data?.scope, "global");
@@ -176,7 +176,7 @@ test("skill install supports global scope", async () => {
 test("version includes dev sha when built", async () => {
   const result = await runCli(["version"]);
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, true);
   const version = output.data?.version as string | undefined;
   assert.ok(version);

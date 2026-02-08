@@ -4,15 +4,10 @@ import os from "os";
 import path from "path";
 import test from "node:test";
 import { startMockSocket, stopMockSocket } from "./socket";
-import { runCli } from "./cli-helpers";
+import { runCli, parseOutput, mockResponse } from "./cli-helpers";
 
 test("report supports --ungrouped", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { entries: [] },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { entries: [] })));
 
   const result = await runCli(["report", "--ungrouped"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
@@ -26,7 +21,7 @@ test("report supports --ungrouped", async () => {
 test("report rejects --ungrouped with --group-id", async () => {
   const result = await runCli(["report", "--ungrouped", "--group-id", "3"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.equal(output.error.message, "--ungrouped cannot be combined with --group-id");
 });
@@ -34,18 +29,13 @@ test("report rejects --ungrouped with --group-id", async () => {
 test("close without confirm fails", async () => {
   const result = await runCli(["close", "--tab", "123"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.equal(output.error.message, "Direct close requires --confirm");
 });
 
 test("close supports --ungrouped", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { summary: { closedTabs: 0, skippedTabs: 0 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { closedTabs: 0, skippedTabs: 0 } })));
 
   const result = await runCli(["close", "--ungrouped", "--confirm"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
@@ -59,35 +49,25 @@ test("close supports --ungrouped", async () => {
 test("close rejects --ungrouped with --group-id", async () => {
   const result = await runCli(["close", "--ungrouped", "--group-id", "3", "--confirm"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.equal(output.error.message, "--ungrouped cannot be combined with --group-id");
 });
 
 test("close --dry-run maps to analyze", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { candidates: [], totals: { tabs: 0, candidates: 0 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { candidates: [], totals: { tabs: 0, candidates: 0 } })));
 
   const result = await runCli(["close", "--dry-run"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
 
   assert.equal(result.status, 0);
   assert.equal(requests[0].action, "analyze");
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, true);
 });
 
 test("analyze passes tab ids and github options", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { candidates: [], totals: { tabs: 0, candidates: 0 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { candidates: [], totals: { tabs: 0, candidates: 0 } })));
 
   const result = await runCli([
     "analyze",
@@ -113,12 +93,7 @@ test("analyze passes tab ids and github options", async () => {
 });
 
 test("analyze defaults to all scope", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { candidates: [], totals: { tabs: 0, candidates: 0 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { candidates: [], totals: { tabs: 0, candidates: 0 } })));
 
   const result = await runCli(["analyze"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
@@ -130,12 +105,7 @@ test("analyze defaults to all scope", async () => {
 });
 
 test("analyze passes scope selectors", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { candidates: [], totals: { tabs: 0, candidates: 0 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { candidates: [], totals: { tabs: 0, candidates: 0 } })));
 
   const result = await runCli([
     "analyze",
@@ -159,12 +129,7 @@ test("analyze passes scope selectors", async () => {
 });
 
 test("analyze supports --ungrouped", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { candidates: [], totals: { tabs: 0, candidates: 0 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { candidates: [], totals: { tabs: 0, candidates: 0 } })));
 
   const result = await runCli(["analyze", "--ungrouped"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
@@ -178,7 +143,7 @@ test("analyze supports --ungrouped", async () => {
 test("analyze rejects --ungrouped with --group-id", async () => {
   const result = await runCli(["analyze", "--ungrouped", "--group-id", "3"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.equal(output.error.message, "--ungrouped cannot be combined with --group-id");
 });
@@ -219,26 +184,22 @@ test("analyze --window-title includes window title", async () => {
 
   const { socketPath, server, sockets } = await startMockSocket((req) => {
     if (req.action === "list") {
-      return { ok: true, action: req.action, requestId: req.id, data: snapshot };
+      return mockResponse(req, snapshot);
     }
-    return { ok: true, action: req.action, requestId: req.id, data: analyzeData };
+    return mockResponse(req, analyzeData);
   });
 
   const result = await runCli(["analyze", "--window-title"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
 
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, true);
   assert.equal(output.data.candidates[0].windowTitle, "Window A");
 });
 
 test("report format md returns markdown content", async () => {
-  const { socketPath, server, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: {
+  const { socketPath, server, sockets } = await startMockSocket((req) => (mockResponse(req, {
       generatedAt: 1700000000000,
       entries: [
         {
@@ -258,14 +219,13 @@ test("report format md returns markdown content", async () => {
           description: "Desc",
         },
       ],
-    },
-  }));
+    })));
 
   const result = await runCli(["report", "--format", "md", "--limit", "1"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
 
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, true);
   assert.equal(output.data.format, "md");
   assert.match(output.data.content, /# Tab Report/);
@@ -275,35 +235,25 @@ test("report format md returns markdown content", async () => {
 });
 
 test("report pagination includes next hint", async () => {
-  const { socketPath, server, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: {
+  const { socketPath, server, sockets } = await startMockSocket((req) => (mockResponse(req, {
       generatedAt: 1700000000000,
       entries: [
         { tabId: 1, title: "One", url: "https://one" },
         { tabId: 2, title: "Two", url: "https://two" },
       ],
-    },
-  }));
+    })));
 
   const result = await runCli(["report", "--limit", "1"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
 
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.data.page.hasMore, true);
   assert.match(output.data.page.hint, /tabctl report/);
 });
 
 test("analyze does not force all when --window active", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { candidates: [] },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { candidates: [] })));
 
   const result = await runCli(["analyze", "--window", "active"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
@@ -315,12 +265,7 @@ test("analyze does not force all when --window active", async () => {
 });
 
 test("archive supports --ungrouped", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { summary: { movedTabs: 0 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { movedTabs: 0 } })));
 
   const result = await runCli(["archive", "--ungrouped"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
@@ -334,7 +279,7 @@ test("archive supports --ungrouped", async () => {
 test("archive rejects --ungrouped with --group-id", async () => {
   const result = await runCli(["archive", "--ungrouped", "--group-id", "3"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.equal(output.error.message, "--ungrouped cannot be combined with --group-id");
 });

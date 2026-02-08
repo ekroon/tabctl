@@ -3,7 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import test from "node:test";
-import { runCli, runCliWithStdin } from "./cli-helpers";
+import { runCli, runCliWithStdin, parseOutput } from "./cli-helpers";
 
 test("setup writes native host manifest", async () => {
   if (process.platform !== "darwin") {
@@ -23,7 +23,7 @@ test("setup writes native host manifest", async () => {
   ], undefined, { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state"), XDG_CONFIG_HOME: path.join(homeDir, ".config") });
 
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim()) as { ok: boolean; action?: string; data: Record<string, unknown> };
+  const output = parseOutput(result) as { ok: boolean; action?: string; data: Record<string, unknown> };
   assert.equal(output.ok, true);
   assert.equal(output.action, "setup");
   assert.equal(output.data.profileName, "edge");
@@ -81,7 +81,7 @@ test("setup writes native host manifest for chrome", async () => {
   ], undefined, { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state"), XDG_CONFIG_HOME: path.join(homeDir, ".config") });
 
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim()) as { ok: boolean; action?: string; data: Record<string, unknown> };
+  const output = parseOutput(result) as { ok: boolean; action?: string; data: Record<string, unknown> };
   assert.equal(output.ok, true);
   assert.equal(output.action, "setup");
   assert.equal(output.data.profileName, "chrome");
@@ -144,7 +144,7 @@ test("setup --user-data-dir writes manifest to custom path", async () => {
   ], undefined, { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state"), XDG_CONFIG_HOME: path.join(homeDir, ".config") });
 
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim()) as { ok: boolean; action?: string; data: Record<string, unknown> };
+  const output = parseOutput(result) as { ok: boolean; action?: string; data: Record<string, unknown> };
   assert.equal(output.ok, true);
   assert.equal(output.action, "setup");
   assert.equal(output.data.profileName, "chrome");
@@ -190,7 +190,7 @@ test("profile-list shows empty when no profiles", async () => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, true);
   assert.equal(output.action, "profile-list");
   assert.deepEqual(output.data.profiles, []);
@@ -204,7 +204,7 @@ test("profile-show shows legacy mode when no profiles", async () => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, true);
   assert.equal(output.action, "profile-show");
   assert.equal(output.data.mode, "legacy");
@@ -242,7 +242,7 @@ test("profile-show with configured profile shows profile name", async () => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, true);
   assert.equal(output.action, "profile-show");
   assert.equal(output.data.name, "test-profile");
@@ -284,7 +284,7 @@ test("profile-switch success updates default", async () => {
     });
 
     assert.equal(result.status, 0);
-    const output = JSON.parse(result.stdout.trim());
+    const output = parseOutput(result);
     assert.equal(output.ok, true);
     assert.equal(output.action, "profile-switch");
     assert.equal(output.data.name, "chrome");
@@ -305,7 +305,7 @@ test("profile-remove success removes profile", async () => {
     });
 
     assert.equal(result.status, 0);
-    const output = JSON.parse(result.stdout.trim());
+    const output = parseOutput(result);
     assert.equal(output.ok, true);
     assert.equal(output.action, "profile-remove");
 
@@ -327,7 +327,7 @@ test("--profile flag overrides active profile", async () => {
     });
 
     assert.equal(result.status, 0);
-    const output = JSON.parse(result.stdout.trim());
+    const output = parseOutput(result);
     assert.equal(output.data.name, "chrome");
     assert.equal(output.data.browser, "chrome");
   } finally {
@@ -345,7 +345,7 @@ test("TABCTL_PROFILE env overrides active profile", async () => {
     });
 
     assert.equal(result.status, 0);
-    const output = JSON.parse(result.stdout.trim());
+    const output = parseOutput(result);
     assert.equal(output.data.name, "chrome");
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -372,7 +372,7 @@ test("setup --name creates custom-named profile", async () => {
     });
 
     assert.equal(result.status, 0);
-    const output = JSON.parse(result.stdout.trim());
+    const output = parseOutput(result);
     assert.equal(output.ok, true);
     assert.equal(output.data.profileName, "my-edge");
 
@@ -406,7 +406,7 @@ test("output includes profile and browser fields", async () => {
     });
 
     assert.equal(result.status, 0);
-    const output = JSON.parse(result.stdout.trim());
+    const output = parseOutput(result);
     assert.equal(output.profile, "edge");
     assert.equal(output.browser, "edge");
   } finally {
@@ -450,7 +450,7 @@ test("profile-list with multiple profiles shows all", async () => {
     });
 
     assert.equal(result.status, 0);
-    const output = JSON.parse(result.stdout.trim());
+    const output = parseOutput(result);
     assert.equal(output.data.profiles.length, 3);
 
     const defaultProfile = output.data.profiles.find((p: { name: string }) => p.name === "edge");
@@ -473,7 +473,7 @@ test("profile-show isDefault is false when using --profile override", async () =
     });
 
     assert.equal(result.status, 0);
-    const output = JSON.parse(result.stdout.trim());
+    const output = parseOutput(result);
     assert.equal(output.data.name, "chrome");
     assert.equal(output.data.isDefault, false);
   } finally {
@@ -503,7 +503,7 @@ test("setup interactive mode reads extension-id from stdin", async () => {
     );
 
     assert.equal(result.status, 0, `expected exit 0, stderr: ${result.stderr}`);
-    const output = JSON.parse(result.stdout.trim()) as { ok: boolean; action?: string; data: Record<string, unknown> };
+    const output = parseOutput(result) as { ok: boolean; action?: string; data: Record<string, unknown> };
     assert.equal(output.ok, true);
     assert.equal(output.action, "setup");
     assert.equal(output.data.extensionId, extensionId);
@@ -547,7 +547,7 @@ test("setup interactive mode rejects invalid ids and accepts valid on retry", as
     );
 
     assert.equal(result.status, 0, `expected exit 0, stderr: ${result.stderr}`);
-    const output = JSON.parse(result.stdout.trim()) as { ok: boolean; data: Record<string, unknown> };
+    const output = parseOutput(result) as { ok: boolean; data: Record<string, unknown> };
     assert.equal(output.ok, true);
     assert.equal(output.data.extensionId, validId);
     // Stderr should mention invalid attempts
@@ -614,7 +614,7 @@ test("setup second profile does not nest under first profile dataDir", async () 
     ], undefined, envOverrides);
 
     assert.equal(result.status, 0);
-    const output = JSON.parse(result.stdout.trim());
+    const output = parseOutput(result);
     const chromeDataDir = output.data.dataDir as string;
 
     // Must be baseStateDir/profiles/chrome, NOT nested under edge's dataDir
@@ -643,7 +643,7 @@ test("setup JSON output reflects newly-created profile in footer", async () => {
     });
 
     assert.equal(result.status, 0);
-    const output = JSON.parse(result.stdout.trim());
+    const output = parseOutput(result);
     assert.equal(output.ok, true);
     // The profile/browser footer fields should reflect the newly-created profile
     assert.equal(output.profile, "edge");
@@ -706,7 +706,7 @@ test("setup non-default profile prints usage hints on stderr", async () => {
     ], undefined, envOverrides);
 
     assert.equal(result.status, 0);
-    const output = JSON.parse(result.stdout.trim());
+    const output = parseOutput(result);
     assert.equal(output.data.isDefault, false);
 
     // Should show non-default profile hints

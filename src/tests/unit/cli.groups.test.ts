@@ -4,15 +4,10 @@ import os from "os";
 import path from "path";
 import test from "node:test";
 import { startMockSocket, stopMockSocket } from "./socket";
-import { runCli } from "./cli-helpers";
+import { runCli, parseOutput, mockResponse } from "./cli-helpers";
 
 test("group-list passes window option", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { groups: [] },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { groups: [] })));
 
   const result = await runCli(["group-list", "--window", "3"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
@@ -24,12 +19,7 @@ test("group-list passes window option", async () => {
 });
 
 test("group-list supports --window active", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { groups: [] },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { groups: [] })));
 
   const result = await runCli(["group-list", "--window", "active"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
@@ -69,22 +59,17 @@ test("group-list paginates and filters by tab", async () => {
 
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
     if (req.action === "list") {
-      return { ok: true, action: req.action, requestId: req.id, data: snapshot };
+      return mockResponse(req, snapshot);
     }
     if (req.action === "group-list") {
-      return {
-        ok: true,
-        action: req.action,
-        requestId: req.id,
-        data: {
+      return mockResponse(req, {
           groups: [
             { windowId: 1, groupId: 10, title: "Work", tabCount: 1 },
             { windowId: 2, groupId: 11, title: "Home", tabCount: 1 },
           ],
-        },
-      };
+        });
     }
-    return { ok: true, action: req.action, requestId: req.id, data: {} };
+    return mockResponse(req);
   });
 
   const result = await runCli(["group-list", "--tab", "1", "--limit", "1"], socketPath);
@@ -94,7 +79,7 @@ test("group-list paginates and filters by tab", async () => {
   assert.equal(requests[0].action, "group-list");
   assert.equal(requests.length, 2);
   assert.equal(requests[1].action, "list");
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   const data = output.data as { groups?: Array<Record<string, unknown>>; page?: Record<string, unknown> };
   assert.equal(data.groups?.length, 1);
   assert.equal(data.groups?.[0].groupId, 10);
@@ -120,22 +105,17 @@ test("group-list with --all skips tab scoping", async () => {
 
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
     if (req.action === "list") {
-      return { ok: true, action: req.action, requestId: req.id, data: snapshot };
+      return mockResponse(req, snapshot);
     }
     if (req.action === "group-list") {
-      return {
-        ok: true,
-        action: req.action,
-        requestId: req.id,
-        data: {
+      return mockResponse(req, {
           groups: [
             { windowId: 1, groupId: 10, title: "Work", tabCount: 1 },
             { windowId: 1, groupId: 11, title: "Home", tabCount: 0 },
           ],
-        },
-      };
+        });
     }
-    return { ok: true, action: req.action, requestId: req.id, data: {} };
+    return mockResponse(req);
   });
 
   const result = await runCli(["group-list", "--tab", "999", "--all", "--limit", "100"], socketPath);
@@ -144,7 +124,7 @@ test("group-list with --all skips tab scoping", async () => {
   assert.equal(result.status, 0);
   assert.equal(requests[0].action, "group-list");
   assert.equal(requests.length, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   const data = output.data as { groups?: Array<Record<string, unknown>> };
   assert.equal(data.groups?.length, 2);
 });
@@ -152,19 +132,14 @@ test("group-list with --all skips tab scoping", async () => {
 test("group-list --all ignores window and group filters", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
     if (req.action === "group-list") {
-      return {
-        ok: true,
-        action: req.action,
-        requestId: req.id,
-        data: {
+      return mockResponse(req, {
           groups: [
             { windowId: 1, groupId: 10, title: "Work" },
             { windowId: 2, groupId: 20, title: "Home" },
           ],
-        },
-      };
+        });
     }
-    return { ok: true, action: req.action, requestId: req.id, data: {} };
+    return mockResponse(req);
   });
 
   const result = await runCli(["group-list", "--all", "--window", "1", "--group", "Work"], socketPath);
@@ -174,7 +149,7 @@ test("group-list --all ignores window and group filters", async () => {
   assert.equal(requests[0].action, "group-list");
   const params = requests[0].params as { windowId?: number } | undefined;
   assert.equal(params?.windowId, undefined);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   const data = output.data as { groups?: Array<Record<string, unknown>> };
   assert.equal(data.groups?.length, 2);
 });
@@ -182,25 +157,20 @@ test("group-list --all ignores window and group filters", async () => {
 test("group-list supports --ungrouped", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
     if (req.action === "group-list") {
-      return {
-        ok: true,
-        action: req.action,
-        requestId: req.id,
-        data: {
+      return mockResponse(req, {
           groups: [
             { windowId: 1, groupId: 10, title: "Work" },
             { windowId: 1, groupId: -1, title: "Ungrouped" },
           ],
-        },
-      };
+        });
     }
-    return { ok: true, action: req.action, requestId: req.id, data: {} };
+    return mockResponse(req);
   });
 
   const result = await runCli(["group-list", "--ungrouped"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.ok(output.ok);
   const groups = output.data?.groups as Array<{ groupId: number }> | undefined;
   assert.ok(groups);
@@ -211,14 +181,10 @@ test("group-list supports --ungrouped", async () => {
 test("group-list falls back to snapshot when groups missing", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
     if (req.action === "group-list") {
-      return { ok: true, action: req.action, requestId: req.id, data: { groups: null } };
+      return mockResponse(req, { groups: null });
     }
     if (req.action === "list") {
-      return {
-        ok: true,
-        action: req.action,
-        requestId: req.id,
-        data: {
+      return mockResponse(req, {
           windows: [
             {
               windowId: 7,
@@ -230,10 +196,9 @@ test("group-list falls back to snapshot when groups missing", async () => {
               ],
             },
           ],
-        },
-      };
+        });
     }
-    return { ok: true, action: req.action, requestId: req.id, data: {} };
+    return mockResponse(req);
   });
 
   const result = await runCli(["group-list", "--window", "7"], socketPath);
@@ -242,7 +207,7 @@ test("group-list falls back to snapshot when groups missing", async () => {
   assert.equal(result.status, 0);
   assert.equal(requests[0].action, "group-list");
   assert.equal(requests.length, 2);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, true);
   const groups = output.data?.groups as Array<Record<string, unknown>>;
   assert.equal(groups.length, 1);
@@ -262,14 +227,10 @@ test("group-list fallback applies policy exclusions", async () => {
 
   const { socketPath, server, sockets } = await startMockSocket((req) => {
     if (req.action === "group-list") {
-      return { ok: true, action: req.action, requestId: req.id, data: { groups: null } };
+      return mockResponse(req, { groups: null });
     }
     if (req.action === "list") {
-      return {
-        ok: true,
-        action: req.action,
-        requestId: req.id,
-        data: {
+      return mockResponse(req, {
           windows: [
             {
               windowId: 7,
@@ -283,29 +244,23 @@ test("group-list fallback applies policy exclusions", async () => {
               ],
             },
           ],
-        },
-      };
+        });
     }
-    return { ok: true, action: req.action, requestId: req.id, data: {} };
+    return mockResponse(req);
   });
 
   const result = await runCli(["group-list", "--window", "7"], socketPath, { XDG_CONFIG_HOME: policyDir });
   await stopMockSocket(server, socketPath, sockets);
 
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   const groups = output.data?.groups as Array<Record<string, unknown>>;
   assert.equal(groups.length, 1);
   assert.equal(groups[0].groupId, 44);
 });
 
 test("group-update passes update options", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { groupId: 1 },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { groupId: 1 })));
 
   const result = await runCli([
     "group-update",
@@ -356,9 +311,9 @@ test("group-update supports --window active", async () => {
 
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
     if (req.action === "list") {
-      return { ok: true, action: req.action, requestId: req.id, data: snapshot };
+      return mockResponse(req, snapshot);
     }
-    return { ok: true, action: req.action, requestId: req.id, data: { groups: [] } };
+    return mockResponse(req, { groups: [] });
   });
 
   const result = await runCli([
@@ -378,12 +333,7 @@ test("group-update supports --window active", async () => {
 });
 
 test("group-ungroup passes group selectors", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { summary: { ungroupedTabs: 2 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { ungroupedTabs: 2 } })));
 
   const result = await runCli([
     "group-ungroup",
@@ -402,12 +352,7 @@ test("group-ungroup passes group selectors", async () => {
 });
 
 test("group-assign passes grouping options", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { summary: { groupedTabs: 2 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { groupedTabs: 2 } })));
 
   const result = await runCli([
     "group-assign",
@@ -466,7 +411,7 @@ test("group-assign returns txid", async () => {
 
   assert.equal(result.status, 0);
   assert.equal(requests[0].action, "group-assign");
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.data?.txid, "tx-group-assign");
   assert.equal(output.version, "0.1.0");
   assert.equal(output.component, "host");

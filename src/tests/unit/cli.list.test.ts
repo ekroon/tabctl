@@ -1,39 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { startMockSocket, stopMockSocket } from "./socket";
-import { runCli } from "./cli-helpers";
+import { runCli, parseOutput, mockResponse } from "./cli-helpers";
 
 test("list sends list action", async () => {
-  const { socketPath, server, sockets, requests } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { value: "ok" },
-  }));
+  const { socketPath, server, sockets, requests } = await startMockSocket((req) => (mockResponse(req, { value: "ok" })));
 
   const result = await runCli(["list"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
 
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, true);
   assert.equal(requests.length, 1);
   assert.equal(requests[0].action, "list");
 });
 
 test("ping sends ping action", async () => {
-  const { socketPath, server, sockets, requests } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { value: "pong" },
-  }));
+  const { socketPath, server, sockets, requests } = await startMockSocket((req) => (mockResponse(req, { value: "pong" })));
 
   const result = await runCli(["ping"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
 
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, true);
   assert.equal(requests.length, 1);
   assert.equal(requests[0].action, "ping");
@@ -69,9 +59,9 @@ test("list paginates and filters by group", async () => {
 
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
     if (req.action === "list") {
-      return { ok: true, action: req.action, requestId: req.id, data: snapshot };
+      return mockResponse(req, snapshot);
     }
-    return { ok: true, action: req.action, requestId: req.id, data: {} };
+    return mockResponse(req);
   });
 
   const result = await runCli(["list", "--group", "Work", "--limit", "1"], socketPath);
@@ -79,7 +69,7 @@ test("list paginates and filters by group", async () => {
 
   assert.equal(result.status, 0);
   assert.equal(requests[0].action, "list");
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   const data = output.data as { windows?: Array<Record<string, unknown>>; page?: Record<string, unknown> };
   assert.ok(data.page);
   assert.equal(data.page?.limit, 1);
@@ -115,16 +105,16 @@ test("list with --all ignores other scopes", async () => {
 
   const { socketPath, server, sockets } = await startMockSocket((req) => {
     if (req.action === "list") {
-      return { ok: true, action: req.action, requestId: req.id, data: snapshot };
+      return mockResponse(req, snapshot);
     }
-    return { ok: true, action: req.action, requestId: req.id, data: {} };
+    return mockResponse(req);
   });
 
   const result = await runCli(["list", "--group", "Work", "--all", "--limit", "100"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
 
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   const data = output.data as { windows?: Array<Record<string, unknown>> };
   const tabs = ((data.windows?.[0].tabs as Array<Record<string, unknown>>) || []);
   assert.equal(tabs.length, 2);
@@ -149,16 +139,16 @@ test("list supports --ungrouped", async () => {
 
   const { socketPath, server, sockets } = await startMockSocket((req) => {
     if (req.action === "list") {
-      return { ok: true, action: req.action, requestId: req.id, data: snapshot };
+      return mockResponse(req, snapshot);
     }
-    return { ok: true, action: req.action, requestId: req.id, data: {} };
+    return mockResponse(req);
   });
 
   const result = await runCli(["list", "--ungrouped", "--limit", "10"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
 
   assert.equal(result.status, 0);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   const data = output.data as { windows?: Array<Record<string, unknown>> };
   const tabs = ((data.windows?.[0].tabs as Array<Record<string, unknown>>) || []);
   assert.equal(tabs.length, 1);
@@ -168,7 +158,7 @@ test("list supports --ungrouped", async () => {
 test("list rejects invalid window value", async () => {
   const result = await runCli(["list", "--window", "nope"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.match(output.error.message, /Invalid --window value/);
 });
@@ -176,19 +166,14 @@ test("list rejects invalid window value", async () => {
 test("unknown --format hints to use --json", async () => {
   const result = await runCli(["list", "--format", "json"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.match(output.error.message, /Unknown option: --format/);
   assert.match(output.error.hint, /Use --json/);
 });
 
 test("focus passes tab id", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { tabId: 99, windowId: 1 },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { tabId: 99, windowId: 1 })));
 
   const result = await runCli(["focus", "--tab", "99"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
@@ -200,12 +185,7 @@ test("focus passes tab id", async () => {
 });
 
 test("refresh passes tab id", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { summary: { refreshedTabs: 1 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { refreshedTabs: 1 } })));
 
   const result = await runCli(["refresh", "--tab", "99"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
@@ -219,7 +199,7 @@ test("refresh passes tab id", async () => {
 test("refresh requires --tab", async () => {
   const result = await runCli(["refresh"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.equal(output.error.message, "refresh requires --tab");
 });
@@ -227,18 +207,13 @@ test("refresh requires --tab", async () => {
 test("refresh rejects multiple --tab", async () => {
   const result = await runCli(["refresh", "--tab", "1", "--tab", "2"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.equal(output.error.message, "refresh requires a single --tab");
 });
 
 test("open passes urls and window selectors", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { summary: { createdTabs: 2 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { createdTabs: 2 } })));
 
   const result = await runCli([
     "open",
@@ -286,12 +261,7 @@ test("open passes urls and window selectors", async () => {
 });
 
 test("open supports new window flag", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { summary: { createdTabs: 1 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { createdTabs: 1 } })));
 
   const result = await runCli([
     "open",
@@ -318,18 +288,13 @@ test("open rejects before/after tab together", async () => {
     "2",
   ]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.match(output.error.message, /Only one target position is allowed/);
 });
 
 test("open supports after-tab", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { summary: { createdTabs: 1 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { createdTabs: 1 } })));
 
   const result = await runCli([
     "open",
@@ -348,18 +313,13 @@ test("open supports after-tab", async () => {
 test("open rejects invalid color", async () => {
   const result = await runCli(["open", "--group", "Docs", "--color", "chartreuse", "--url", "https://example.com"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.equal(output.error?.message, "Invalid color: chartreuse. Use one of: grey, blue, red, yellow, green, pink, purple, cyan, orange");
 });
 
 test("open supports window new alias", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { summary: { createdTabs: 1 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { createdTabs: 1 } })));
 
   const result = await runCli([
     "open",
@@ -376,12 +336,7 @@ test("open supports window new alias", async () => {
 });
 
 test("undo sends undo action with txid", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { summary: { restoredTabs: 1 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { restoredTabs: 1 } })));
 
   const result = await runCli(["undo", "tx-123"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
@@ -394,12 +349,7 @@ test("undo sends undo action with txid", async () => {
 });
 
 test("undo supports --txid", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { summary: { restoredTabs: 1 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { restoredTabs: 1 } })));
 
   const result = await runCli(["undo", "--txid", "tx-555"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
@@ -410,12 +360,7 @@ test("undo supports --txid", async () => {
 });
 
 test("undo supports --latest", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { summary: { restoredTabs: 1 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { restoredTabs: 1 } })));
 
   const result = await runCli(["undo", "--latest"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
@@ -428,7 +373,7 @@ test("undo supports --latest", async () => {
 test("undo rejects --latest with txid", async () => {
   const result = await runCli(["undo", "--latest", "tx-123"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.match(output.error.message, /undo --latest/);
 });
@@ -436,7 +381,7 @@ test("undo rejects --latest with txid", async () => {
 test("undo rejects --latest with --txid", async () => {
   const result = await runCli(["undo", "--latest", "--txid", "tx-123"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.match(output.error.message, /undo --latest/);
 });
@@ -444,7 +389,7 @@ test("undo rejects --latest with --txid", async () => {
 test("ENOENT error includes native host hint", async () => {
   const result = await runCli(["ping"], "/tmp/tabctl-nonexistent-socket-path.sock");
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.ok(output.error.message.includes("ENOENT"), "error message should contain ENOENT");
   assert.equal(output.error.hint, "Native host not running. Ensure the browser extension is loaded and active.");

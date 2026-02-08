@@ -1,15 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { startMockSocket, stopMockSocket } from "./socket";
-import { runCli } from "./cli-helpers";
+import { runCli, parseOutput, mockResponse } from "./cli-helpers";
 
 test("move-tab supports new window flag", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { summary: { movedTabs: 1 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { movedTabs: 1 } })));
 
   const result = await runCli([
     "move-tab",
@@ -26,12 +21,7 @@ test("move-tab supports new window flag", async () => {
 });
 
 test("move-group supports new window flag", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { summary: { movedTabs: 2 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { movedTabs: 2 } })));
 
   const result = await runCli([
     "move-group",
@@ -48,12 +38,7 @@ test("move-group supports new window flag", async () => {
 });
 
 test("merge-window passes window ids and close source", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { summary: { movedTabs: 3 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { movedTabs: 3 } })));
 
   const result = await runCli([
     "merge-window",
@@ -85,11 +70,7 @@ test("merge-window passes window ids and close source", async () => {
 test("dedupe runs analyze then close on confirm", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
     if (req.action === "analyze") {
-      return {
-        ok: true,
-        action: req.action,
-        requestId: req.id,
-        data: {
+      return mockResponse(req, {
           generatedAt: Date.now(),
           staleDays: 30,
           totals: { tabs: 2, analyzed: 2, candidates: 1 },
@@ -107,15 +88,9 @@ test("dedupe runs analyze then close on confirm", async () => {
             },
           ],
           analysisId: "analysis-1",
-        },
-      };
+        });
     }
-    return {
-      ok: true,
-      action: req.action,
-      requestId: req.id,
-      data: { summary: { closedTabs: 1, skippedTabs: 0 } },
-    };
+    return mockResponse(req, { summary: { closedTabs: 1, skippedTabs: 0 } });
   });
 
   const result = await runCli(["dedupe", "--confirm"], socketPath);
@@ -128,7 +103,7 @@ test("dedupe runs analyze then close on confirm", async () => {
   const closeParams = requests[1].params as { tabIds?: number[]; expectedUrls?: Record<string, string> } | undefined;
   assert.deepEqual(closeParams?.tabIds, [12]);
   assert.equal(closeParams?.expectedUrls?.["12"], "https://example.com");
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.action, "dedupe");
   assert.equal(output.data?.summary?.closed, 1);
 });
@@ -136,11 +111,7 @@ test("dedupe runs analyze then close on confirm", async () => {
 test("dedupe outputs nextCommand when not confirmed", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => {
     if (req.action === "analyze") {
-      return {
-        ok: true,
-        action: req.action,
-        requestId: req.id,
-        data: {
+      return mockResponse(req, {
           generatedAt: Date.now(),
           staleDays: 30,
           totals: { tabs: 2, analyzed: 2, candidates: 1 },
@@ -158,15 +129,9 @@ test("dedupe outputs nextCommand when not confirmed", async () => {
             },
           ],
           analysisId: "analysis-1",
-        },
-      };
+        });
     }
-    return {
-      ok: true,
-      action: req.action,
-      requestId: req.id,
-      data: { summary: { closedTabs: 1, skippedTabs: 0 } },
-    };
+    return mockResponse(req, { summary: { closedTabs: 1, skippedTabs: 0 } });
   });
 
   const result = await runCli(["dedupe"], socketPath);
@@ -175,18 +140,13 @@ test("dedupe outputs nextCommand when not confirmed", async () => {
   assert.equal(result.status, 0);
   assert.equal(requests.length, 1);
   assert.equal(requests[0].action, "analyze");
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.action, "dedupe");
   assert.equal(output.data?.nextCommand, "tabctl close --apply analysis-1 --confirm");
 });
 
 test("dedupe supports --ungrouped", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { candidates: [], totals: { tabs: 0, candidates: 0 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { candidates: [], totals: { tabs: 0, candidates: 0 } })));
 
   const result = await runCli(["dedupe", "--ungrouped"], socketPath);
   await stopMockSocket(server, socketPath, sockets);
@@ -200,18 +160,13 @@ test("dedupe supports --ungrouped", async () => {
 test("dedupe rejects --ungrouped with --group-id", async () => {
   const result = await runCli(["dedupe", "--ungrouped", "--group-id", "3"]);
   assert.equal(result.status, 1);
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.ok, false);
   assert.equal(output.error.message, "--ungrouped cannot be combined with --group-id");
 });
 
 test("move-tab passes target options", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { summary: { movedTabs: 1 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { movedTabs: 1 } })));
 
   const result = await runCli([
     "move-tab",
@@ -242,12 +197,7 @@ test("move-tab passes target options", async () => {
 });
 
 test("move-group passes target options", async () => {
-  const { socketPath, server, requests, sockets } = await startMockSocket((req) => ({
-    ok: true,
-    action: req.action,
-    requestId: req.id,
-    data: { summary: { movedTabs: 2 } },
-  }));
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { movedTabs: 2 } })));
 
   const result = await runCli([
     "move-group",
@@ -297,7 +247,7 @@ test("move-tab returns txid", async () => {
 
   assert.equal(result.status, 0);
   assert.equal(requests[0].action, "move-tab");
-  const output = JSON.parse(result.stdout.trim());
+  const output = parseOutput(result);
   assert.equal(output.data?.txid, "tx-move-tab");
   assert.equal(output.version, "0.1.0");
   assert.equal(output.component, "host");
