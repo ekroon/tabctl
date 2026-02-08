@@ -59,7 +59,7 @@ export async function promptExtensionId(browser: string): Promise<string> {
     // chrome, chrome-canary, chrome-beta, chrome-dev, chromium, brave all use chrome://extensions
     extPage = "chrome://extensions";
   }
-  
+
   const instructions = [
     "",
     "Next steps:",
@@ -171,12 +171,12 @@ export function resolveManifestDir(browser: "edge" | "chrome" | "chrome-canary" 
   if (!home) {
     errorOut("Home directory not found.");
   }
-  
+
   if (process.platform === "win32") {
     // Windows: registry-based is preferred, but file-based works with --user-data-dir.
     // For system-wide, we point to the per-user NativeMessagingHosts under LOCALAPPDATA.
     const base = process.env.LOCALAPPDATA || path.join(home, "AppData", "Local");
-    
+
     const browserPaths: Record<string, string> = {
       "edge": path.join(base, "Microsoft", "Edge", "User Data", "NativeMessagingHosts"),
       "chrome": path.join(base, "Google", "Chrome", "User Data", "NativeMessagingHosts"),
@@ -190,7 +190,7 @@ export function resolveManifestDir(browser: "edge" | "chrome" | "chrome-canary" 
     };
     return browserPaths[browser];
   }
-  
+
   if (process.platform === "linux") {
     const browserPaths: Record<string, string> = {
       "edge": path.join(home, ".config", "microsoft-edge", "NativeMessagingHosts"),
@@ -205,7 +205,7 @@ export function resolveManifestDir(browser: "edge" | "chrome" | "chrome-canary" 
     };
     return browserPaths[browser];
   }
-  
+
   // macOS
   const browserPaths: Record<string, string> = {
     "edge": path.join(home, "Library", "Application Support", "Microsoft Edge", "NativeMessagingHosts"),
