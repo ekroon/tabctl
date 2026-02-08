@@ -3,9 +3,11 @@
  * Re-exports all command handlers and parameter builders.
  */
 
-// Meta commands (version, ping, setup, skill, policy, history, undo)
+// Setup command
+export { runSetup } from "./setup";
+
+// Meta commands (version, ping, skill, policy, history, undo)
 export {
-  runSetup,
   runSkillInstall,
   runVersion,
   runPolicy,
