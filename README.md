@@ -1,15 +1,30 @@
 # tabctl
 
-`tabctl` is a command-line tool that gives you terminal control over your browser tabs. List, search, group, move, close, deduplicate, inspect, and report on tabs without leaving your terminal — across Chrome and Edge.
+`tabctl` is a command-line tool that gives you terminal control over your browser tabs. List, search, group, move, close, deduplicate, inspect, and report on tabs without leaving your terminal — across all Chromium-based browsers.
 
 It works through a lightweight local stack: the CLI talks to a native messaging host, which proxies requests to a browser extension. A policy file can protect pinned tabs or specific groups from automated actions, and every mutation is undoable.
 
 This repo contains:
-- Chrome/Edge extension (tab/group inspection + actions)
+- Chromium extension (tab/group inspection + actions)
 - Native messaging host (Node)
 - CLI (`tabctl`) for on-demand workflows
 
 The host only runs while the browser is open and the extension is connected.
+
+## Supported Browsers
+
+`tabctl` supports all Chromium-based browsers through native messaging:
+- **Chrome** (`chrome`)
+- **Chrome Canary** (`chrome-canary`)
+- **Chrome Beta** (`chrome-beta`)
+- **Chrome Dev** (`chrome-dev`)
+- **Chromium** (`chromium`)
+- **Microsoft Edge** (`edge`)
+- **Brave** (`brave`)
+- **Opera** (`opera`)
+- **Vivaldi** (`vivaldi`)
+
+Use the browser identifier (shown in parentheses) with the `--browser` flag during setup.
 
 ## Quick Start
 
@@ -38,7 +53,7 @@ This will:
 3. Ask you to load it as an unpacked extension in `chrome://extensions`
 4. Prompt you to paste the extension ID
 
-> **Edge?** Use `--browser edge` and load from `edge://extensions` instead.
+> **Other browsers?** Replace `chrome` with your browser identifier: `edge`, `chrome-canary`, `brave`, `opera`, `vivaldi`, etc.
 
 If you already know your extension ID, skip the interactive flow:
 
@@ -55,7 +70,7 @@ tabctl ping       # check the connection
 tabctl list       # see your open tabs
 ```
 
-> **Multiple browsers?** See [Multi-Browser Setup](#multi-browser-setup) for running tabctl with both Chrome and Edge.
+> **Multiple browsers?** See [Multi-Browser Setup](#multi-browser-setup) for running tabctl with multiple browsers or browser profiles.
 
 ## Commands
 
@@ -160,9 +175,9 @@ See [CLI.md](CLI.md#configuration) for full details.
 
 ## Multi-Browser Setup
 
-> **Advanced topic** — you only need this if you run tabctl with more than one browser (e.g. Edge *and* Chrome).
+> **Advanced topic** — you only need this if you run tabctl with more than one browser (e.g. Edge *and* Chrome, or Chrome *and* Brave).
 
-tabctl supports multiple browser profiles. Each profile connects to a different **browser** (Chrome, Edge).
+tabctl supports multiple browser profiles. Each profile connects to a different **browser** or browser instance.
 
 <!-- test: "setup writes native host manifest", "setup writes native host manifest for chrome", "setup --name creates custom-named profile", "profile-list with multiple profiles shows all", "profile-switch success updates default", "--profile flag overrides active profile" -->
 ```bash
@@ -171,6 +186,9 @@ tabctl setup --browser edge --extension-id <edge-id>
 
 # Setup for Chrome (with custom name)
 tabctl setup --browser chrome --extension-id <chrome-id> --name chrome-work
+
+# Setup for Brave
+tabctl setup --browser brave --extension-id <brave-id>
 
 # List profiles
 tabctl profile-list
