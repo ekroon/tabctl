@@ -155,84 +155,16 @@ export function buildOpenParams(options: Options): Record<string, unknown> {
 }
 
 // ============================================================================
-// Group Command Parameters
+// Group Command Parameters (re-exported from params-groups.ts)
 // ============================================================================
 
-export function buildGroupUpdateParams(options: Options): Record<string, unknown> {
-  const windowValue = parseWindowScope(options.window, { allowNew: false });
-  return {
-    groupTitle: options.group,
-    groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
-    windowId: windowValue,
-    title: options.title,
-    color: options.color,
-    collapsed: options.collapsed === true ? true : options.expanded === true ? false : undefined,
-  };
-}
-
-export function buildGroupUngroupParams(options: Options): Record<string, unknown> {
-  const windowValue = parseWindowScope(options.window, { allowNew: false });
-  return {
-    groupTitle: options.group,
-    groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
-    windowId: windowValue,
-  };
-}
-
-export function buildGroupAssignParams(options: Options): Record<string, unknown> {
-  const windowValue = parseWindowScope(options.window, { allowNew: false });
-  return {
-    tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
-    groupTitle: options.group,
-    groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
-    windowId: windowValue,
-    create: Boolean(options.create),
-    color: options.color,
-    collapsed: options.collapsed === true ? true : options.expanded === true ? false : undefined,
-  };
-}
+export { buildGroupUpdateParams, buildGroupAssignParams, buildGroupUngroupParams } from "./params-groups";
 
 // ============================================================================
-// Move Command Parameters
+// Move Command Parameters (re-exported from params-move.ts)
 // ============================================================================
 
-export function buildMoveTabParams(options: Options): Record<string, unknown> {
-  const windowValue = parseWindowScope(options.window, { allowNew: false });
-  return {
-    tabId: options.tab ? Number((options.tab as string[])[0]) : undefined,
-    tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
-    beforeTabId: options["before-tab"] ? Number(options["before-tab"]) : undefined,
-    afterTabId: options["after-tab"] ? Number(options["after-tab"]) : undefined,
-    beforeGroupTitle: options["before-group"],
-    afterGroupTitle: options["after-group"],
-    windowId: windowValue,
-    newWindow: options["new-window"] === true,
-  };
-}
-
-export function buildMoveGroupParams(options: Options): Record<string, unknown> {
-  const windowValue = parseWindowScope(options.window, { allowNew: false });
-  return {
-    groupTitle: options.group,
-    groupId: options["group-id"] ? Number(options["group-id"]) : undefined,
-    beforeTabId: options["before-tab"] ? Number(options["before-tab"]) : undefined,
-    afterTabId: options["after-tab"] ? Number(options["after-tab"]) : undefined,
-    beforeGroupTitle: options["before-group"],
-    afterGroupTitle: options["after-group"],
-    windowId: windowValue,
-    newWindow: options["new-window"] === true,
-  };
-}
-
-export function buildMergeWindowParams(options: Options): Record<string, unknown> {
-  return {
-    fromWindowId: options.from ? Number(options.from) : undefined,
-    toWindowId: options.to ? Number(options.to) : undefined,
-    windowId: options.from ? Number(options.from) : undefined,
-    closeSource: options["close-source"] === true,
-    confirmed: options.confirm === true,
-  };
-}
+export { buildMoveTabParams, buildMoveGroupParams, buildMergeWindowParams } from "./params-move";
 
 // ============================================================================
 // Archive/Close Command Parameters
@@ -356,7 +288,7 @@ function parseWaitTimeout(value: unknown): number | undefined {
   return Math.floor(parsed);
 }
 
-function parseWindowScope(
+export function parseWindowScope(
   value: unknown,
   { allowNew }: { allowNew: boolean }
 ): number | string | undefined {
