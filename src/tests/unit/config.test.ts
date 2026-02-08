@@ -12,6 +12,7 @@ function withCleanEnv(fn: () => void) {
     "XDG_STATE_HOME",
     "TABCTL_CONFIG_DIR",
     "TABCTL_SOCKET",
+    "TABCTL_PROFILE",
   ] as const;
   const saved: Record<string, string | undefined> = {};
   for (const k of keys) saved[k] = process.env[k];
@@ -35,14 +36,20 @@ function withCleanEnv(fn: () => void) {
 
 test("default XDG paths when no env vars are set", () => {
   withCleanEnv(() => {
+    // Use isolated XDG_CONFIG_HOME so real profiles.json is not loaded
+    const tmpCfg = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-defcfg-"));
+    process.env.XDG_CONFIG_HOME = tmpCfg;
+
     const home = os.homedir();
     const cfg = resolveConfig();
 
-    assert.equal(cfg.configDir, path.join(home, ".config", "tabctl"));
+    assert.equal(cfg.configDir, path.join(tmpCfg, "tabctl"));
     assert.equal(cfg.dataDir, path.join(home, ".local", "state", "tabctl"));
     assert.equal(cfg.socketPath, path.join(cfg.dataDir, "tabctl.sock"));
     assert.equal(cfg.undoLog, path.join(cfg.dataDir, "undo.jsonl"));
     assert.equal(cfg.policyPath, path.join(cfg.configDir, "policy.json"));
+
+    fs.rmSync(tmpCfg, { recursive: true, force: true });
   });
 });
 
