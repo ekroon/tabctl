@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import test from "node:test";
 import { readUndoRecords } from "../../host/lib/undo";
 
-const pkgVersion = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../package.json"), "utf8")).version;
+const pkgVersion = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../../package.json"), "utf8")).version;
 
 type NativeMessage = Record<string, unknown>;
 

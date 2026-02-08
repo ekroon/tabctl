@@ -92,15 +92,15 @@ test("skill install creates project skill link", async () => {
   const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-skill-"));
   const originalCwd = process.cwd();
   const installRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-install-"));
-  const repoRoot = path.resolve(__dirname, "../..");
+  const repoRoot = path.resolve(__dirname, "../../..");
   const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-fakebin-"));
   const npxFixture = path.join(__dirname, "fixtures", "npx");
   const fakeNpx = path.join(fakeBin, "npx");
   fs.copyFileSync(npxFixture, fakeNpx);
   fs.chmodSync(fakeNpx, 0o755);
   const npxCapture = path.join(testRoot, "npx-args.json");
-  fs.cpSync(path.join(repoRoot, "cli"), path.join(installRoot, "cli"), { recursive: true });
-  fs.cpSync(path.join(repoRoot, "shared"), path.join(installRoot, "shared"), { recursive: true });
+  fs.cpSync(path.join(repoRoot, "dist", "cli"), path.join(installRoot, "cli"), { recursive: true });
+  fs.cpSync(path.join(repoRoot, "dist", "shared"), path.join(installRoot, "shared"), { recursive: true });
   const cliTarget = path.join(installRoot, "cli", "tabctl.js");
   process.chdir(testRoot);
   try {
@@ -135,15 +135,15 @@ test("skill install supports global scope", async () => {
   const configHome = path.join(testRoot, "config");
   const originalCwd = process.cwd();
   const installRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-install-"));
-  const repoRoot = path.resolve(__dirname, "../..");
+  const repoRoot = path.resolve(__dirname, "../../..");
   const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-fakebin-"));
   const npxFixture = path.join(__dirname, "fixtures", "npx");
   const fakeNpx = path.join(fakeBin, "npx");
   fs.copyFileSync(npxFixture, fakeNpx);
   fs.chmodSync(fakeNpx, 0o755);
   const npxCapture = path.join(testRoot, "npx-args.json");
-  fs.cpSync(path.join(repoRoot, "cli"), path.join(installRoot, "cli"), { recursive: true });
-  fs.cpSync(path.join(repoRoot, "shared"), path.join(installRoot, "shared"), { recursive: true });
+  fs.cpSync(path.join(repoRoot, "dist", "cli"), path.join(installRoot, "cli"), { recursive: true });
+  fs.cpSync(path.join(repoRoot, "dist", "shared"), path.join(installRoot, "shared"), { recursive: true });
   const cliTarget = path.join(installRoot, "cli", "tabctl.js");
   process.chdir(testRoot);
 

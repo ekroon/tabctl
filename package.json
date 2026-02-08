@@ -18,22 +18,23 @@
     "node": ">=20"
   },
   "bin": {
-    "tabctl": "cli/tabctl.js"
+    "tabctl": "dist/cli/tabctl.js"
   },
   "files": [
-    "cli",
-    "host",
-    "shared",
-    "extension"
+    "dist/cli",
+    "dist/host",
+    "dist/shared",
+    "dist/extension"
   ],
   "scripts": {
-    "build": "node scripts/gen-version.js && tsc -p tsconfig.json && node scripts/sync-build.js",
+    "build": "node scripts/gen-version.js && tsc -p tsconfig.json && node scripts/copy-artifacts.js",
     "bump:major": "node scripts/bump-version.js major",
     "bump:minor": "node scripts/bump-version.js minor",
     "bump:patch": "node scripts/bump-version.js patch",
-    "test": "npm run build && node --test tests/unit/*.js",
-    "test:unit": "npm run build && node --test tests/unit/*.js",
-    "test:integration": "node build/scripts/integration-test.js"
+    "test": "npm run build && node --test --test-timeout=5000 dist/tests/unit/*.js",
+    "test:unit": "npm run build && node --test --test-timeout=5000 dist/tests/unit/*.js",
+    "test:integration": "node dist/scripts/integration-test.js",
+    "clean": "rm -rf dist"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.277",
