@@ -39,11 +39,6 @@ jobs:
         env:
           TABCTL_VERSION_MODE: release
 
-      - name: Build Windows launcher
-        run: |
-          cd src/host/launcher
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o ../../../packages/win32-x64/tabctl-host.exe .
-
       - name: Sync platform package version
         run: node -e "
           const pkg = require('./package.json');
