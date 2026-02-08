@@ -203,6 +203,61 @@ Each profile gets its own:
 
 Policy is shared across all profiles.
 
+## WSL (Windows Subsystem for Linux) Setup
+
+tabctl supports running the CLI in WSL while controlling browsers on Windows. The native messaging host runs inside WSL via a `wsl.exe` bridge, allowing the browser (Edge/Chrome) on Windows to communicate with the Unix socket in WSL.
+
+### Requirements
+- WSL 2 (recommended) or WSL 1
+- Edge or Chrome installed on Windows (not in WSL)
+- Node.js installed in WSL
+
+### Setup
+
+1. Build and install tabctl in WSL:
+```bash
+npm install
+npm run build
+npm link
+```
+
+2. Run the setup command in WSL:
+```bash
+tabctl setup --browser edge  # or --browser chrome
+```
+
+The setup process will:
+- Sync the extension to `/mnt/c/Users/<username>/AppData/Local/tabctl/extension/`
+- Create a `.cmd` wrapper that calls `wsl.exe -d <distro> -- node host.js`
+- Write the manifest to `/mnt/c/Users/<username>/AppData/Local/Microsoft/Edge/User Data/NativeMessagingHosts/`
+- Add a Windows registry entry pointing to the manifest
+
+3. Load the extension in your Windows browser:
+- Open `edge://extensions` (or `chrome://extensions`)
+- Enable "Developer mode"
+- Click "Load unpacked"
+- Navigate to `C:\Users\<username>\AppData\Local\tabctl\extension\`
+- Copy the extension ID and paste it when prompted by setup
+
+4. Verify the connection:
+```bash
+tabctl ping
+tabctl list
+```
+
+### How It Works
+
+In WSL:
+- **CLI** runs in WSL and connects to a Unix socket in WSL
+- **Host** runs in WSL (launched via `wsl.exe` from Windows)
+- **Extension** runs in Windows browser and launches the host via native messaging
+
+The key is that both the CLI and host run in the same WSL environment, so they can use Unix sockets for communication. The browser on Windows launches the host through a `.cmd` wrapper that calls `wsl.exe`.
+
+### Known Limitations
+- **Chrome**: May not work reliably due to binary stdio corruption through the `.cmd` → `wsl.exe` chain (same issue as Chrome on native Windows). Edge is recommended for WSL.
+- **Extension path**: The extension must be on the Windows filesystem (`/mnt/c/...`) for Edge to load it. Paths like `\\wsl.localhost\...` may not work reliably.
+
 ## Security
 - The native host is locked to your extension ID.
 - All data stays local; no external API keys are used.

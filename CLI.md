@@ -302,12 +302,13 @@ Options:
 - `--confirm`
 
 ### setup
-Install the native host manifest and register a profile (macOS only).
+Install the native host manifest and register a profile (macOS, Windows, Linux, and WSL).
 Options:
 - `--browser edge|chrome` (required)
 - `--extension-id <id>` (required; or `TABCTL_EXTENSION_ID`)
 - `--node <path>` (optional; or `TABCTL_NODE`)
 - `--name <name>` (optional; defaults to browser name)
+- `--user-data-dir <path>` (optional; custom Chrome profile directory)
 - `--dev` (coming soon; dev/CI mode via CDP)
 
 Each run creates or updates a profile in `profiles.json`. The first profile registered becomes the default.
@@ -317,6 +318,13 @@ Run once per browser:
 tabctl setup --browser edge --extension-id <edge-id>
 tabctl setup --browser chrome --extension-id <chrome-id> --name chrome-work
 ```
+
+**WSL-specific behavior:**
+- Extension is synced to `/mnt/c/Users/<username>/AppData/Local/tabctl/extension/`
+- Manifest is written to Windows filesystem under LocalAppData
+- A Windows registry entry is added automatically
+- The wrapper script uses `wsl.exe` to launch the host inside WSL
+- Both CLI and host run in WSL, using Unix sockets for communication
 
 ### policy
 Show the current policy summary and path, or create a default policy file.
