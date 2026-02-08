@@ -32,13 +32,9 @@ const inspect = require("./lib/inspect") as typeof import("./lib/inspect");
 const { DESCRIPTION_MAX_LENGTH } = inspect;
 const undoHandlers = require("./lib/undo-handlers") as typeof import("./lib/undo-handlers");
 const archive = require("./lib/archive") as typeof import("./lib/archive");
-type GroupDeps = import("./lib/groups").GroupDeps;
+type ExtensionDeps = import("./lib/deps").ExtensionDeps;
 type GroupMatch = import("./lib/groups").GroupMatch;
 type WindowSnapshot = import("./lib/groups").WindowSnapshot;
-type TabDeps = import("./lib/tabs").TabDeps;
-type MoveDeps = import("./lib/move").MoveDeps;
-type InspectDeps = import("./lib/inspect").InspectDeps;
-type ArchiveDeps = import("./lib/archive").ArchiveDeps;
 
 type AnyRecord = Record<string, any>;
 
@@ -209,15 +205,15 @@ async function handleAction(action: string, params: Record<string, unknown>, req
     case "list":
       return await getTabSnapshot();
     case "analyze":
-      return await inspect.analyzeTabs(params, requestId, inspectDeps);
+      return await inspect.analyzeTabs(params, requestId, deps);
     case "inspect":
-      return await inspect.inspectTabs(params, requestId, inspectDeps);
+      return await inspect.inspectTabs(params, requestId, deps);
     case "focus":
       return await tabs.focusTab(params);
     case "refresh":
       return await tabs.refreshTabs(params);
     case "open":
-      return await tabs.openTabs(params, tabDeps);
+      return await tabs.openTabs(params, deps);
     case "group-list":
       return await listGroups(params);
     case "group-update":
@@ -227,29 +223,21 @@ async function handleAction(action: string, params: Record<string, unknown>, req
     case "group-assign":
       return await groupAssign(params);
     case "move-tab":
-      return await move.moveTab(params, moveDeps);
+      return await move.moveTab(params, deps);
     case "move-group":
-      return await move.moveGroup(params, moveDeps);
+      return await move.moveGroup(params, deps);
     case "merge-window":
-      return await archive.mergeWindow(params, archiveDeps);
+      return await archive.mergeWindow(params, deps);
     case "archive":
-      return await archive.archiveTabs(params, archiveDeps);
+      return await archive.archiveTabs(params, deps);
     case "close":
-      return await archive.closeTabs(params, archiveDeps);
+      return await archive.closeTabs(params, deps);
     case "report":
       return await reportTabs(params);
     case "screenshot":
-      return await screenshot.screenshotTabs(params, requestId, {
-        delay,
-        executeWithTimeout,
-        isScriptableUrl,
-        getTabSnapshot,
-        selectTabsByScope,
-        waitForTabReady,
-        sendProgress,
-      });
+      return await screenshot.screenshotTabs(params, requestId, deps);
     case "undo":
-      return await undoHandlers.undoTransaction(params, { log });
+      return await undoHandlers.undoTransaction(params, deps);
     default:
       throw new Error(`Unknown action: ${action}`);
   }
@@ -394,51 +382,37 @@ function selectTabsByScope(snapshot: { windows: Array<Record<string, unknown>> }
   return { tabs: focusedWindow.tabs };
 }
 
-const groupDeps: GroupDeps = {
+const deps: ExtensionDeps = {
   getTabSnapshot,
+  selectTabsByScope,
+  sendProgress,
+  log,
+  resolveWindowIdFromParams,
+  resolveGroupByTitle,
+  resolveGroupById,
   buildWindowLabels,
-  resolveWindowIdFromParams,
-  log,
-};
-
-const tabDeps: TabDeps = {
-  getTabSnapshot,
-  selectTabsByScope,
-  sendProgress,
-  log,
-  resolveWindowIdFromParams,
-  resolveGroupByTitle,
-  resolveGroupById,
-};
-
-const moveDeps: MoveDeps = {
-  getTabSnapshot,
-  log,
-  resolveWindowIdFromParams,
-  resolveGroupByTitle,
-  resolveGroupById,
-};
-
-const inspectDeps: InspectDeps = {
-  getTabSnapshot,
-  selectTabsByScope,
-  sendProgress,
+  getArchiveWindowId,
+  setArchiveWindowId,
+  delay,
+  executeWithTimeout,
+  isScriptableUrl,
+  waitForTabReady,
 };
 
 async function listGroups(params: Record<string, unknown>) {
-  return groups.listGroups(params, groupDeps);
+  return groups.listGroups(params, deps);
 }
 
 async function groupUpdate(params: Record<string, unknown>) {
-  return groups.groupUpdate(params, groupDeps);
+  return groups.groupUpdate(params, deps);
 }
 
 async function groupUngroup(params: Record<string, unknown>) {
-  return groups.groupUngroup(params, groupDeps);
+  return groups.groupUngroup(params, deps);
 }
 
 async function groupAssign(params: Record<string, unknown>) {
-  return groups.groupAssign(params, groupDeps);
+  return groups.groupAssign(params, deps);
 }
 
 async function getArchiveWindowId(): Promise<number | null> {
@@ -451,16 +425,6 @@ async function setArchiveWindowId(id: number | null): Promise<void> {
   state.archiveWindowIdLoaded = true;
   await chrome.storage.local.set({ archiveWindowId: id });
 }
-
-const archiveDeps: ArchiveDeps = {
-  getTabSnapshot,
-  selectTabsByScope,
-  buildWindowLabels,
-  resolveWindowIdFromParams,
-  log,
-  getArchiveWindowId,
-  setArchiveWindowId,
-};
 
 
 async function extractDescription(tabId: number) {

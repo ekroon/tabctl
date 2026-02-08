@@ -7,23 +7,7 @@ export const SCREENSHOT_SCROLL_DELAY_MS = 150;
 export const SCREENSHOT_CAPTURE_DELAY_MS = 350;
 export const SCREENSHOT_PROCESS_TIMEOUT_MS = 8000;
 
-export interface ScreenshotDeps {
-  delay: (ms: number) => Promise<unknown>;
-  executeWithTimeout: <T>(
-    tabId: number,
-    timeoutMs: number,
-    func: (...args: Array<any>) => T,
-    args?: Array<unknown>,
-  ) => Promise<T | null>;
-  isScriptableUrl: (url: unknown) => boolean;
-  getTabSnapshot: () => Promise<{ windows: Array<Record<string, unknown>> }>;
-  selectTabsByScope: (
-    snapshot: { windows: Array<Record<string, unknown>> },
-    params: Record<string, unknown>,
-  ) => { tabs: Array<Record<string, unknown>>; error?: Record<string, unknown> };
-  waitForTabReady: (tabId: number, params: Record<string, unknown>, fallbackTimeoutMs: number) => Promise<void>;
-  sendProgress: (id: string, payload: Record<string, unknown>) => void;
-}
+import type { ExtensionDeps } from "./deps";
 
 export function estimateDataUrlBytes(dataUrl: string) {
   const commaIndex = dataUrl.indexOf(",");
@@ -207,7 +191,7 @@ export async function captureVisible(windowId: number, format: "png" | "jpeg", q
 export async function getPageMetrics(
   tabId: number,
   timeoutMs: number,
-  deps: Pick<ScreenshotDeps, "executeWithTimeout">,
+  deps: Pick<ExtensionDeps, "executeWithTimeout">,
 ) {
   const result = await deps.executeWithTimeout(tabId, timeoutMs, () => {
     const doc = document.documentElement;
@@ -246,7 +230,7 @@ export async function scrollToPosition(
   timeoutMs: number,
   x: number,
   y: number,
-  deps: Pick<ScreenshotDeps, "executeWithTimeout">,
+  deps: Pick<ExtensionDeps, "executeWithTimeout">,
 ) {
   const result = await deps.executeWithTimeout(tabId, timeoutMs, (scrollX: number, scrollY: number) => {
     window.scrollTo(scrollX, scrollY);
@@ -270,7 +254,7 @@ export async function captureTabTiles(
     tileMaxDim: number;
     maxBytes: number;
   },
-  deps: Pick<ScreenshotDeps, "delay" | "executeWithTimeout">,
+  deps: Pick<ExtensionDeps, "delay" | "executeWithTimeout">,
 ): Promise<Array<Record<string, unknown>>> {
   const tabId = tab.tabId as number;
   const windowId = tab.windowId as number;
@@ -376,7 +360,7 @@ export async function captureTabTiles(
 export async function screenshotTabs(
   params: Record<string, unknown>,
   requestId: string,
-  deps: ScreenshotDeps,
+  deps: Pick<ExtensionDeps, "delay" | "executeWithTimeout" | "isScriptableUrl" | "getTabSnapshot" | "selectTabsByScope" | "waitForTabReady" | "sendProgress">,
 ) {
   const snapshot = await deps.getTabSnapshot();
   const selection = deps.selectTabsByScope(snapshot, params) as { tabs: Array<Record<string, unknown>>; error?: Record<string, unknown> };

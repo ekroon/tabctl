@@ -2,20 +2,9 @@
 
 type WindowSnapshot = import("./groups").WindowSnapshot;
 
-export interface ArchiveDeps {
-  getTabSnapshot: () => Promise<{ generatedAt: number; windows: Array<Record<string, unknown>> }>;
-  selectTabsByScope: (
-    snapshot: { windows: Array<Record<string, unknown>> },
-    params: Record<string, unknown>,
-  ) => { tabs: Array<Record<string, unknown>>; error?: Record<string, unknown> };
-  buildWindowLabels: (snapshot: { windows: Array<{ windowId: number }> }) => Map<number, string>;
-  resolveWindowIdFromParams: (snapshot: { windows: Array<Record<string, unknown>> }, value: unknown) => number | null;
-  log: (...args: Array<unknown>) => void;
-  getArchiveWindowId: () => Promise<number | null>;
-  setArchiveWindowId: (id: number | null) => Promise<void>;
-}
+import type { ExtensionDeps } from "./deps";
 
-export async function ensureArchiveWindow(deps: ArchiveDeps) {
+export async function ensureArchiveWindow(deps: Pick<ExtensionDeps, "getArchiveWindowId" | "setArchiveWindowId">) {
   const archiveWindowId = await deps.getArchiveWindowId();
   if (archiveWindowId) {
     try {
@@ -31,7 +20,7 @@ export async function ensureArchiveWindow(deps: ArchiveDeps) {
   return created.id!;
 }
 
-export async function archiveTabs(params: Record<string, unknown>, deps: ArchiveDeps) {
+export async function archiveTabs(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "selectTabsByScope" | "buildWindowLabels" | "resolveWindowIdFromParams" | "log" | "getArchiveWindowId" | "setArchiveWindowId">) {
   const snapshot = await deps.getTabSnapshot();
   const windowLabels = deps.buildWindowLabels(snapshot as unknown as { windows: Array<{ windowId: number }> });
 
@@ -221,7 +210,7 @@ export async function getTabsByIds(tabIds: Array<number>) {
   return results;
 }
 
-export async function closeTabs(params: Record<string, unknown>, deps: ArchiveDeps) {
+export async function closeTabs(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "selectTabsByScope">) {
   const mode = params.mode || "direct";
   if (mode === "direct" && !params.confirmed) {
     throw new Error("Direct close requires confirmation");
@@ -310,7 +299,7 @@ export async function closeTabs(params: Record<string, unknown>, deps: ArchiveDe
   };
 }
 
-export async function mergeWindow(params: Record<string, unknown>, deps: ArchiveDeps) {
+export async function mergeWindow(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "log">) {
   const fromWindowId = Number.isFinite(params.fromWindowId as number)
     ? Number(params.fromWindowId)
     : Number(params.windowId);

@@ -9,16 +9,9 @@ export const DEFAULT_STALE_DAYS = 30;
 export const DESCRIPTION_MAX_LENGTH = 250;
 export const SELECTOR_VALUE_MAX_LENGTH = 500;
 
-export interface InspectDeps {
-  getTabSnapshot: () => Promise<{ generatedAt: number; windows: Array<Record<string, unknown>> }>;
-  selectTabsByScope: (
-    snapshot: { windows: Array<Record<string, unknown>> },
-    params: Record<string, unknown>,
-  ) => { tabs: Array<Record<string, unknown>>; error?: Record<string, unknown> };
-  sendProgress: (id: string, payload: Record<string, unknown>) => void;
-}
+import type { ExtensionDeps } from "./deps";
 
-export async function analyzeTabs(params: Record<string, unknown>, requestId: string, deps: InspectDeps) {
+export async function analyzeTabs(params: Record<string, unknown>, requestId: string, deps: Pick<ExtensionDeps, "getTabSnapshot" | "selectTabsByScope" | "sendProgress">) {
   const staleDays = Number.isFinite(params.staleDays) ? params.staleDays : DEFAULT_STALE_DAYS;
   const checkGitHub = params.checkGitHub === true;
   const githubConcurrencyRaw = Number(params.githubConcurrency);
@@ -164,7 +157,7 @@ export async function analyzeTabs(params: Record<string, unknown>, requestId: st
   };
 }
 
-export async function inspectTabs(params: Record<string, unknown>, requestId: string, deps: InspectDeps) {
+export async function inspectTabs(params: Record<string, unknown>, requestId: string, deps: Pick<ExtensionDeps, "getTabSnapshot" | "selectTabsByScope" | "sendProgress">) {
   const signalList = Array.isArray(params.signals) && params.signals.length > 0
     ? params.signals.map(String)
     : ["page-meta"];

@@ -6,15 +6,9 @@ const { normalizeTabIndex } = tabs;
 type WindowSnapshot = import("./groups").WindowSnapshot;
 type GroupMatch = import("./groups").GroupMatch;
 
-export interface MoveDeps {
-  getTabSnapshot: () => Promise<{ generatedAt: number; windows: Array<Record<string, unknown>> }>;
-  log: (...args: Array<unknown>) => void;
-  resolveWindowIdFromParams: (snapshot: { windows: Array<Record<string, unknown>> }, value: unknown) => number | null;
-  resolveGroupByTitle: (snapshot: { windows: Array<Record<string, unknown>> }, groupTitle: string, windowId?: number) => { match?: GroupMatch; error?: Record<string, unknown> };
-  resolveGroupById: (snapshot: { windows: Array<Record<string, unknown>> }, groupId: number) => { match?: GroupMatch; error?: Record<string, unknown> };
-}
+import type { ExtensionDeps } from "./deps";
 
-export function resolveMoveTarget(snapshot: { windows: Array<Record<string, unknown>> }, params: Record<string, unknown>, deps: Pick<MoveDeps, "resolveGroupByTitle">) {
+export function resolveMoveTarget(snapshot: { windows: Array<Record<string, unknown>> }, params: Record<string, unknown>, deps: Pick<ExtensionDeps, "resolveGroupByTitle">) {
   const beforeTabId = Number(params.beforeTabId);
   const afterTabId = Number(params.afterTabId);
   const beforeGroupTitle = typeof params.beforeGroupTitle === "string" ? params.beforeGroupTitle.trim() : "";
@@ -90,7 +84,7 @@ export function resolveMoveTarget(snapshot: { windows: Array<Record<string, unkn
   };
 }
 
-export async function moveTab(params: Record<string, unknown>, deps: Pick<MoveDeps, "getTabSnapshot" | "resolveWindowIdFromParams" | "resolveGroupByTitle">) {
+export async function moveTab(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "resolveWindowIdFromParams" | "resolveGroupByTitle">) {
   const tabIds = Array.isArray(params.tabIds) ? params.tabIds.map(Number) : [];
   const tabId = Number.isFinite(params.tabId as number)
     ? Number(params.tabId)
@@ -205,7 +199,7 @@ export async function moveTab(params: Record<string, unknown>, deps: Pick<MoveDe
   };
 }
 
-export async function moveGroup(params: Record<string, unknown>, deps: Pick<MoveDeps, "getTabSnapshot" | "log" | "resolveWindowIdFromParams" | "resolveGroupByTitle" | "resolveGroupById">) {
+export async function moveGroup(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "log" | "resolveWindowIdFromParams" | "resolveGroupByTitle" | "resolveGroupById">) {
   const groupId = Number.isFinite(params.groupId as number) ? Number(params.groupId) : null;
   const groupTitle = typeof params.groupTitle === "string" ? params.groupTitle.trim() : "";
   if (!groupId && !groupTitle) {

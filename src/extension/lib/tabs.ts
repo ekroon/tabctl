@@ -1,20 +1,8 @@
 // Tab operations — extracted from background.ts (pure structural refactor).
 
 type WindowSnapshot = import("./groups").WindowSnapshot;
-type GroupMatch = import("./groups").GroupMatch;
 
-export interface TabDeps {
-  getTabSnapshot: () => Promise<{ generatedAt: number; windows: Array<Record<string, unknown>> }>;
-  selectTabsByScope: (
-    snapshot: { windows: Array<Record<string, unknown>> },
-    params: Record<string, unknown>,
-  ) => { tabs: Array<Record<string, unknown>>; error?: Record<string, unknown> };
-  sendProgress: (id: string, payload: Record<string, unknown>) => void;
-  log: (...args: Array<unknown>) => void;
-  resolveWindowIdFromParams: (snapshot: { windows: Array<Record<string, unknown>> }, value: unknown) => number | null;
-  resolveGroupByTitle: (snapshot: { windows: Array<Record<string, unknown>> }, groupTitle: string, windowId?: number) => { match?: GroupMatch; error?: Record<string, unknown> };
-  resolveGroupById: (snapshot: { windows: Array<Record<string, unknown>> }, groupId: number) => { match?: GroupMatch; error?: Record<string, unknown> };
-}
+import type { ExtensionDeps } from "./deps";
 
 export function getMostRecentFocusedWindowId(windows: WindowSnapshot[]) {
   let bestWindowId: number | null = null;
@@ -221,7 +209,7 @@ export async function refreshTabs(params: Record<string, unknown>) {
   };
 }
 
-export async function openTabs(params: Record<string, unknown>, deps: Pick<TabDeps, "getTabSnapshot" | "log">) {
+export async function openTabs(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "log">) {
   const urls = Array.isArray(params.urls)
     ? params.urls.map((url) => (typeof url === "string" ? url.trim() : "")).filter(Boolean)
     : [];

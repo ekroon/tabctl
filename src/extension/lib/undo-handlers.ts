@@ -1,10 +1,8 @@
 // Undo transaction handlers — extracted from background.ts (pure structural refactor).
 
-type AnyRecord = Record<string, any>;
+import type { ExtensionDeps } from "./deps";
 
-export interface UndoHandlerDeps {
-  log: (...args: Array<unknown>) => void;
-}
+type AnyRecord = Record<string, any>;
 
 async function ensureWindow(windowId?: number) {
   if (windowId) {
@@ -22,7 +20,7 @@ async function ensureWindow(windowId?: number) {
   return created.id as number;
 }
 
-async function restoreTabsFromUndo(entries: Array<AnyRecord>, deps: UndoHandlerDeps) {
+async function restoreTabsFromUndo(entries: Array<AnyRecord>, deps: Pick<ExtensionDeps, "log">) {
   const skipped: Array<AnyRecord> = [];
   const restored: Array<{ tabId: number; entry: AnyRecord; targetWindowId: number }> = [];
   const windowMap = new Map<number, number>();
@@ -205,17 +203,17 @@ export async function undoGroupUpdate(undo: AnyRecord) {
   }
 }
 
-export async function undoGroupUngroup(undo: AnyRecord, deps: UndoHandlerDeps) {
+export async function undoGroupUngroup(undo: AnyRecord, deps: Pick<ExtensionDeps, "log">) {
   const tabs = (undo.tabs as Array<AnyRecord>) || [];
   return await restoreTabsFromUndo(tabs, deps);
 }
 
-export async function undoGroupAssign(undo: AnyRecord, deps: UndoHandlerDeps) {
+export async function undoGroupAssign(undo: AnyRecord, deps: Pick<ExtensionDeps, "log">) {
   const tabs = (undo.tabs as Array<AnyRecord>) || [];
   return await restoreTabsFromUndo(tabs, deps);
 }
 
-export async function undoMoveTab(undo: AnyRecord, deps: UndoHandlerDeps) {
+export async function undoMoveTab(undo: AnyRecord, deps: Pick<ExtensionDeps, "log">) {
   const from = (undo.from as AnyRecord) || {};
   const entry = {
     tabId: undo.tabId,
@@ -229,17 +227,17 @@ export async function undoMoveTab(undo: AnyRecord, deps: UndoHandlerDeps) {
   return await restoreTabsFromUndo([entry], deps);
 }
 
-export async function undoMoveGroup(undo: AnyRecord, deps: UndoHandlerDeps) {
+export async function undoMoveGroup(undo: AnyRecord, deps: Pick<ExtensionDeps, "log">) {
   const tabs = (undo.tabs as Array<AnyRecord>) || [];
   return await restoreTabsFromUndo(tabs, deps);
 }
 
-export async function undoMergeWindow(undo: AnyRecord, deps: UndoHandlerDeps) {
+export async function undoMergeWindow(undo: AnyRecord, deps: Pick<ExtensionDeps, "log">) {
   const tabs = (undo.tabs as Array<AnyRecord>) || [];
   return await restoreTabsFromUndo(tabs, deps);
 }
 
-export async function undoArchive(undo: AnyRecord, deps: UndoHandlerDeps) {
+export async function undoArchive(undo: AnyRecord, deps: Pick<ExtensionDeps, "log">) {
   const tabs = (undo.tabs as Array<AnyRecord>) || [];
   const restored: Array<{ tabId: number; targetWindowId: number }> = [];
   const skipped: Array<AnyRecord> = [];
@@ -339,7 +337,7 @@ export async function undoArchive(undo: AnyRecord, deps: UndoHandlerDeps) {
   };
 }
 
-export async function undoClose(undo: AnyRecord, deps: UndoHandlerDeps) {
+export async function undoClose(undo: AnyRecord, deps: Pick<ExtensionDeps, "log">) {
   const tabs = (undo.tabs as Array<AnyRecord>) || [];
   const restored: Array<{ tabId: number; entry: AnyRecord }> = [];
   const skipped: Array<AnyRecord> = [];
@@ -438,7 +436,7 @@ export async function undoClose(undo: AnyRecord, deps: UndoHandlerDeps) {
   };
 }
 
-export async function undoTransaction(params: Record<string, unknown>, deps: UndoHandlerDeps) {
+export async function undoTransaction(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "log">) {
   if (!params.record || !(params.record as Record<string, unknown>).undo) {
     throw new Error("Undo record missing");
   }

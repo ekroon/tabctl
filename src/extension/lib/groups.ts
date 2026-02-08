@@ -20,12 +20,7 @@ export type GroupSummary = {
   title: string | null;
 };
 
-export interface GroupDeps {
-  getTabSnapshot: () => Promise<{ windows: Array<Record<string, unknown>> }>;
-  buildWindowLabels: (snapshot: { windows: Array<{ windowId: number }> }) => Map<number, string>;
-  resolveWindowIdFromParams: (snapshot: { windows: Array<Record<string, unknown>> }, value: unknown) => number | null;
-  log: (...args: Array<unknown>) => void;
-}
+import type { ExtensionDeps } from "./deps";
 
 export function getGroupTabs(windowSnapshot: WindowSnapshot, groupId: number) {
   return windowSnapshot.tabs
@@ -149,10 +144,10 @@ export function resolveGroupById(snapshot: { windows: Array<Record<string, unkno
   return { match: matches[0] };
 }
 
-export async function listGroups(params: Record<string, unknown>, deps: GroupDeps) {
+export async function listGroups(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "buildWindowLabels" | "resolveWindowIdFromParams" | "log">) {
   const snapshot = await deps.getTabSnapshot();
   const windows = snapshot.windows as WindowSnapshot[];
-  const windowLabels = deps.buildWindowLabels(snapshot as { windows: Array<{ windowId: number }> });
+  const windowLabels = deps.buildWindowLabels(snapshot as unknown as { windows: Array<{ windowId: number }> });
   const windowIdParam = params.windowId != null ? deps.resolveWindowIdFromParams(snapshot, params.windowId) : null;
   if (windowIdParam && !windows.some((win) => win.windowId === windowIdParam)) {
     throw new Error("Window not found");
@@ -187,7 +182,7 @@ export async function listGroups(params: Record<string, unknown>, deps: GroupDep
   return { groups };
 }
 
-export async function groupUpdate(params: Record<string, unknown>, deps: GroupDeps) {
+export async function groupUpdate(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "buildWindowLabels" | "resolveWindowIdFromParams">) {
   const groupId = Number.isFinite(params.groupId as number) ? Number(params.groupId) : null;
   const groupTitle = typeof params.groupTitle === "string" ? params.groupTitle.trim() : "";
   if (!groupId && !groupTitle) {
@@ -254,7 +249,7 @@ export async function groupUpdate(params: Record<string, unknown>, deps: GroupDe
   };
 }
 
-export async function groupUngroup(params: Record<string, unknown>, deps: GroupDeps) {
+export async function groupUngroup(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "buildWindowLabels" | "resolveWindowIdFromParams">) {
   const groupId = Number.isFinite(params.groupId as number) ? Number(params.groupId) : null;
   const groupTitle = typeof params.groupTitle === "string" ? params.groupTitle.trim() : "";
   if (!groupId && !groupTitle) {
@@ -325,7 +320,7 @@ export async function groupUngroup(params: Record<string, unknown>, deps: GroupD
   };
 }
 
-export async function groupAssign(params: Record<string, unknown>, deps: GroupDeps) {
+export async function groupAssign(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "buildWindowLabels" | "resolveWindowIdFromParams" | "log">) {
   const rawTabIds = Array.isArray(params.tabIds) ? params.tabIds.map(Number) : [];
   const tabIds = rawTabIds.filter((id) => Number.isFinite(id));
   if (!tabIds.length) {
