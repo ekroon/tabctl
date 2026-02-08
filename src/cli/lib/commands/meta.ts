@@ -13,6 +13,7 @@ import { VERSION, BASE_VERSION, GIT_SHA, DIRTY, SKILL_NAME, SKILL_REPO } from ".
 import { printJson, errorOut } from "../output";
 import { sendRequest, createRequestId } from "../client";
 import { defaultPolicyPath, defaultPolicyTemplate, summarizePolicy, type Policy } from "../policy";
+import { formatCliArgValue } from "../scope";
 import type { Options, PolicyContext } from "../types";
 
 export { runSetup } from "./setup";
@@ -20,18 +21,6 @@ export { runSetup } from "./setup";
 // ============================================================================
 // Skill Command
 // ============================================================================
-
-function formatCliArgValue(value: unknown): string {
-  const raw = String(value);
-  if (!raw) {
-    return raw;
-  }
-  if (/[\s"]/g.test(raw)) {
-    const escaped = raw.replace(/"/g, "\\\"");
-    return `"${escaped}"`;
-  }
-  return raw;
-}
 
 function resolveProjectRoot(): string {
   try {

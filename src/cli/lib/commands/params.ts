@@ -9,23 +9,41 @@ import { normalizeGroupColor } from "../args";
 import type { Options } from "../types";
 
 // ============================================================================
+// Shared Scope Builder
+// ============================================================================
+
+function buildScopeFromOptions(
+  options: Options,
+  { allowNew }: { allowNew: boolean } = { allowNew: false }
+): { tabIds: number[] | undefined; groupTitle: unknown; groupId: number | undefined; windowId: number | string | undefined; all: boolean } {
+  if (options.ungrouped && options["group-id"]) {
+    errorOut("--ungrouped cannot be combined with --group-id");
+  }
+  const windowId = parseWindowScope(options.window, { allowNew });
+  return {
+    tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
+    groupTitle: options.group,
+    groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
+    windowId,
+    all: Boolean(options.all),
+  };
+}
+
+// ============================================================================
 // Analyze Command Parameters
 // ============================================================================
 
 export function buildAnalyzeParams(options: Options): Record<string, unknown> {
-  if (options.ungrouped && options["group-id"]) {
-    errorOut("--ungrouped cannot be combined with --group-id");
-  }
-  const windowValue = parseWindowScope(options.window, { allowNew: false });
+  const { tabIds, groupTitle, groupId, windowId, all } = buildScopeFromOptions(options);
 
   return {
     staleDays: options["stale-days"] ? Number(options["stale-days"]) : undefined,
     checkGitHub: Boolean(options.github),
-    tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
-    groupTitle: options.group,
-    groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
-    windowId: windowValue,
-    all: options.all === true,
+    tabIds,
+    groupTitle,
+    groupId,
+    windowId,
+    all,
     githubConcurrency: options["github-concurrency"] ? Number(options["github-concurrency"]) : undefined,
     githubTimeoutMs: options["github-timeout-ms"] ? Number(options["github-timeout-ms"]) : undefined,
     progress: Boolean(options.progress),
@@ -37,10 +55,7 @@ export function buildAnalyzeParams(options: Options): Record<string, unknown> {
 // ============================================================================
 
 export function buildInspectParams(options: Options): Record<string, unknown> {
-  if (options.ungrouped && options["group-id"]) {
-    errorOut("--ungrouped cannot be combined with --group-id");
-  }
-  const windowValue = parseWindowScope(options.window, { allowNew: false });
+  const { tabIds, groupTitle, groupId, windowId, all } = buildScopeFromOptions(options);
 
   const selectorAttr = options["selector-attr"] ? String(options["selector-attr"]).trim() : "";
   const allowedSelectorAttrs = new Set(["text", "href", "src", "href-url", "src-url"]);
@@ -88,11 +103,11 @@ export function buildInspectParams(options: Options): Record<string, unknown> {
   }
 
   return {
-    all: Boolean(options.all),
-    windowId: windowValue,
-    groupTitle: options.group,
-    groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
-    tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
+    all,
+    windowId,
+    groupTitle,
+    groupId,
+    tabIds,
     signals: options.signal ? (options.signal as string[]) : undefined,
     selectorSpecs,
     signalConfig,
@@ -171,25 +186,19 @@ export { buildMoveTabParams, buildMoveGroupParams, buildMergeWindowParams } from
 // ============================================================================
 
 export function buildArchiveParams(options: Options): Record<string, unknown> {
-  if (options.ungrouped && options["group-id"]) {
-    errorOut("--ungrouped cannot be combined with --group-id");
-  }
-  const windowValue = parseWindowScope(options.window, { allowNew: false });
+  const { tabIds, groupTitle, groupId, windowId, all } = buildScopeFromOptions(options);
 
   return {
-    all: Boolean(options.all),
-    windowId: windowValue,
-    groupTitle: options.group,
-    groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
-    tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
+    all,
+    windowId,
+    groupTitle,
+    groupId,
+    tabIds,
   };
 }
 
 export function buildCloseParams(options: Options): Record<string, unknown> {
-  if (options.ungrouped && options["group-id"]) {
-    errorOut("--ungrouped cannot be combined with --group-id");
-  }
-  const windowValue = parseWindowScope(options.window, { allowNew: false });
+  const { tabIds, groupTitle, groupId, windowId } = buildScopeFromOptions(options);
 
   if (options.apply) {
     return { mode: "apply", analysisId: options.apply };
@@ -202,10 +211,10 @@ export function buildCloseParams(options: Options): Record<string, unknown> {
   return {
     mode: "direct",
     confirmed: true,
-    windowId: windowValue,
-    groupTitle: options.group,
-    groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
-    tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
+    windowId,
+    groupTitle,
+    groupId,
+    tabIds,
   };
 }
 
@@ -214,17 +223,14 @@ export function buildCloseParams(options: Options): Record<string, unknown> {
 // ============================================================================
 
 export function buildReportParams(options: Options): Record<string, unknown> {
-  if (options.ungrouped && options["group-id"]) {
-    errorOut("--ungrouped cannot be combined with --group-id");
-  }
-  const windowValue = parseWindowScope(options.window, { allowNew: false });
+  const { tabIds, groupTitle, groupId, windowId, all } = buildScopeFromOptions(options);
 
   return {
-    all: Boolean(options.all),
-    windowId: windowValue,
-    groupTitle: options.group,
-    groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
-    tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
+    all,
+    windowId,
+    groupTitle,
+    groupId,
+    tabIds,
   };
 }
 
@@ -233,10 +239,7 @@ export function buildReportParams(options: Options): Record<string, unknown> {
 // ============================================================================
 
 export function buildScreenshotParams(options: Options): Record<string, unknown> {
-  if (options.ungrouped && options["group-id"]) {
-    errorOut("--ungrouped cannot be combined with --group-id");
-  }
-  const windowValue = parseWindowScope(options.window, { allowNew: false });
+  const { tabIds, groupTitle, groupId, windowId, all } = buildScopeFromOptions(options);
 
   const outDir = options.out != null ? String(options.out).trim() : "";
   if (options.out && !outDir) {
@@ -244,11 +247,11 @@ export function buildScreenshotParams(options: Options): Record<string, unknown>
   }
 
   return {
-    all: Boolean(options.all),
-    windowId: windowValue,
-    groupTitle: options.group,
-    groupId: options.ungrouped ? -1 : (options["group-id"] ? Number(options["group-id"]) : undefined),
-    tabIds: options.tab ? (options.tab as string[]).map(Number) : undefined,
+    all,
+    windowId,
+    groupTitle,
+    groupId,
+    tabIds,
     mode: options.mode,
     format: options.format,
     quality: options.quality != null ? Number(options.quality) : undefined,
