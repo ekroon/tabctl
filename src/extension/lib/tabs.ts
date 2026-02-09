@@ -3,7 +3,7 @@
 type WindowSnapshot = import("./groups").WindowSnapshot;
 
 import type { ExtensionDeps } from "./deps";
-import normalizeUrlLib = require("normalize-url");
+import normalizeUrlLib from "normalize-url";
 
 export function getMostRecentFocusedWindowId(windows: WindowSnapshot[]) {
   let bestWindowId: number | null = null;
