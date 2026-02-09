@@ -158,6 +158,8 @@ export function buildOpenParams(options: Options): Record<string, unknown> {
     urls: options.url ? (options.url as string[]).map(String) : undefined,
     groupTitle: options.group,
     color: normalizeGroupColor(options.color),
+    newGroup: options["new-group"] === true ? true : undefined,
+    allowDuplicates: options["allow-duplicates"] === true ? true : undefined,
     afterGroupTitle: options["after-group"],
     beforeTabId: options["before-tab"] ? Number(options["before-tab"]) : undefined,
     afterTabId: options["after-tab"] ? Number(options["after-tab"]) : undefined,

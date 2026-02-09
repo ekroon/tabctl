@@ -206,8 +206,10 @@ tabctl refresh --tab <id>
 Open new tabs and optionally group them in a target window.
 Options:
 - `--url <url>` (repeatable)
-- `--group <name>` (new group title)
+- `--group <name>` (add tabs to this group; reuses an existing group with the same name by default)
 - `--color <name>` (group color)
+- `--new-group` (force create a new group even if one with the same name exists)
+- `--allow-duplicates` (open URLs even if already present in the target group)
 - `--before-tab <id>`
 - `--after-tab <id>`
 - `--after-group <name>` (insert tabs after this group)
@@ -218,6 +220,9 @@ Options:
 - `--window-url <substring>` (window containing a tab whose URL includes this substring)
 
 Allowed colors: `grey`, `blue`, `red`, `yellow`, `green`, `pink`, `purple`, `cyan`, `orange`.
+
+When `--group` matches an already-open group, new tabs are added to it and duplicate URLs are skipped.
+Use `--new-group` to always create a separate group, and `--allow-duplicates` to open URLs that already exist in the group.
 
 Example:
 ```bash

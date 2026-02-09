@@ -222,6 +222,8 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
     throw new Error("Only one target position is allowed");
   }
   const newWindow = params.newWindow === true;
+  const forceNewGroup = params.newGroup === true;
+  const allowDuplicates = params.allowDuplicates === true;
   if (!urls.length && !newWindow) {
     throw new Error("No URLs provided");
   }
@@ -323,6 +325,18 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
       openParams = { ...params, windowId: anchorWindow.windowId };
     }
   }
+
+  // When groupTitle is set and not forcing a new group, try to resolve
+  // the target window via the group name so we land in the right window.
+  if (groupTitle && !forceNewGroup && openParams.windowId == null && !openParams.windowGroupTitle && !openParams.windowTabId && !openParams.windowUrl) {
+    const groupWindows = (snapshot.windows as WindowSnapshot[]).filter(
+      (win) => win.groups.some((g) => g.title === groupTitle),
+    );
+    if (groupWindows.length === 1) {
+      openParams = { ...openParams, windowId: groupWindows[0].windowId };
+    }
+  }
+
   const selection = resolveOpenWindow(snapshot, openParams);
   if ((selection as { error?: Record<string, unknown> }).error) {
     throw (selection as { error: Record<string, unknown> }).error;
@@ -333,6 +347,26 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
   if (!windowSnapshot) {
     throw new Error("Window snapshot unavailable");
   }
+
+  // Resolve existing group for reuse
+  let existingGroupId: number | null = null;
+  const existingGroupUrls = new Set<string>();
+  if (groupTitle && !forceNewGroup) {
+    const matchingGroup = windowSnapshot.groups.find((g) => g.title === groupTitle);
+    if (matchingGroup) {
+      existingGroupId = matchingGroup.groupId as number;
+      if (!allowDuplicates) {
+        const groupTabs = windowSnapshot.tabs.filter((tab) => tab.groupId === existingGroupId);
+        for (const tab of groupTabs) {
+          const normalized = normalizeUrl(tab.url);
+          if (normalized) {
+            existingGroupUrls.add(normalized);
+          }
+        }
+      }
+    }
+  }
+
   const created: Array<Record<string, unknown>> = [];
   const skipped: Array<Record<string, unknown>> = [];
   let insertIndex: number | null = null;
@@ -355,6 +389,18 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
     insertIndex = Math.max(...indices) + 1;
   }
 
+  // When reusing an existing group and no explicit position given,
+  // insert after the last tab in that group.
+  if (existingGroupId != null && insertIndex == null && beforeTabId == null && afterTabId == null) {
+    const groupTabs = windowSnapshot.tabs.filter((tab) => tab.groupId === existingGroupId);
+    const indices = groupTabs
+      .map((tab) => normalizeTabIndex(tab.index))
+      .filter((value): value is number => value != null);
+    if (indices.length) {
+      insertIndex = Math.max(...indices) + 1;
+    }
+  }
+
   if (beforeTabId != null || afterTabId != null) {
     if (afterGroupTitle) {
       throw new Error("Only one target position is allowed");
@@ -373,6 +419,14 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
 
   let nextIndex = insertIndex;
   for (const url of urls) {
+    // Skip duplicates when reusing a group
+    if (!allowDuplicates && existingGroupId != null) {
+      const normalized = normalizeUrl(url);
+      if (normalized && existingGroupUrls.has(normalized)) {
+        skipped.push({ url, reason: "duplicate" });
+        continue;
+      }
+    }
     try {
       const createOptions: chrome.tabs.CreateProperties = { windowId, url, active: false };
       if (nextIndex != null) {
@@ -397,17 +451,27 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
     try {
       const tabIds = created.map((tab) => tab.tabId as number).filter((id) => typeof id === "number");
       if (tabIds.length > 0) {
-        groupId = await chrome.tabs.group({ tabIds, createProperties: { windowId } });
-        const update: chrome.tabGroups.UpdateProperties = { title: groupTitle };
-        if (groupColor) {
-          update.color = groupColor as chrome.tabGroups.ColorEnum;
+        if (existingGroupId != null) {
+          // Reuse existing group
+          await chrome.tabs.group({ groupId: existingGroupId, tabIds });
+          groupId = existingGroupId;
+        } else {
+          // Create new group
+          groupId = await chrome.tabs.group({ tabIds, createProperties: { windowId } });
+          const update: chrome.tabGroups.UpdateProperties = { title: groupTitle };
+          if (groupColor) {
+            update.color = groupColor as chrome.tabGroups.ColorEnum;
+          }
+          await chrome.tabGroups.update(groupId, update);
         }
-        await chrome.tabGroups.update(groupId, update);
       }
     } catch (error) {
       deps.log("Failed to create group", error);
       groupId = null;
     }
+  } else if (groupTitle && created.length === 0 && existingGroupId != null) {
+    // All URLs were duplicates, still report the existing group
+    groupId = existingGroupId;
   }
 
   return {

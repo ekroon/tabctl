@@ -79,6 +79,8 @@ export const COMMANDS: Record<string, CommandMeta> = {
       { flag: "--url <url>", desc: "URL to open", repeatable: true },
       { flag: "--group <name>", desc: "Add tabs to group by name" },
       { flag: "--color <name>", desc: "Group color (if creating)" },
+      { flag: "--new-group", desc: "Force create a new group even if one with the same name exists" },
+      { flag: "--allow-duplicates", desc: "Open URLs even if already present in the target group" },
       { flag: "--before-tab <id>", desc: "Position before this tab" },
       { flag: "--after-tab <id>", desc: "Position after this tab" },
       { flag: "--after-group <name>", desc: "Position after this group" },

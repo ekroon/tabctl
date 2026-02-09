@@ -337,6 +337,63 @@ test("open supports window new alias", async () => {
   assert.equal(params?.newWindow, true);
 });
 
+test("open passes --new-group flag", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { createdTabs: 1 } })));
+
+  const result = await runCli([
+    "open",
+    "--url",
+    "https://example.com",
+    "--group",
+    "Work",
+    "--new-group",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "open");
+  const params = requests[0].params as { groupTitle?: string; newGroup?: boolean } | undefined;
+  assert.equal(params?.groupTitle, "Work");
+  assert.equal(params?.newGroup, true);
+});
+
+test("open passes --allow-duplicates flag", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { createdTabs: 1 } })));
+
+  const result = await runCli([
+    "open",
+    "--url",
+    "https://example.com",
+    "--group",
+    "Work",
+    "--allow-duplicates",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests[0].action, "open");
+  const params = requests[0].params as { allowDuplicates?: boolean } | undefined;
+  assert.equal(params?.allowDuplicates, true);
+});
+
+test("open omits newGroup and allowDuplicates by default", async () => {
+  const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { createdTabs: 1 } })));
+
+  const result = await runCli([
+    "open",
+    "--url",
+    "https://example.com",
+    "--group",
+    "Work",
+  ], socketPath);
+  await stopMockSocket(server, socketPath, sockets);
+
+  assert.equal(result.status, 0);
+  const params = requests[0].params as { newGroup?: boolean; allowDuplicates?: boolean } | undefined;
+  assert.equal(params?.newGroup, undefined);
+  assert.equal(params?.allowDuplicates, undefined);
+});
+
 test("undo sends undo action with txid", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { summary: { restoredTabs: 1 } })));
 
