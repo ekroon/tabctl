@@ -5,6 +5,7 @@ import {
   normalizeTabIndex,
   getMostRecentFocusedWindowId,
   resolveOpenWindow,
+  openTabs,
 } from "../../extension/lib/tabs";
 
 // ============================================================================
@@ -278,4 +279,649 @@ test("duplicate detection via Set matches group reuse logic", () => {
   assert.equal(skipped.length, 2);
   assert.equal(created.length, 1);
   assert.equal(created[0], "https://www.npmjs.com/package/tabctl");
+});
+
+// ============================================================================
+// openTabs — full function tests with lightweight chrome stubs
+// ============================================================================
+
+// Minimal chrome stub that records calls and returns predictable results.
+function installChromeStub() {
+  let tabIdCounter = 100;
+  let groupIdCounter = 200;
+  let windowIdCounter = 300;
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+
+  const chromeStub = {
+    windows: {
+      create: async (opts: Record<string, unknown>) => {
+        calls.push({ method: "windows.create", args: [opts] });
+        const windowId = windowIdCounter++;
+        return {
+          id: windowId,
+          tabs: [{ id: tabIdCounter++, windowId, index: 0, url: "chrome://newtab", title: "New Tab" }],
+        };
+      },
+    },
+    tabs: {
+      create: async (opts: Record<string, unknown>) => {
+        calls.push({ method: "tabs.create", args: [opts] });
+        const id = tabIdCounter++;
+        return {
+          id,
+          windowId: opts.windowId ?? 1,
+          index: (opts.index as number) ?? 0,
+          url: opts.url ?? "",
+          title: "",
+        };
+      },
+      group: async (opts: Record<string, unknown>) => {
+        calls.push({ method: "tabs.group", args: [opts] });
+        if (opts.groupId != null) {
+          return opts.groupId as number;
+        }
+        return groupIdCounter++;
+      },
+      remove: async (tabId: number) => {
+        calls.push({ method: "tabs.remove", args: [tabId] });
+      },
+      query: async () => [],
+    },
+    tabGroups: {
+      update: async (groupId: number, props: Record<string, unknown>) => {
+        calls.push({ method: "tabGroups.update", args: [groupId, props] });
+        return { id: groupId, ...props };
+      },
+    },
+  };
+
+  (globalThis as Record<string, unknown>).chrome = chromeStub;
+  return { calls, getTabIdCounter: () => tabIdCounter, getGroupIdCounter: () => groupIdCounter };
+}
+
+function makeDeps(snapshot: Record<string, unknown>) {
+  const logs: unknown[][] = [];
+  return {
+    getTabSnapshot: async () => snapshot as { generatedAt: number; windows: Array<Record<string, unknown>> },
+    log: (...args: unknown[]) => { logs.push(args); },
+    _logs: logs,
+  };
+}
+
+function makeSnapshot(windows: Array<{
+  windowId: number;
+  focused?: boolean;
+  tabs?: Array<Record<string, unknown>>;
+  groups?: Array<Record<string, unknown>>;
+}>) {
+  return {
+    generatedAt: Date.now(),
+    windows: windows.map((w) => ({
+      windowId: w.windowId,
+      focused: w.focused ?? false,
+      tabs: w.tabs ?? [],
+      groups: w.groups ?? [],
+    })),
+  };
+}
+
+test("openTabs creates tabs in focused window", async () => {
+  const stub = installChromeStub();
+  const snapshot = makeSnapshot([
+    { windowId: 1, focused: true, tabs: [{ tabId: 1, index: 0 }] },
+  ]);
+  const deps = makeDeps(snapshot);
+
+  const result = await openTabs({
+    urls: ["https://example.com", "https://example.org"],
+  }, deps);
+
+  assert.equal(result.windowId, 1);
+  assert.equal(result.created.length, 2);
+  assert.equal(result.skipped.length, 0);
+  assert.equal(result.summary.createdTabs, 2);
+  assert.equal(result.summary.skippedUrls, 0);
+  assert.equal(result.summary.grouped, false);
+  assert.equal(result.groupId, null);
+});
+
+test("openTabs creates group for new tabs", async () => {
+  const stub = installChromeStub();
+  const snapshot = makeSnapshot([
+    { windowId: 1, focused: true, tabs: [{ tabId: 1, index: 0 }] },
+  ]);
+  const deps = makeDeps(snapshot);
+
+  const result = await openTabs({
+    urls: ["https://example.com"],
+    groupTitle: "Test",
+    color: "blue",
+  }, deps);
+
+  assert.equal(result.groupTitle, "Test");
+  assert.ok(result.groupId != null);
+  assert.equal(result.summary.grouped, true);
+
+  // Verify chrome.tabs.group was called to create a new group
+  const groupCall = stub.calls.find((c) => c.method === "tabs.group");
+  assert.ok(groupCall);
+  const groupArgs = groupCall!.args[0] as Record<string, unknown>;
+  assert.ok(groupArgs.createProperties);
+  assert.equal((groupArgs.createProperties as Record<string, unknown>).windowId, 1);
+
+  // Verify chrome.tabGroups.update was called with title and color
+  const updateCall = stub.calls.find((c) => c.method === "tabGroups.update");
+  assert.ok(updateCall);
+  const updateArgs = updateCall!.args[1] as Record<string, unknown>;
+  assert.equal(updateArgs.title, "Test");
+  assert.equal(updateArgs.color, "blue");
+});
+
+test("openTabs reuses existing group by default", async () => {
+  const stub = installChromeStub();
+  const snapshot = makeSnapshot([
+    {
+      windowId: 1,
+      focused: true,
+      tabs: [
+        { tabId: 1, index: 0, groupId: 50, url: "https://existing.com" },
+      ],
+      groups: [
+        { groupId: 50, title: "MyGroup" },
+      ],
+    },
+  ]);
+  const deps = makeDeps(snapshot);
+
+  const result = await openTabs({
+    urls: ["https://newsite.com"],
+    groupTitle: "MyGroup",
+  }, deps);
+
+  assert.equal(result.groupId, 50);
+  assert.equal(result.summary.grouped, true);
+  assert.equal(result.created.length, 1);
+
+  // Verify chrome.tabs.group was called with existing groupId (reuse)
+  const groupCall = stub.calls.find((c) => c.method === "tabs.group");
+  assert.ok(groupCall);
+  const groupArgs = groupCall!.args[0] as Record<string, unknown>;
+  assert.equal(groupArgs.groupId, 50, "Should reuse existing groupId");
+  assert.equal(groupArgs.createProperties, undefined, "Should not create new group");
+});
+
+test("openTabs forces new group with newGroup flag", async () => {
+  const stub = installChromeStub();
+  const snapshot = makeSnapshot([
+    {
+      windowId: 1,
+      focused: true,
+      tabs: [
+        { tabId: 1, index: 0, groupId: 50, url: "https://existing.com" },
+      ],
+      groups: [
+        { groupId: 50, title: "MyGroup" },
+      ],
+    },
+  ]);
+  const deps = makeDeps(snapshot);
+
+  const result = await openTabs({
+    urls: ["https://newsite.com"],
+    groupTitle: "MyGroup",
+    newGroup: true,
+  }, deps);
+
+  // Should create a new group, not reuse groupId 50
+  assert.ok(result.groupId != null);
+  assert.notEqual(result.groupId, 50, "Should not reuse existing group");
+
+  const groupCall = stub.calls.find((c) => c.method === "tabs.group");
+  assert.ok(groupCall);
+  const groupArgs = groupCall!.args[0] as Record<string, unknown>;
+  assert.ok(groupArgs.createProperties, "Should create a new group");
+});
+
+test("openTabs skips duplicate URLs in existing group", async () => {
+  installChromeStub();
+  const snapshot = makeSnapshot([
+    {
+      windowId: 1,
+      focused: true,
+      tabs: [
+        { tabId: 1, index: 0, groupId: 50, url: "https://github.com/ekroon/tabctl" },
+        { tabId: 2, index: 1, groupId: 50, url: "https://github.com/ekroon/tabctl/pulls" },
+      ],
+      groups: [
+        { groupId: 50, title: "tabctl" },
+      ],
+    },
+  ]);
+  const deps = makeDeps(snapshot);
+
+  const result = await openTabs({
+    urls: [
+      "https://github.com/ekroon/tabctl",       // duplicate
+      "https://github.com/ekroon/tabctl/pulls",  // duplicate
+      "https://www.npmjs.com/package/tabctl",     // new
+    ],
+    groupTitle: "tabctl",
+  }, deps);
+
+  assert.equal(result.created.length, 1);
+  assert.equal(result.skipped.length, 2);
+  assert.equal(result.skipped[0].reason, "duplicate");
+  assert.equal(result.skipped[1].reason, "duplicate");
+  assert.equal(result.summary.createdTabs, 1);
+  assert.equal(result.summary.skippedUrls, 2);
+  assert.equal(result.groupId, 50);
+});
+
+test("openTabs allows duplicates with allowDuplicates flag", async () => {
+  installChromeStub();
+  const snapshot = makeSnapshot([
+    {
+      windowId: 1,
+      focused: true,
+      tabs: [
+        { tabId: 1, index: 0, groupId: 50, url: "https://github.com/ekroon/tabctl" },
+      ],
+      groups: [
+        { groupId: 50, title: "tabctl" },
+      ],
+    },
+  ]);
+  const deps = makeDeps(snapshot);
+
+  const result = await openTabs({
+    urls: ["https://github.com/ekroon/tabctl"],
+    groupTitle: "tabctl",
+    allowDuplicates: true,
+  }, deps);
+
+  assert.equal(result.created.length, 1, "Duplicate should be opened when allowDuplicates is true");
+  assert.equal(result.skipped.length, 0);
+});
+
+test("openTabs skips duplicates with normalized tracking params", async () => {
+  installChromeStub();
+  const snapshot = makeSnapshot([
+    {
+      windowId: 1,
+      focused: true,
+      tabs: [
+        { tabId: 1, index: 0, groupId: 50, url: "https://example.com/page" },
+      ],
+      groups: [
+        { groupId: 50, title: "Work" },
+      ],
+    },
+  ]);
+  const deps = makeDeps(snapshot);
+
+  const result = await openTabs({
+    urls: [
+      "https://example.com/page?utm_source=twitter",  // same after normalization
+      "https://example.com/page#section",              // same after normalization
+    ],
+    groupTitle: "Work",
+  }, deps);
+
+  assert.equal(result.created.length, 0);
+  assert.equal(result.skipped.length, 2);
+  assert.equal(result.skipped[0].reason, "duplicate");
+  assert.equal(result.skipped[1].reason, "duplicate");
+});
+
+test("openTabs reports existing group when all URLs are duplicates", async () => {
+  installChromeStub();
+  const snapshot = makeSnapshot([
+    {
+      windowId: 1,
+      focused: true,
+      tabs: [
+        { tabId: 1, index: 0, groupId: 50, url: "https://example.com" },
+      ],
+      groups: [
+        { groupId: 50, title: "MyGroup" },
+      ],
+    },
+  ]);
+  const deps = makeDeps(snapshot);
+
+  const result = await openTabs({
+    urls: ["https://example.com"],
+    groupTitle: "MyGroup",
+  }, deps);
+
+  assert.equal(result.created.length, 0);
+  assert.equal(result.skipped.length, 1);
+  assert.equal(result.groupId, 50, "Should still report existing groupId");
+  assert.equal(result.summary.grouped, true);
+});
+
+test("openTabs inserts after last tab in existing group", async () => {
+  const stub = installChromeStub();
+  const snapshot = makeSnapshot([
+    {
+      windowId: 1,
+      focused: true,
+      tabs: [
+        { tabId: 1, index: 0, groupId: 50, url: "https://a.com" },
+        { tabId: 2, index: 1, groupId: 50, url: "https://b.com" },
+        { tabId: 3, index: 2, groupId: -1, url: "https://other.com" },
+      ],
+      groups: [
+        { groupId: 50, title: "Work" },
+      ],
+    },
+  ]);
+  const deps = makeDeps(snapshot);
+
+  const result = await openTabs({
+    urls: ["https://c.com"],
+    groupTitle: "Work",
+  }, deps);
+
+  assert.equal(result.insertIndex, 2, "Should insert after index 1 (last group tab)");
+  // Verify chrome.tabs.create was called with index 2
+  const createCall = stub.calls.find((c) => c.method === "tabs.create");
+  assert.ok(createCall);
+  const createArgs = createCall!.args[0] as Record<string, unknown>;
+  assert.equal(createArgs.index, 2);
+});
+
+test("openTabs auto-resolves window by group title", async () => {
+  installChromeStub();
+  const snapshot = makeSnapshot([
+    {
+      windowId: 1,
+      focused: false,
+      tabs: [{ tabId: 1, index: 0 }],
+      groups: [],
+    },
+    {
+      windowId: 2,
+      focused: false,
+      tabs: [
+        { tabId: 2, index: 0, groupId: 50, url: "https://a.com" },
+      ],
+      groups: [
+        { groupId: 50, title: "tabctl" },
+      ],
+    },
+  ]);
+  const deps = makeDeps(snapshot);
+
+  const result = await openTabs({
+    urls: ["https://b.com"],
+    groupTitle: "tabctl",
+  }, deps);
+
+  assert.equal(result.windowId, 2, "Should auto-resolve to window containing the group");
+});
+
+test("openTabs in new window creates window and tabs", async () => {
+  const stub = installChromeStub();
+  const deps = makeDeps(makeSnapshot([]));
+
+  const result = await openTabs({
+    urls: ["https://example.com", "https://example.org"],
+    newWindow: true,
+  }, deps);
+
+  assert.ok(result.windowId != null);
+  assert.equal(result.created.length, 2);
+  assert.equal(result.summary.createdTabs, 2);
+
+  // Verify window was created
+  const windowCreate = stub.calls.find((c) => c.method === "windows.create");
+  assert.ok(windowCreate);
+
+  // Verify seed tab was removed
+  const removeCall = stub.calls.find((c) => c.method === "tabs.remove");
+  assert.ok(removeCall);
+});
+
+test("openTabs in new window with group creates group", async () => {
+  const stub = installChromeStub();
+  const deps = makeDeps(makeSnapshot([]));
+
+  const result = await openTabs({
+    urls: ["https://example.com"],
+    newWindow: true,
+    groupTitle: "NewGroup",
+    color: "red",
+  }, deps);
+
+  assert.ok(result.groupId != null);
+  assert.equal(result.groupTitle, "NewGroup");
+  assert.equal(result.summary.grouped, true);
+
+  const updateCall = stub.calls.find((c) => c.method === "tabGroups.update");
+  assert.ok(updateCall);
+  const updateArgs = updateCall!.args[1] as Record<string, unknown>;
+  assert.equal(updateArgs.title, "NewGroup");
+  assert.equal(updateArgs.color, "red");
+});
+
+test("openTabs throws when no URLs and no newWindow", async () => {
+  installChromeStub();
+  const deps = makeDeps(makeSnapshot([]));
+
+  await assert.rejects(
+    () => openTabs({ urls: [] }, deps),
+    { message: "No URLs provided" },
+  );
+});
+
+test("openTabs throws when before and after tab both specified", async () => {
+  installChromeStub();
+  const deps = makeDeps(makeSnapshot([]));
+
+  await assert.rejects(
+    () => openTabs({ urls: ["https://example.com"], beforeTabId: 1, afterTabId: 2 }, deps),
+    { message: "Only one target position is allowed" },
+  );
+});
+
+test("openTabs throws when new window combined with before-tab", async () => {
+  installChromeStub();
+  const deps = makeDeps(makeSnapshot([]));
+
+  await assert.rejects(
+    () => openTabs({ urls: ["https://example.com"], newWindow: true, beforeTabId: 1 }, deps),
+    { message: "Cannot use --before/--after with --new-window" },
+  );
+});
+
+test("openTabs throws when new window combined with window selectors", async () => {
+  installChromeStub();
+  const deps = makeDeps(makeSnapshot([]));
+
+  await assert.rejects(
+    () => openTabs({ urls: ["https://example.com"], newWindow: true, windowId: 1 }, deps),
+    { message: "Cannot combine --new-window with window selectors" },
+  );
+});
+
+test("openTabs without group does not skip duplicates", async () => {
+  installChromeStub();
+  const snapshot = makeSnapshot([
+    {
+      windowId: 1,
+      focused: true,
+      tabs: [
+        { tabId: 1, index: 0, groupId: -1, url: "https://example.com" },
+      ],
+    },
+  ]);
+  const deps = makeDeps(snapshot);
+
+  // Opening same URL but without a group should NOT deduplicate
+  const result = await openTabs({
+    urls: ["https://example.com"],
+  }, deps);
+
+  assert.equal(result.created.length, 1, "Without group, duplicates are not skipped");
+  assert.equal(result.skipped.length, 0);
+});
+
+test("openTabs with afterGroupTitle inserts after target group", async () => {
+  const stub = installChromeStub();
+  const snapshot = makeSnapshot([
+    {
+      windowId: 1,
+      focused: true,
+      tabs: [
+        { tabId: 1, index: 0, groupId: 50, url: "https://a.com" },
+        { tabId: 2, index: 1, groupId: 50, url: "https://b.com" },
+        { tabId: 3, index: 2, groupId: -1, url: "https://other.com" },
+      ],
+      groups: [
+        { groupId: 50, title: "Work" },
+      ],
+    },
+  ]);
+  const deps = makeDeps(snapshot);
+
+  const result = await openTabs({
+    urls: ["https://new.com"],
+    afterGroupTitle: "Work",
+  }, deps);
+
+  assert.equal(result.insertIndex, 2);
+  assert.equal(result.afterGroupTitle, "Work");
+});
+
+test("openTabs with beforeTabId inserts at anchor index", async () => {
+  const stub = installChromeStub();
+  const snapshot = makeSnapshot([
+    {
+      windowId: 1,
+      focused: true,
+      tabs: [
+        { tabId: 10, index: 0, url: "https://a.com" },
+        { tabId: 20, index: 1, url: "https://b.com" },
+        { tabId: 30, index: 2, url: "https://c.com" },
+      ],
+    },
+  ]);
+  const deps = makeDeps(snapshot);
+
+  const result = await openTabs({
+    urls: ["https://inserted.com"],
+    beforeTabId: 20,
+  }, deps);
+
+  assert.equal(result.insertIndex, 1, "Should insert at index of the anchor tab");
+});
+
+test("openTabs with afterTabId inserts after anchor index", async () => {
+  const stub = installChromeStub();
+  const snapshot = makeSnapshot([
+    {
+      windowId: 1,
+      focused: true,
+      tabs: [
+        { tabId: 10, index: 0, url: "https://a.com" },
+        { tabId: 20, index: 1, url: "https://b.com" },
+        { tabId: 30, index: 2, url: "https://c.com" },
+      ],
+    },
+  ]);
+  const deps = makeDeps(snapshot);
+
+  const result = await openTabs({
+    urls: ["https://inserted.com"],
+    afterTabId: 20,
+  }, deps);
+
+  assert.equal(result.insertIndex, 2, "Should insert after the anchor tab");
+});
+
+test("openTabs resolves window from anchor tab", async () => {
+  installChromeStub();
+  const snapshot = makeSnapshot([
+    {
+      windowId: 1,
+      focused: false,
+      tabs: [{ tabId: 10, index: 0 }],
+    },
+    {
+      windowId: 2,
+      focused: false,
+      tabs: [{ tabId: 20, index: 0 }],
+    },
+  ]);
+  const deps = makeDeps(snapshot);
+
+  const result = await openTabs({
+    urls: ["https://example.com"],
+    afterTabId: 20,
+  }, deps);
+
+  assert.equal(result.windowId, 2, "Should resolve window from anchor tab");
+});
+
+test("openTabs creates tabs without group when no groupTitle", async () => {
+  const stub = installChromeStub();
+  const snapshot = makeSnapshot([
+    { windowId: 1, focused: true, tabs: [{ tabId: 1, index: 0 }] },
+  ]);
+  const deps = makeDeps(snapshot);
+
+  const result = await openTabs({
+    urls: ["https://example.com"],
+  }, deps);
+
+  assert.equal(result.groupId, null);
+  assert.equal(result.groupTitle, null);
+  assert.equal(result.summary.grouped, false);
+  // No tabs.group call should have been made
+  const groupCalls = stub.calls.filter((c) => c.method === "tabs.group");
+  assert.equal(groupCalls.length, 0);
+});
+
+test("openTabs in new window without URLs returns seed tab", async () => {
+  installChromeStub();
+  const deps = makeDeps(makeSnapshot([]));
+
+  const result = await openTabs({
+    newWindow: true,
+  }, deps);
+
+  assert.ok(result.windowId != null);
+  assert.equal(result.created.length, 1, "Should include seed tab when no URLs");
+});
+
+test("openTabs increments insertion index for multiple tabs", async () => {
+  const stub = installChromeStub();
+  const snapshot = makeSnapshot([
+    {
+      windowId: 1,
+      focused: true,
+      tabs: [
+        { tabId: 1, index: 0, groupId: 50, url: "https://a.com" },
+      ],
+      groups: [
+        { groupId: 50, title: "Work" },
+      ],
+    },
+  ]);
+  const deps = makeDeps(snapshot);
+
+  const result = await openTabs({
+    urls: ["https://b.com", "https://c.com", "https://d.com"],
+    groupTitle: "Work",
+  }, deps);
+
+  assert.equal(result.created.length, 3);
+  // Verify tabs were created with incrementing indices
+  const createCalls = stub.calls.filter((c) => c.method === "tabs.create");
+  assert.equal(createCalls.length, 3);
+  const indices = createCalls.map((c) => (c.args[0] as Record<string, unknown>).index);
+  assert.equal(indices[0], 1); // After existing group tab at index 0
+  assert.equal(indices[1], 2);
+  assert.equal(indices[2], 3);
 });
