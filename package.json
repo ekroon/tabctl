@@ -44,5 +44,8 @@
   },
   "optionalDependencies": {
     "tabctl-win32-x64": "0.3.0"
+  },
+  "dependencies": {
+    "normalize-url": "^6.1.0"
   }
 }

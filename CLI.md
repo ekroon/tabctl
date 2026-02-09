@@ -207,7 +207,7 @@ Open new tabs and optionally group them in a target window.
 Options:
 - `--url <url>` (repeatable)
 - `--group <name>` (add tabs to this group; reuses an existing group with the same name by default)
-- `--color <name>` (group color)
+- `--color <name>` (group color, applied when creating a new group)
 - `--new-group` (force create a new group even if one with the same name exists)
 - `--allow-duplicates` (open URLs even if already present in the target group)
 - `--before-tab <id>`

@@ -3,6 +3,7 @@
 type WindowSnapshot = import("./groups").WindowSnapshot;
 
 import type { ExtensionDeps } from "./deps";
+import normalizeUrlLib = require("normalize-url");
 
 export function getMostRecentFocusedWindowId(windows: WindowSnapshot[]) {
   let bestWindowId: number | null = null;
@@ -22,48 +23,33 @@ export function getMostRecentFocusedWindowId(windows: WindowSnapshot[]) {
   return bestWindowId;
 }
 
-export function normalizeUrl(rawUrl: unknown) {
+export function normalizeUrl(rawUrl: unknown): string | null {
   if (!rawUrl || typeof rawUrl !== "string") {
     return null;
   }
-  let url: URL;
   try {
-    url = new URL(rawUrl);
+    return normalizeUrlLib(rawUrl, {
+      stripHash: true,
+      stripWWW: false,
+      removeTrailingSlash: false,
+      removeSingleSlash: false,
+      sortQueryParameters: true,
+      removeQueryParameters: [
+        /^utm_\w+$/i,
+        "fbclid",
+        "gclid",
+        "igshid",
+        "mc_cid",
+        "mc_eid",
+        "ref",
+        "ref_src",
+        "ref_url",
+        "si",
+      ],
+    });
   } catch {
     return null;
   }
-
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return null;
-  }
-
-  url.hash = "";
-  const dropKeys = new Set([
-    "fbclid",
-    "gclid",
-    "igshid",
-    "mc_cid",
-    "mc_eid",
-    "ref",
-    "ref_src",
-    "ref_url",
-    "utm_campaign",
-    "utm_content",
-    "utm_medium",
-    "utm_source",
-    "utm_term",
-    "utm_name",
-    "si",
-  ]);
-  for (const key of Array.from(url.searchParams.keys())) {
-    if (key.startsWith("utm_") || dropKeys.has(key)) {
-      url.searchParams.delete(key);
-    }
-  }
-
-  const search = url.searchParams.toString();
-  url.search = search ? `?${search}` : "";
-  return url.toString();
 }
 
 export function normalizeTabIndex(value: unknown) {
@@ -352,7 +338,13 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
   let existingGroupId: number | null = null;
   const existingGroupUrls = new Set<string>();
   if (groupTitle && !forceNewGroup) {
-    const matchingGroup = windowSnapshot.groups.find((g) => g.title === groupTitle);
+    const matchingGroups = windowSnapshot.groups.filter((g) => g.title === groupTitle);
+    if (matchingGroups.length > 1) {
+      throw new Error(
+        `Ambiguous group title "${groupTitle}": found ${matchingGroups.length} groups with the same name. Use --new-group to create a new group instead.`,
+      );
+    }
+    const matchingGroup = matchingGroups[0];
     if (matchingGroup) {
       existingGroupId = matchingGroup.groupId as number;
       if (!allowDuplicates) {
