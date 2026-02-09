@@ -302,28 +302,29 @@ async function main(): Promise<void> {
     };
     log(`CLI env: TABCTL_SOCKET=${socketPath}`);
 
-    async function runTest(name: string, args: string[]): Promise<boolean> {
+    function runCli(args: string[]): { ok: boolean; data?: Record<string, unknown>; raw: string } {
       const result = spawnSync(process.execPath, [cliPath, ...args], {
         env: cliEnv,
         encoding: "utf-8",
         timeout: 10_000,
       });
-
       const raw = (result.stdout || "").trim();
       try {
         const output = JSON.parse(raw);
-        if (output.ok) {
-          log(`  PASS: ${name}`);
-          return true;
-        }
-        log(`  FAIL: ${name}: ${JSON.stringify(output.error ?? output)}`);
-        return false;
+        return { ok: !!output.ok, data: output.data ?? output, raw };
       } catch {
-        log(`  FAIL: ${name}: non-JSON output: ${raw.slice(0, 200)}`);
-        log(`    status=${result.status} signal=${result.signal} error=${result.error?.message ?? "none"}`);
-        if (result.stderr) log(`    stderr: ${result.stderr.slice(0, 200)}`);
-        return false;
+        return { ok: false, raw };
       }
+    }
+
+    async function runTest(name: string, args: string[]): Promise<boolean> {
+      const { ok, data, raw } = runCli(args);
+      if (ok) {
+        log(`  PASS: ${name}`);
+        return true;
+      }
+      log(`  FAIL: ${name}: ${raw.slice(0, 200)}`);
+      return false;
     }
 
     // -- Tests ---------------------------------------------------------------
@@ -350,6 +351,111 @@ async function main(): Promise<void> {
     else failed++;
 
     await sleep(2000);
+
+    // -- Group reuse and duplicate skipping tests ----------------------------
+    // The open test above created a TEST-Integration group with example.com
+    // and example.org. Now test that re-opening the same group reuses it
+    // and skips duplicates.
+
+    {
+      const name = "open --group reuse skips duplicates";
+      const result = runCli([
+        "open",
+        "--url", "https://example.com",       // duplicate
+        "--url", "https://example.net",        // new
+        "--group", "TEST-Integration",
+        "--window", "last-focused",
+        "--json",
+      ]);
+      if (result.ok) {
+        const data = result.data as Record<string, unknown>;
+        const summary = data?.summary as Record<string, unknown> | undefined;
+        const skipped = data?.skipped as Array<Record<string, unknown>> | undefined;
+        if (
+          summary &&
+          summary.createdTabs === 1 &&
+          summary.skippedUrls === 1 &&
+          summary.grouped === true &&
+          skipped?.length === 1 &&
+          skipped[0].reason === "duplicate"
+        ) {
+          log(`  PASS: ${name}`);
+          passed++;
+        } else {
+          log(`  FAIL: ${name}: unexpected summary ${JSON.stringify(summary)} skipped ${JSON.stringify(skipped)}`);
+          failed++;
+        }
+      } else {
+        log(`  FAIL: ${name}: ${result.raw.slice(0, 200)}`);
+        failed++;
+      }
+    }
+
+    await sleep(1000);
+
+    {
+      const name = "open --group --allow-duplicates opens duplicates";
+      const result = runCli([
+        "open",
+        "--url", "https://example.com",
+        "--group", "TEST-Integration",
+        "--window", "last-focused",
+        "--allow-duplicates",
+        "--json",
+      ]);
+      if (result.ok) {
+        const data = result.data as Record<string, unknown>;
+        const summary = data?.summary as Record<string, unknown> | undefined;
+        if (
+          summary &&
+          summary.createdTabs === 1 &&
+          summary.skippedUrls === 0
+        ) {
+          log(`  PASS: ${name}`);
+          passed++;
+        } else {
+          log(`  FAIL: ${name}: unexpected summary ${JSON.stringify(summary)}`);
+          failed++;
+        }
+      } else {
+        log(`  FAIL: ${name}: ${result.raw.slice(0, 200)}`);
+        failed++;
+      }
+    }
+
+    await sleep(1000);
+
+    {
+      const name = "open --group --new-group creates separate group";
+      const result = runCli([
+        "open",
+        "--url", "https://example.com",
+        "--group", "TEST-Integration",
+        "--window", "last-focused",
+        "--new-group",
+        "--json",
+      ]);
+      if (result.ok) {
+        const data = result.data as Record<string, unknown>;
+        const summary = data?.summary as Record<string, unknown> | undefined;
+        if (
+          summary &&
+          summary.createdTabs === 1 &&
+          summary.grouped === true
+        ) {
+          log(`  PASS: ${name}`);
+          passed++;
+        } else {
+          log(`  FAIL: ${name}: unexpected summary ${JSON.stringify(summary)}`);
+          failed++;
+        }
+      } else {
+        log(`  FAIL: ${name}: ${result.raw.slice(0, 200)}`);
+        failed++;
+      }
+    }
+
+    await sleep(1000);
 
     if (await runTest("list --window last-focused", ["list", "--window", "last-focused", "--json"]))
       passed++;
