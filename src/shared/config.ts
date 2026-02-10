@@ -1,7 +1,7 @@
-import os from "os";
-import path from "path";
-import crypto from "crypto";
-import fs from "fs";
+import os from "node:os";
+import path from "node:path";
+import crypto from "node:crypto";
+import fs from "node:fs";
 
 function defaultConfigBase(): string {
   if (process.platform === "win32") {

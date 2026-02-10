@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import fs from "fs";
-import net from "net";
-import os from "os";
-import path from "path";
+import fs from "node:fs";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 import { readUndoRecords } from "../../host/lib/undo";

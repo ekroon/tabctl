@@ -4,9 +4,9 @@
  * Setup command is in ./setup.ts.
  */
 
-import fs from "fs";
-import os from "os";
-import path from "path";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { VERSION, BASE_VERSION, GIT_SHA, DIRTY, SKILL_NAME, SKILL_REPO } from "../constants";

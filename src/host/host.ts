@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import fs from "fs";
-import net from "net";
-import crypto from "crypto";
+import fs from "node:fs";
+import net from "node:net";
+import crypto from "node:crypto";
 import { resolveConfig } from "../shared/config";
 import {
   handleNativeMessage as _handleNativeMessage,

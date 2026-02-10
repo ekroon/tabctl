@@ -3,9 +3,9 @@
  * DevTools Protocol messaging over stdio pipes.
  */
 
-import fs from "fs";
-import net from "net";
-import path from "path";
+import fs from "node:fs";
+import net from "node:net";
+import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Writable, Readable } from "node:stream";
 

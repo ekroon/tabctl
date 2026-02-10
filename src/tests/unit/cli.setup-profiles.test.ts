@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import fs from "fs";
-import os from "os";
-import path from "path";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { runCli, runCliWithStdin, parseOutput } from "./cli-helpers";
 
@@ -551,7 +551,7 @@ test("setup auto-derived extension ID matches Chromium algorithm", async () => {
 
     // Verify the derived ID matches the Chromium SHA256-based algorithm
     const extensionDir = path.join(homeDir, ".local", "state", "tabctl", "extension");
-    const crypto = require("crypto");
+    const crypto = require("node:crypto");
     const hash = crypto.createHash("sha256").update(extensionDir).digest("hex").slice(0, 32);
     const expectedId = hash.split("").map((c: string) => String.fromCharCode("a".charCodeAt(0) + parseInt(c, 16))).join("");
     assert.equal(output.data.extensionId, expectedId);

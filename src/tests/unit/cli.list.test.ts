@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import os from "os";
-import path from "path";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { startMockSocket, stopMockSocket } from "./socket";
 import { runCli, parseOutput, mockResponse } from "./cli-helpers";

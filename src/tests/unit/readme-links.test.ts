@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "fs";
-import path from "path";
+import fs from "node:fs";
+import path from "node:path";
 
 test("README test links reference existing tests", () => {
   // Collect all test names from source test files

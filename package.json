@@ -15,7 +15,7 @@
     "chrome"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "bin": {
     "tabctl": "dist/cli/tabctl.js"
