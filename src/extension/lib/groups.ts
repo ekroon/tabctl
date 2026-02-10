@@ -25,7 +25,10 @@ import type { ExtensionDeps } from "./deps";
 export function getGroupTabs(windowSnapshot: WindowSnapshot, groupId: number) {
   return windowSnapshot.tabs
     .filter((tab) => tab.groupId === groupId)
-    .sort((a, b) => (Number(a.index) || 0) - (Number(b.index) || 0));
+    .sort((a, b) => {
+      const ai = Number(a.index); const bi = Number(b.index);
+      return (Number.isFinite(ai) ? ai : 0) - (Number.isFinite(bi) ? bi : 0);
+    });
 }
 
 export function listGroupSummaries(snapshot: { windows: Array<Record<string, unknown>> }, buildWindowLabels: (snapshot: { windows: Array<{ windowId: number }> }) => Map<number, string>, windowId?: number) {
