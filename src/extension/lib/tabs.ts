@@ -1,5 +1,7 @@
 // Tab operations — extracted from background.ts (pure structural refactor).
 
+import normalizeUrlLib from "normalize-url";
+
 type WindowSnapshot = import("./groups").WindowSnapshot;
 
 import type { ExtensionDeps } from "./deps";
@@ -22,48 +24,29 @@ export function getMostRecentFocusedWindowId(windows: WindowSnapshot[]) {
   return bestWindowId;
 }
 
-export function normalizeUrl(rawUrl: unknown) {
+export function normalizeUrl(rawUrl: unknown): string | null {
   if (!rawUrl || typeof rawUrl !== "string") {
     return null;
   }
-  let url: URL;
   try {
-    url = new URL(rawUrl);
+    return normalizeUrlLib(rawUrl, {
+      stripHash: true,
+      removeQueryParameters: [
+        /^utm_\w+$/i,
+        "fbclid",
+        "gclid",
+        "igshid",
+        "mc_cid",
+        "mc_eid",
+        "ref",
+        "ref_src",
+        "ref_url",
+        "si",
+      ],
+    });
   } catch {
     return null;
   }
-
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return null;
-  }
-
-  url.hash = "";
-  const dropKeys = new Set([
-    "fbclid",
-    "gclid",
-    "igshid",
-    "mc_cid",
-    "mc_eid",
-    "ref",
-    "ref_src",
-    "ref_url",
-    "utm_campaign",
-    "utm_content",
-    "utm_medium",
-    "utm_source",
-    "utm_term",
-    "utm_name",
-    "si",
-  ]);
-  for (const key of Array.from(url.searchParams.keys())) {
-    if (key.startsWith("utm_") || dropKeys.has(key)) {
-      url.searchParams.delete(key);
-    }
-  }
-
-  const search = url.searchParams.toString();
-  url.search = search ? `?${search}` : "";
-  return url.toString();
 }
 
 export function normalizeTabIndex(value: unknown) {
