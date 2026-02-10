@@ -87,6 +87,8 @@ export const COMMANDS: Record<string, CommandMeta> = {
       { flag: "--window-group <name>", desc: "Find window containing group" },
       { flag: "--window-tab <id>", desc: "Find window containing tab" },
       { flag: "--window-url <substring>", desc: "Find window containing URL" },
+      { flag: "--new-group", desc: "Force new group even if one exists" },
+      { flag: "--allow-duplicates", desc: "Open duplicate URLs" },
     ],
   },
   "group-list": {
@@ -129,6 +131,13 @@ export const COMMANDS: Record<string, CommandMeta> = {
       { flag: "--color <name>", desc: "Group color (if creating)" },
       { flag: "--collapsed", desc: "Collapse group after assign" },
       { flag: "--expanded", desc: "Expand group after assign" },
+    ],
+  },
+  "group-gather": {
+    description: "Merge duplicate groups with the same name",
+    options: [
+      { flag: "--window <id>", desc: "Target window ID" },
+      { flag: "--group <name>", desc: "Group name to gather (optional, gathers all if omitted)" },
     ],
   },
   "move-tab": {

@@ -213,6 +213,11 @@ export async function undoGroupAssign(undo: AnyRecord, deps: Pick<ExtensionDeps,
   return await restoreTabsFromUndo(tabs, deps);
 }
 
+export async function undoGroupGather(undo: AnyRecord, deps: Pick<ExtensionDeps, "log">) {
+  const tabs = (undo.tabs as Array<AnyRecord>) || [];
+  return await restoreTabsFromUndo(tabs, deps);
+}
+
 export async function undoMoveTab(undo: AnyRecord, deps: Pick<ExtensionDeps, "log">) {
   const from = (undo.from as AnyRecord) || {};
   const entry = {
@@ -456,6 +461,9 @@ export async function undoTransaction(params: Record<string, unknown>, deps: Pic
   }
   if (undo.action === "group-assign") {
     return await undoGroupAssign(undo, deps);
+  }
+  if (undo.action === "group-gather") {
+    return await undoGroupGather(undo, deps);
   }
   if (undo.action === "move-tab") {
     return await undoMoveTab(undo, deps);

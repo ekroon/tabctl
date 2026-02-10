@@ -17,6 +17,7 @@ import {
   buildGroupUpdateParams,
   buildGroupUngroupParams,
   buildGroupAssignParams,
+  buildGroupGatherParams,
   buildMoveTabParams,
   buildMoveGroupParams,
   buildMergeWindowParams,
@@ -284,6 +285,10 @@ async function main() {
       action = "group-assign";
       params = buildGroupAssignParams(options);
       break;
+    case "group-gather":
+      action = "group-gather";
+      params = buildGroupGatherParams(options);
+      break;
     case "move-tab":
       action = "move-tab";
       params = buildMoveTabParams(options);
@@ -348,7 +353,7 @@ async function main() {
     }
   }
 
-  if (enforcePolicy && ["analyze", "inspect", "report", "screenshot", "close", "archive", "focus", "refresh", "move-tab", "move-group", "group-assign", "group-update", "group-ungroup", "merge-window"].includes(command)) {
+  if (enforcePolicy && ["analyze", "inspect", "report", "screenshot", "close", "archive", "focus", "refresh", "move-tab", "move-group", "group-assign", "group-update", "group-ungroup", "group-gather", "merge-window"].includes(command)) {
     if (command === "close" && options.apply) {
       errorOut("Policy blocks close --apply; use explicit tab targets.");
     }
