@@ -8,10 +8,10 @@
  * Env:    CHROME_PATH – override Chrome binary location
  */
 
-import fs from "fs";
-import net from "net";
-import os from "os";
-import path from "path";
+import fs from "node:fs";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { execSync, spawnSync, type ChildProcess } from "node:child_process";
 import { resolveSocketPath } from "../shared/config";
 

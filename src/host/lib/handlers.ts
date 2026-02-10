@@ -1,4 +1,4 @@
-import net from "net";
+import net from "node:net";
 import { VERSION, BASE_VERSION, GIT_SHA, DIRTY } from "../../shared/version";
 import {
   appendUndoRecord,

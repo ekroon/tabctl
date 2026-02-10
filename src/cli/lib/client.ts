@@ -1,4 +1,4 @@
-import net from "net";
+import net from "node:net";
 import { resolveConfig } from "./constants";
 import type { ProgressCallback } from "./types";
 

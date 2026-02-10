@@ -1,8 +1,8 @@
-import net from "net";
-import os from "os";
-import path from "path";
-import crypto from "crypto";
-import fs from "fs";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
+import crypto from "node:crypto";
+import fs from "node:fs";
 
 export function createSocketPath(): string {
   if (process.platform === "win32") {

@@ -3,7 +3,7 @@
  * These functions extract and validate command parameters from CLI options.
  */
 
-import fs from "fs";
+import fs from "node:fs";
 import { errorOut } from "../output";
 import { normalizeGroupColor } from "../args";
 import type { Options } from "../types";

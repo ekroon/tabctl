@@ -1,6 +1,6 @@
-import path from "path";
-import fs from "fs";
-import crypto from "crypto";
+import path from "node:path";
+import fs from "node:fs";
+import crypto from "node:crypto";
 import { resolveConfig } from "./config";
 
 export const EXTENSION_DIR_NAME = "extension";

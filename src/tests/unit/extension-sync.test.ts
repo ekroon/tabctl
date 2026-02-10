@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import os from "os";
-import path from "path";
-import fs from "fs";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
 import {
   readExtensionVersion,
   resolveInstalledExtensionDir,
@@ -228,7 +228,7 @@ test("synced host bundle is executable", () => {
     assert.equal(result.synced, true);
 
     // Verify the bundle actually runs (will exit when stdin closes)
-    const { spawnSync } = require("child_process");
+    const { spawnSync } = require("node:child_process");
     const proc = spawnSync(process.execPath, [result.hostPath], {
       input: "{}",
       encoding: "utf-8",
