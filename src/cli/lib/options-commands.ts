@@ -136,7 +136,7 @@ export const COMMANDS: Record<string, CommandMeta> = {
   "group-gather": {
     description: "Merge duplicate groups with the same name",
     options: [
-      { flag: "--window <id>", desc: "Target window ID" },
+      { flag: "--window <id|active|last-focused>", desc: "Target window" },
       { flag: "--group <name>", desc: "Group name to gather (optional, gathers all if omitted)" },
     ],
   },

@@ -508,7 +508,12 @@ export async function groupGather(params: Record<string, unknown>, deps: Pick<Ex
 
       const groupsWithIndex = titleGroups.map((g) => {
         const tabs = win.tabs.filter((t) => t.groupId === g.groupId);
-        const minIndex = Math.min(...tabs.map((t) => Number(t.index) || Infinity));
+        const minIndex = Math.min(
+          ...tabs.map((t) => {
+            const idx = Number(t.index);
+            return Number.isFinite(idx) ? idx : Infinity;
+          }),
+        );
         return { group: g, tabs, minIndex };
       });
       groupsWithIndex.sort((a, b) => a.minIndex - b.minIndex);

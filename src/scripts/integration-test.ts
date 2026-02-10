@@ -620,6 +620,13 @@ async function main(): Promise<void> {
       return true;
     });
 
+    // Test 4b: group-gather undo
+    await runTestFn("group-gather undo", async () => {
+      const undoResult = runCli(["undo", "--latest", "--json"]);
+      if (!undoResult.ok) { log(`    undo failed: ${undoResult.raw.slice(0, 200)}`); return false; }
+      return true;
+    });
+
     // Test 5: Groups before ungrouped tabs (ordering)
     await runTestFn("groups before ungrouped tabs", async () => {
       // Open an ungrouped tab first

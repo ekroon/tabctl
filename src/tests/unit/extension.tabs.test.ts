@@ -756,6 +756,34 @@ describe("groupGather", () => {
     assert.equal(result.summary.movedTabs, 0);
     assert.equal(result.merged.length, 0);
   });
+
+  it("selects the correct primary group when a tab is at index 0", async () => {
+    const snapshot = {
+      windows: [
+        {
+          windowId: 1,
+          focused: true,
+          tabs: [
+            { tabId: 1, windowId: 1, index: 0, groupId: 10, url: "https://a.com", groupTitle: "Work" },
+            { tabId: 2, windowId: 1, index: 3, groupId: 20, url: "https://b.com", groupTitle: "Work" },
+          ],
+          groups: [
+            { groupId: 10, title: "Work", color: "blue" },
+            { groupId: 20, title: "Work", color: "red" },
+          ],
+        },
+      ],
+    };
+
+    const result = await groupGather({}, makeDeps(snapshot));
+
+    assert.equal(result.summary.mergedGroups, 1);
+    const groupCall = calls.find((c) => c.api === "tabs.group");
+    assert.ok(groupCall);
+    const args = groupCall!.args[0] as Record<string, unknown>;
+    assert.equal(args.groupId, 10, "should merge into group at index 0, not treat 0 as falsy");
+    assert.deepEqual(args.tabIds, [2]);
+  });
 });
 
 // ---------------------------------------------------------------------------
