@@ -222,6 +222,8 @@ async function handleAction(action: string, params: Record<string, unknown>, req
       return await groupUngroup(params);
     case "group-assign":
       return await groupAssign(params);
+    case "group-gather":
+      return await groupGather(params);
     case "move-tab":
       return await move.moveTab(params, deps);
     case "move-group":
@@ -417,6 +419,10 @@ async function groupUngroup(params: Record<string, unknown>) {
 
 async function groupAssign(params: Record<string, unknown>) {
   return groups.groupAssign(params, deps);
+}
+
+async function groupGather(params: Record<string, unknown>) {
+  return groups.groupGather(params, deps);
 }
 
 async function getArchiveWindowId(): Promise<number | null> {

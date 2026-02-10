@@ -1,6 +1,40 @@
 # Agent Testing Guide
 
-This project controls a live Edge session. The testing approach must avoid touching real tabs the user cares about.
+This project controls a live browser session (Edge or Chrome). The testing approach must avoid touching real tabs the user cares about.
+
+## Build and test commands
+
+```bash
+npm install          # Install deps + configure git hooks (via prepare script)
+npm run build        # Compile TypeScript, bundle extension & host
+npm test             # Build + run unit tests (no browser needed)
+npm run test:integration  # Run integration tests (requires Chrome)
+```
+
+A **pre-commit hook** (`.githooks/pre-commit`) runs `npm test` and, when Chrome is available, `npm run test:integration` automatically. The hook is activated by `npm install` via the `prepare` script (`git config core.hooksPath .githooks`).
+
+## Project architecture
+
+```
+src/
+  cli/           # CLI entry point (tabctl.ts) and command handling
+    lib/
+      commands/  # Parameter builders and command metadata
+      options-commands.ts  # Command definitions and flag specs
+  extension/     # Chrome extension (background service worker)
+    lib/
+      tabs.ts    # Tab operations (open, focus, refresh)
+      groups.ts  # Group management (list, update, assign, gather)
+      move.ts    # Tab/group movement
+      archive.ts # Archive operations
+      undo-handlers.ts  # Undo logic for all mutations
+  host/          # Native messaging host (Node.js ↔ extension bridge)
+  shared/        # Shared utilities (config, profiles, WSL support)
+  scripts/       # Build scripts and integration test harness
+  tests/unit/    # Unit tests (no browser required)
+```
+
+**Data flow:** CLI → Unix socket/named pipe → Host → Native messaging → Extension → Chrome APIs
 
 ## CLI Usage Rules for Agents
 
@@ -88,24 +122,26 @@ tabctl list --profile chrome-work --all
 
 When creating smoke tests, ensure you are connected to the correct profile. Use `tabctl profile-list` to see all available profiles.
 
-## Unit tests (no Edge required)
-These tests validate the CLI/host helpers using a mocked socket and run without Edge or the extension.
+## Unit tests (no browser required)
+These tests validate the CLI/host helpers using a mocked socket and extension logic using a chrome API stub. No browser needed.
 
 Run:
-- `npm install`
-- `npm test`
+- `npm test` (builds first, then runs all unit tests)
 
 Notes:
-- Unit tests use the compiled JS in `tests/unit/`.
-- The mock socket avoids any browser interaction.
+- Source in `src/tests/unit/`, compiled to `dist/tests/unit/`.
+- CLI tests use a mock socket to avoid browser interaction.
+- Extension tests (e.g., `extension.tabs.test.ts`) use a lightweight chrome stub on `globalThis.chrome` that records API calls and returns predictable results.
 
 ## Required end-of-task checks
 Always finish with:
-1. `npm test`
-2. `npm run test:integration` (if Chrome is available)
+1. `npm test` — all unit tests must pass
+2. `npm run test:integration` — all integration tests must pass (if Chrome is available)
 3. A minimal smoke test in a new window you create (safe URLs + unique `TEST-` prefix). Verify via `tabctl group-list` or `tabctl list`.
 4. A screenshot-first smoke step: capture a screenshot before running selector-based extraction.
 5. If multiple profiles are configured, verify the active profile with `tabctl profile-show` before running smoke tests.
+
+> **Note:** The pre-commit hook enforces steps 1 and 2 automatically. If you bypass it with `--no-verify`, you must run them manually.
 
 Example (recommended for development):
 ```bash
@@ -168,7 +204,7 @@ Only use a dedicated test window and clearly labeled groups.
 Recommended safe pattern:
 1. Use `npm run test:integration` for automated close/undo testing in an isolated browser.
 2. For manual testing, use a dedicated test profile or a brand-new Edge window with only test tabs.
-3. Run `tabctl analyze` (add `--github` only when you accept slower analysis).
+3. Run `tabctl analyze`.
 4. Use `tabctl close --tab <tabId> --confirm` for a single test tab.
 5. Run `tabctl undo <txid>` to restore.
 

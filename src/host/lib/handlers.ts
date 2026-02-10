@@ -13,17 +13,18 @@ const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 const HISTORY_LIMIT_DEFAULT = 20;
 const RETENTION_DAYS = 30;
 
-const UNDO_ACTIONS = new Set([
+export const UNDO_ACTIONS = new Set([
   "archive",
   "close",
   "group-update",
   "group-ungroup",
   "group-assign",
+  "group-gather",
   "move-tab",
   "move-group",
   "merge-window",
 ]);
-const LOCAL_ACTIONS = new Set(["history", "undo", "version"]);
+export const LOCAL_ACTIONS = new Set(["history", "undo", "version"]);
 
 export type PendingRequest = {
   socket: net.Socket;

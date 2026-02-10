@@ -205,6 +205,8 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
     throw new Error("Only one target position is allowed");
   }
   const newWindow = params.newWindow === true;
+  const forceNewGroup = params.newGroup === true;
+  const allowDuplicates = params.allowDuplicates === true;
   if (!urls.length && !newWindow) {
     throw new Error("No URLs provided");
   }
@@ -298,6 +300,17 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
 
   const snapshot = await deps.getTabSnapshot();
   let openParams = params;
+
+  // Auto-resolve window by group name when no explicit window selector is provided
+  if (groupTitle && !forceNewGroup && openParams.windowId == null && !openParams.windowGroupTitle && !openParams.windowTabId && !openParams.windowUrl) {
+    const groupWindows = (snapshot.windows as WindowSnapshot[]).filter(
+      (win) => win.groups.some((g) => g.title === groupTitle),
+    );
+    if (groupWindows.length === 1) {
+      openParams = { ...openParams, windowId: groupWindows[0].windowId };
+    }
+  }
+
   if (params.windowId == null && (beforeTabId != null || afterTabId != null)) {
     const anchorId = beforeTabId != null ? beforeTabId : (afterTabId as number);
     const anchorWindow = (snapshot.windows as WindowSnapshot[])
@@ -316,6 +329,29 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
   if (!windowSnapshot) {
     throw new Error("Window snapshot unavailable");
   }
+
+  // Resolve existing group for reuse
+  let existingGroupId: number | null = null;
+  const existingUrlSet = new Set<string>();
+  if (groupTitle && !forceNewGroup) {
+    const matchingGroups = windowSnapshot.groups.filter((g) => g.title === groupTitle);
+    if (matchingGroups.length > 1) {
+      throw new Error(
+        `Ambiguous group title "${groupTitle}": found ${matchingGroups.length} groups with the same name. Use --new-group to force a new group, group-gather to merge, or --group-id to target by ID.`,
+      );
+    }
+    if (matchingGroups.length === 1) {
+      existingGroupId = matchingGroups[0].groupId as number;
+      const existingTabs = windowSnapshot.tabs.filter((tab) => tab.groupId === existingGroupId);
+      for (const tab of existingTabs) {
+        const norm = normalizeUrl(tab.url);
+        if (norm) {
+          existingUrlSet.add(norm);
+        }
+      }
+    }
+  }
+
   const created: Array<Record<string, unknown>> = [];
   const skipped: Array<Record<string, unknown>> = [];
   let insertIndex: number | null = null;
@@ -354,8 +390,26 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
     insertIndex = beforeTabId != null ? anchorIndex : anchorIndex + 1;
   }
 
+  // Default insert position: append after existing group tabs
+  if (existingGroupId != null && insertIndex == null && beforeTabId == null && afterTabId == null) {
+    const groupTabs = windowSnapshot.tabs.filter((tab) => tab.groupId === existingGroupId);
+    const indices = groupTabs
+      .map((tab) => normalizeTabIndex(tab.index))
+      .filter((value): value is number => value != null);
+    if (indices.length) {
+      insertIndex = Math.max(...indices) + 1;
+    }
+  }
+
   let nextIndex = insertIndex;
   for (const url of urls) {
+    if (!allowDuplicates && existingGroupId != null) {
+      const norm = normalizeUrl(url);
+      if (norm && existingUrlSet.has(norm)) {
+        skipped.push({ url, reason: "duplicate" });
+        continue;
+      }
+    }
     try {
       const createOptions: chrome.tabs.CreateProperties = { windowId, url, active: false };
       if (nextIndex != null) {
@@ -380,17 +434,48 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
     try {
       const tabIds = created.map((tab) => tab.tabId as number).filter((id) => typeof id === "number");
       if (tabIds.length > 0) {
-        groupId = await chrome.tabs.group({ tabIds, createProperties: { windowId } });
-        const update: chrome.tabGroups.UpdateProperties = { title: groupTitle };
-        if (groupColor) {
-          update.color = groupColor as chrome.tabGroups.ColorEnum;
+        if (existingGroupId != null) {
+          // Reuse existing group
+          groupId = await chrome.tabs.group({ groupId: existingGroupId, tabIds });
+        } else {
+          groupId = await chrome.tabs.group({ tabIds, createProperties: { windowId } });
+          const update: chrome.tabGroups.UpdateProperties = { title: groupTitle };
+          if (groupColor) {
+            update.color = groupColor as chrome.tabGroups.ColorEnum;
+          }
+          await chrome.tabGroups.update(groupId, update);
         }
-        await chrome.tabGroups.update(groupId, update);
       }
     } catch (error) {
       deps.log("Failed to create group", error);
       groupId = null;
     }
+  }
+
+  // All-dupes case: report existing group even when no new tabs were created
+  if (groupTitle && created.length === 0 && existingGroupId != null) {
+    groupId = existingGroupId;
+  }
+
+  // Reorder: groups before ungrouped tabs
+  try {
+    const freshTabs = await chrome.tabs.query({ windowId });
+    freshTabs.sort((a, b) => a.index - b.index);
+
+    const firstUngroupedIndex = freshTabs.findIndex(t => (t.groupId ?? -1) === -1);
+    if (firstUngroupedIndex >= 0) {
+      const groupedAfterUngrouped = freshTabs.filter(
+        (t, i) => i > firstUngroupedIndex && (t.groupId ?? -1) !== -1
+      );
+      if (groupedAfterUngrouped.length > 0) {
+        const tabIdsToMove = groupedAfterUngrouped.map(t => t.id!).filter(id => typeof id === "number");
+        if (tabIdsToMove.length > 0) {
+          await chrome.tabs.move(tabIdsToMove, { index: firstUngroupedIndex });
+        }
+      }
+    }
+  } catch (err) {
+    deps.log("Failed to reorder groups before ungrouped tabs", err);
   }
 
   return {

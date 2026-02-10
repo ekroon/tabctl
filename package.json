@@ -34,7 +34,8 @@
     "test": "npm run build && node --test --test-timeout=5000 dist/tests/unit/*.js",
     "test:unit": "npm run build && node --test --test-timeout=5000 dist/tests/unit/*.js",
     "test:integration": "node dist/scripts/integration-test.js",
-    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" "
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" ",
+    "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.277",

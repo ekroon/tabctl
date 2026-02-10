@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "pre-commit: running unit tests…"
+npm test
+
+# Integration tests require Chrome — skip if unavailable
+if command -v google-chrome &>/dev/null || command -v google-chrome-stable &>/dev/null || [ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]; then
+  echo "pre-commit: running integration tests…"
+  npm run test:integration
+else
+  echo "pre-commit: Chrome not found, skipping integration tests"
+fi

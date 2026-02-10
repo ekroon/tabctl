@@ -204,9 +204,14 @@ tabctl refresh --tab <id>
 
 ### open
 Open new tabs and optionally group them in a target window.
+
+When `--group <name>` is provided, an existing group with that name is reused by default. Duplicate URLs already present in the target group are skipped. New groups are automatically positioned before ungrouped tabs.
+
 Options:
 - `--url <url>` (repeatable)
-- `--group <name>` (new group title)
+- `--group <name>` (group title; reuses an existing group if one matches)
+- `--new-group` (force creation of a new group even if one with the same name exists)
+- `--allow-duplicates` (open URLs even if already present in the target group)
 - `--color <name>` (group color)
 - `--before-tab <id>`
 - `--after-tab <id>`
@@ -219,12 +224,34 @@ Options:
 
 Allowed colors: `grey`, `blue`, `red`, `yellow`, `green`, `pink`, `purple`, `cyan`, `orange`.
 
-Example:
+Examples:
 ```bash
+# Open a URL into an existing "Docs" group (or create it)
 tabctl open --url https://example.com --group "Docs" --color blue
+
+# Force a new group even if "Docs" already exists
+tabctl open --url https://example.com --group "Docs" --new-group
+
+# Allow duplicate URLs in the group
+tabctl open --url https://example.com --group "Docs" --allow-duplicates
 ```
 
 If no window selector is provided, the focused window is used (fallback to last-focused if needed).
+
+### group-gather
+Merge duplicate groups with the same name within a window.
+Options:
+- `--window <id|active|last-focused>` (target window)
+- `--group <name>` (group name to gather; gathers all duplicates if omitted)
+
+Examples:
+```bash
+# Merge all duplicate-named groups in the active window
+tabctl group-gather --window active
+
+# Merge only groups named "Work"
+tabctl group-gather --group Work --window 123
+```
 
 ### group-list
 List groups with window ids/labels and tab counts.
@@ -431,7 +458,8 @@ tabctl ping
 
 Notes:
 - Use `--group-id -1` or `--ungrouped` to target ungrouped tabs.
- - `screenshot --out` writes per-tab folders into the target directory.
+- `screenshot --out` writes per-tab folders into the target directory.
+- When multiple groups share the same title, commands that target by `--group <name>` will error with suggestions to use `group-gather` to merge duplicates, `--group-id` to target by ID, or `--window` to narrow scope.
 ## Environment variables
 
 | Variable | Description |

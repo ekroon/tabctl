@@ -133,7 +133,7 @@ export function applyPolicyFilter(
     policyInfo = {
       protected: protectedTabs.map(mapProtectedTab),
     };
-  } else if (command === "group-update" || command === "group-ungroup") {
+  } else if (command === "group-update" || command === "group-ungroup" || command === "group-gather") {
     if (!eligibleIds.length || protectedTabs.length > 0) {
       earlyResponse = {
         ok: true,

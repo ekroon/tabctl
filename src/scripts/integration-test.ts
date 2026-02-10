@@ -453,6 +453,218 @@ async function main(): Promise<void> {
       failed += 2; // count ping + version as failed
     }
 
+    // -- Group reuse, dedup, and gather tests --------------------------------
+
+    // Helper: run CLI and return parsed JSON for custom assertions
+    function runCli(args: string[]): { ok: boolean; data?: any; error?: any; raw: string } {
+      const result = spawnSync(process.execPath, [cliPath, ...args], {
+        env: cliEnv,
+        encoding: "utf-8",
+        timeout: 10_000,
+      });
+      const raw = (result.stdout || "").trim();
+      try {
+        const output = JSON.parse(raw);
+        return { ok: !!output.ok, data: output.data, error: output.error, raw };
+      } catch {
+        return { ok: false, raw };
+      }
+    }
+
+    // Helper: run a named test with custom assertion callback
+    async function runTestFn(name: string, fn: () => Promise<boolean>): Promise<void> {
+      try {
+        if (await fn()) {
+          log(`  PASS: ${name}`);
+          passed++;
+        } else {
+          log(`  FAIL: ${name}`);
+          failed++;
+        }
+      } catch (e) {
+        log(`  FAIL: ${name}: ${(e as Error).message}`);
+        failed++;
+      }
+    }
+
+    log("");
+    log("--- Group reuse / dedup / gather tests ---");
+
+    const ts = Date.now();
+
+    // Test 1: Group reuse with dedup
+    await runTestFn("group reuse with dedup", async () => {
+      const groupName = `TEST-Reuse-${ts}`;
+      // Open 2 URLs in a new group
+      const first = runCli([
+        "open", "--new-window",
+        "--url", "https://example.com",
+        "--url", "https://example.org",
+        "--group", groupName, "--json",
+      ]);
+      if (!first.ok) { log(`    first open failed: ${first.raw.slice(0, 200)}`); return false; }
+      const firstGroupId = first.data?.groupId;
+      const windowId = first.data?.windowId;
+      await sleep(1000);
+
+      // Open same 2 URLs + 1 new in the same group name (should reuse & dedup)
+      const second = runCli([
+        "open",
+        "--url", "https://example.com",
+        "--url", "https://example.org",
+        "--url", "https://example.net",
+        "--group", groupName,
+        "--window", String(windowId), "--json",
+      ]);
+      if (!second.ok) { log(`    second open failed: ${second.raw.slice(0, 200)}`); return false; }
+
+      const s = second.data?.summary;
+      const skipped = second.data?.skipped;
+      if (s?.createdTabs !== 1) { log(`    expected createdTabs=1, got ${s?.createdTabs}`); return false; }
+      if (s?.skippedUrls !== 2) { log(`    expected skippedUrls=2, got ${s?.skippedUrls}`); return false; }
+      if (skipped?.[0]?.reason !== "duplicate") { log(`    expected skipped reason=duplicate, got ${skipped?.[0]?.reason}`); return false; }
+      if (!s?.grouped) { log(`    expected grouped=true`); return false; }
+      if (second.data?.groupId !== firstGroupId) { log(`    expected same groupId ${firstGroupId}, got ${second.data?.groupId}`); return false; }
+      return true;
+    });
+
+    // Test 2: --allow-duplicates
+    await runTestFn("--allow-duplicates", async () => {
+      const groupName = `TEST-Dupes-${ts}`;
+      const first = runCli([
+        "open", "--new-window",
+        "--url", "https://example.com",
+        "--group", groupName, "--json",
+      ]);
+      if (!first.ok) { log(`    first open failed: ${first.raw.slice(0, 200)}`); return false; }
+      const windowId = first.data?.windowId;
+      await sleep(1000);
+
+      const second = runCli([
+        "open",
+        "--url", "https://example.com",
+        "--group", groupName,
+        "--window", String(windowId),
+        "--allow-duplicates", "--json",
+      ]);
+      if (!second.ok) { log(`    second open failed: ${second.raw.slice(0, 200)}`); return false; }
+
+      const s = second.data?.summary;
+      if (s?.createdTabs !== 1) { log(`    expected createdTabs=1, got ${s?.createdTabs}`); return false; }
+      if (s?.skippedUrls !== 0) { log(`    expected skippedUrls=0, got ${s?.skippedUrls}`); return false; }
+      return true;
+    });
+
+    // Test 3: --new-group
+    await runTestFn("--new-group", async () => {
+      const groupName = `TEST-NewGrp-${ts}`;
+      const first = runCli([
+        "open", "--new-window",
+        "--url", "https://example.com",
+        "--group", groupName, "--json",
+      ]);
+      if (!first.ok) { log(`    first open failed: ${first.raw.slice(0, 200)}`); return false; }
+      const windowId = first.data?.windowId;
+      await sleep(1000);
+
+      const second = runCli([
+        "open",
+        "--url", "https://example.org",
+        "--group", groupName,
+        "--window", String(windowId),
+        "--new-group", "--json",
+      ]);
+      if (!second.ok) { log(`    second open failed: ${second.raw.slice(0, 200)}`); return false; }
+
+      const s = second.data?.summary;
+      if (s?.createdTabs !== 1) { log(`    expected createdTabs=1, got ${s?.createdTabs}`); return false; }
+      if (!s?.grouped) { log(`    expected grouped=true`); return false; }
+      return true;
+    });
+
+    // Test 4: group-gather
+    await runTestFn("group-gather", async () => {
+      const groupName = `TEST-Gather-${ts}`;
+      // Create first group
+      const first = runCli([
+        "open", "--new-window",
+        "--url", "https://example.com",
+        "--group", groupName, "--json",
+      ]);
+      if (!first.ok) { log(`    first open failed: ${first.raw.slice(0, 200)}`); return false; }
+      const windowId = first.data?.windowId;
+      await sleep(1000);
+
+      // Create second group with same name via --new-group
+      const second = runCli([
+        "open",
+        "--url", "https://example.org",
+        "--group", groupName,
+        "--window", String(windowId),
+        "--new-group", "--json",
+      ]);
+      if (!second.ok) { log(`    second open failed: ${second.raw.slice(0, 200)}`); return false; }
+      await sleep(1000);
+
+      // Gather groups
+      const gather = runCli([
+        "group-gather",
+        "--group", groupName,
+        "--window", String(windowId), "--json",
+      ]);
+      if (!gather.ok) { log(`    gather failed: ${gather.raw.slice(0, 200)}`); return false; }
+
+      const s = gather.data?.summary;
+      if ((s?.mergedGroups ?? 0) < 1) { log(`    expected mergedGroups>=1, got ${s?.mergedGroups}`); return false; }
+      if ((s?.movedTabs ?? 0) < 1) { log(`    expected movedTabs>=1, got ${s?.movedTabs}`); return false; }
+      return true;
+    });
+
+    // Test 4b: group-gather undo
+    await runTestFn("group-gather undo", async () => {
+      const undoResult = runCli(["undo", "--latest", "--json"]);
+      if (!undoResult.ok) { log(`    undo failed: ${undoResult.raw.slice(0, 200)}`); return false; }
+      return true;
+    });
+
+    // Test 5: Groups before ungrouped tabs (ordering)
+    await runTestFn("groups before ungrouped tabs", async () => {
+      // Open an ungrouped tab first
+      const ungrouped = runCli([
+        "open", "--new-window",
+        "--url", "https://example.net", "--json",
+      ]);
+      if (!ungrouped.ok) { log(`    ungrouped open failed: ${ungrouped.raw.slice(0, 200)}`); return false; }
+      const windowId = ungrouped.data?.windowId;
+      await sleep(1000);
+
+      // Open a grouped tab in the same window
+      const groupName = `TEST-Order-${ts}`;
+      const grouped = runCli([
+        "open",
+        "--url", "https://example.com",
+        "--group", groupName,
+        "--window", String(windowId), "--json",
+      ]);
+      if (!grouped.ok) { log(`    grouped open failed: ${grouped.raw.slice(0, 200)}`); return false; }
+      await sleep(1000);
+
+      // List tabs and check ordering
+      const listResult = runCli(["list", "--window", String(windowId), "--json"]);
+      if (!listResult.ok) { log(`    list failed: ${listResult.raw.slice(0, 200)}`); return false; }
+
+      const windows: Array<{ tabs: Array<{ index: number; groupId?: number; url?: string }> }> = listResult.data?.windows ?? [];
+      const tabs = windows.flatMap((w: any) => w.tabs ?? []);
+      const groupedTab = tabs.find((t: any) => t.groupId && t.groupId !== -1);
+      const ungroupedTab = tabs.find((t: any) => (!t.groupId || t.groupId === -1) && t.url !== "chrome://newtab/");
+      if (!groupedTab || !ungroupedTab) { log(`    could not find grouped/ungrouped tabs`); return false; }
+      if (groupedTab.index >= ungroupedTab.index) {
+        log(`    expected grouped index (${groupedTab.index}) < ungrouped index (${ungroupedTab.index})`);
+        return false;
+      }
+      return true;
+    });
+
     // -- Summary -------------------------------------------------------------
     log("");
     log(`Results: ${passed} passed, ${failed} failed`);

@@ -63,8 +63,10 @@ tabctl list       # see your open tabs
 | Command | Description |
 |---------|-------------|
 | `tabctl list` | List open tabs and groups |
+| `tabctl open --url <url> --group <name>` | Open tabs into a group (reuses existing, skips duplicates) |
 | `tabctl analyze` | Find stale or duplicate tabs |
 | `tabctl inspect --tab <id>` | Extract page metadata or CSS selectors |
+| `tabctl group-gather` | Merge duplicate groups with the same name |
 | `tabctl close --tab <id>` | Close tabs with full undo support |
 | `tabctl report` | Generate reports in JSON, Markdown, or CSV |
 | `tabctl undo` | Revert the last action |

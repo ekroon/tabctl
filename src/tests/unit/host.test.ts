@@ -296,3 +296,60 @@ test("host skips undo when payload missing", async () => {
     await stopHost(child);
   }
 });
+
+// ---------------------------------------------------------------------------
+// UNDO_ACTIONS coverage — every mutating action must be in UNDO_ACTIONS
+// unless explicitly opted out as read-only / local.
+// ---------------------------------------------------------------------------
+
+import { UNDO_ACTIONS, LOCAL_ACTIONS } from "../../host/lib/handlers";
+import { COMMANDS } from "../../cli/lib/options-commands";
+
+test("every mutating CLI action is covered by UNDO_ACTIONS", () => {
+  // Actions that are read-only or don't produce undoable side effects.
+  // Add here ONLY when the action genuinely has nothing to undo.
+  const READ_ONLY_ACTIONS = new Set([
+    "list",
+    "ping",
+    "analyze",
+    "inspect",
+    "report",
+    "screenshot",
+    "focus",
+    "refresh",
+    "open",
+    "reload",
+    "group-list",
+    ...LOCAL_ACTIONS,
+  ]);
+
+  // Commands that are CLI-local (not forwarded to extension as actions)
+  const CLI_LOCAL_COMMANDS = new Set([
+    "help", "setup", "dedupe", "policy", "skill",
+    "profile-list", "profile-show", "profile-switch", "profile-remove",
+    "skill-install", "skill-list",
+  ]);
+
+  // Derive extension-facing actions from CLI command definitions,
+  // skipping aliases and CLI-local commands
+  const cliActions = Object.keys(COMMANDS)
+    .filter((cmd) => {
+      const meta = COMMANDS[cmd] as Record<string, unknown>;
+      if (meta.aliases) return false;
+      if (CLI_LOCAL_COMMANDS.has(cmd)) return false;
+      return true;
+    });
+
+  const missing: string[] = [];
+  for (const action of cliActions) {
+    if (!UNDO_ACTIONS.has(action) && !READ_ONLY_ACTIONS.has(action)) {
+      missing.push(action);
+    }
+  }
+
+  assert.deepEqual(
+    missing,
+    [],
+    `These actions are not in UNDO_ACTIONS or READ_ONLY_ACTIONS — add undo support or mark as read-only: ${missing.join(", ")}`,
+  );
+});

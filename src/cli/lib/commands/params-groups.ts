@@ -38,3 +38,11 @@ export function buildGroupAssignParams(options: Options): Record<string, unknown
     collapsed: options.collapsed === true ? true : options.expanded === true ? false : undefined,
   };
 }
+
+export function buildGroupGatherParams(options: Options): Record<string, unknown> {
+  const windowValue = parseWindowScope(options.window, { allowNew: false });
+  return {
+    windowId: windowValue,
+    groupTitle: options.group,
+  };
+}

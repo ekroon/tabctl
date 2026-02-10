@@ -25,7 +25,10 @@ import type { ExtensionDeps } from "./deps";
 export function getGroupTabs(windowSnapshot: WindowSnapshot, groupId: number) {
   return windowSnapshot.tabs
     .filter((tab) => tab.groupId === groupId)
-    .sort((a, b) => (Number(a.index) || 0) - (Number(b.index) || 0));
+    .sort((a, b) => {
+      const ai = Number(a.index); const bi = Number(b.index);
+      return (Number.isFinite(ai) ? ai : 0) - (Number.isFinite(bi) ? bi : 0);
+    });
 }
 
 export function listGroupSummaries(snapshot: { windows: Array<Record<string, unknown>> }, buildWindowLabels: (snapshot: { windows: Array<{ windowId: number }> }) => Map<number, string>, windowId?: number) {
@@ -98,8 +101,8 @@ export function resolveGroupByTitle(snapshot: { windows: Array<Record<string, un
   if (matches.length > 1) {
     return {
       error: {
-        message: "Group title is ambiguous. Provide a windowId.",
-        hint: "Use --window to disambiguate group titles.",
+        message: `Ambiguous group title: found ${matches.length} groups named "${groupTitle}". Use group-gather to merge duplicates, --group-id to target by ID, or --window to narrow scope.`,
+        hint: "Use group-gather to merge duplicates, --group-id to target by ID, or --window to narrow scope.",
         matches: matches.map((match) => summarizeGroupMatch(match, windowLabels)),
         availableGroups,
       },
@@ -473,6 +476,97 @@ export async function groupAssign(params: Record<string, unknown>, deps: Pick<Ex
       groupCollapsed: typeof params.collapsed === "boolean" ? params.collapsed : null,
       created,
       tabs: undoTabs,
+    },
+    txid: params.txid || null,
+  };
+}
+
+export async function groupGather(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "buildWindowLabels" | "resolveWindowIdFromParams" | "log">) {
+  const snapshot = await deps.getTabSnapshot();
+  const windows = snapshot.windows as WindowSnapshot[];
+  const windowIdParam = params.windowId != null ? deps.resolveWindowIdFromParams(snapshot, params.windowId) : null;
+
+  if (windowIdParam && !windows.some((win) => win.windowId === windowIdParam)) {
+    throw new Error("Window not found");
+  }
+
+  const groupTitleFilter = typeof params.groupTitle === "string" ? params.groupTitle.trim() : "";
+  const merged: Array<Record<string, unknown>> = [];
+  const undoEntries: Array<Record<string, unknown>> = [];
+
+  for (const win of windows) {
+    if (windowIdParam && win.windowId !== windowIdParam) continue;
+
+    const byTitle = new Map<string, Array<Record<string, unknown>>>();
+    for (const group of win.groups) {
+      const title = typeof group.title === "string" ? group.title : "";
+      if (!title) continue;
+      if (groupTitleFilter && title !== groupTitleFilter) continue;
+      if (!byTitle.has(title)) byTitle.set(title, []);
+      byTitle.get(title)!.push(group);
+    }
+
+    for (const [title, titleGroups] of byTitle) {
+      if (titleGroups.length < 2) continue;
+
+      const groupsWithIndex = titleGroups.map((g) => {
+        const tabs = win.tabs.filter((t) => t.groupId === g.groupId);
+        const minIndex = Math.min(
+          ...tabs.map((t) => {
+            const idx = Number(t.index);
+            return Number.isFinite(idx) ? idx : Infinity;
+          }),
+        );
+        return { group: g, tabs, minIndex };
+      });
+      groupsWithIndex.sort((a, b) => a.minIndex - b.minIndex);
+
+      const primary = groupsWithIndex[0];
+      const duplicates = groupsWithIndex.slice(1);
+      let movedTabs = 0;
+
+      for (const dup of duplicates) {
+        const tabIds = dup.tabs
+          .map((t) => t.tabId)
+          .filter((id): id is number => typeof id === "number");
+
+        if (tabIds.length > 0) {
+          for (const tab of dup.tabs) {
+            undoEntries.push({
+              tabId: tab.tabId,
+              windowId: win.windowId,
+              index: tab.index,
+              groupId: tab.groupId,
+              groupTitle: tab.groupTitle,
+              groupColor: tab.groupColor,
+              groupCollapsed: dup.group.collapsed ?? null,
+            });
+          }
+
+          await chrome.tabs.group({ groupId: primary.group.groupId as number, tabIds });
+          movedTabs += tabIds.length;
+        }
+      }
+
+      merged.push({
+        windowId: win.windowId,
+        groupTitle: title,
+        primaryGroupId: primary.group.groupId,
+        mergedGroupCount: duplicates.length,
+        movedTabs,
+      });
+    }
+  }
+
+  return {
+    merged,
+    summary: {
+      mergedGroups: merged.reduce((sum, m) => sum + (m.mergedGroupCount as number), 0),
+      movedTabs: merged.reduce((sum, m) => sum + (m.movedTabs as number), 0),
+    },
+    undo: {
+      action: "group-gather",
+      tabs: undoEntries,
     },
     txid: params.txid || null,
   };

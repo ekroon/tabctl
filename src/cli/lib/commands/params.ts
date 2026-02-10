@@ -166,6 +166,8 @@ export function buildOpenParams(options: Options): Record<string, unknown> {
     windowGroupTitle: options["window-group"],
     windowTabId: options["window-tab"] ? Number(options["window-tab"]) : undefined,
     windowUrl: options["window-url"],
+    newGroup: options["new-group"] === true,
+    allowDuplicates: options["allow-duplicates"] === true,
   };
 }
 
@@ -173,7 +175,7 @@ export function buildOpenParams(options: Options): Record<string, unknown> {
 // Group Command Parameters (re-exported from params-groups.ts)
 // ============================================================================
 
-export { buildGroupUpdateParams, buildGroupAssignParams, buildGroupUngroupParams } from "./params-groups";
+export { buildGroupUpdateParams, buildGroupAssignParams, buildGroupUngroupParams, buildGroupGatherParams } from "./params-groups";
 
 // ============================================================================
 // Move Command Parameters (re-exported from params-move.ts)
