@@ -36,6 +36,11 @@ async function main() {
   if (typeof options.profile === "string" && options.profile) {
     process.env.TABCTL_PROFILE = options.profile;
   }
+  if (command === "mcp") {
+    const { startMcpServer } = await import("./mcp");
+    await startMcpServer();
+    return;
+  }
   if (command === "dedupe" && (options as Record<string, unknown>).close) {
     errorOut("dedupe does not support --close; use --confirm or close --apply <analysisId>.");
   }

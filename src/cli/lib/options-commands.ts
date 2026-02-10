@@ -258,6 +258,12 @@ export const COMMANDS: Record<string, CommandMeta> = {
       { flag: "<name>", desc: "Profile name (positional)" },
     ],
   },
+  mcp: {
+    description: "Start MCP server for AI agent integration (stdio transport)",
+    options: [
+      { flag: "--profile <name>", desc: "Use a specific profile" },
+    ],
+  },
   version: {
     description: "Show version information",
   },

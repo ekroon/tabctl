@@ -325,7 +325,7 @@ test("every mutating CLI action is covered by UNDO_ACTIONS", () => {
 
   // Commands that are CLI-local (not forwarded to extension as actions)
   const CLI_LOCAL_COMMANDS = new Set([
-    "help", "setup", "dedupe", "policy", "skill",
+    "help", "setup", "dedupe", "policy", "skill", "mcp",
     "profile-list", "profile-show", "profile-switch", "profile-remove",
     "skill-install", "skill-list",
   ]);

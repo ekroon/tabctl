@@ -47,6 +47,8 @@
     "tabctl-win32-x64": "0.3.0"
   },
   "dependencies": {
-    "normalize-url": "^8.1.1"
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "normalize-url": "^8.1.1",
+    "zod": "^4.3.6"
   }
 }
