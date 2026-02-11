@@ -338,6 +338,18 @@ tabctl setup --browser edge
 tabctl setup --browser chrome --name chrome-work
 ```
 
+### doctor
+Diagnose and repair profile health. Checks each profile's wrapper for valid Node and host paths.
+Options:
+- `--fix` auto-repair broken wrappers using the current Node path
+
+```bash
+tabctl doctor              # show health status
+tabctl doctor --fix        # auto-repair broken profiles
+```
+
+Wrapper auto-repair also runs automatically when a version mismatch is detected during normal CLI usage.
+
 ### policy
 Show the current policy summary and path, or create a default policy file.
 Options:

@@ -665,6 +665,129 @@ async function main(): Promise<void> {
       return true;
     });
 
+    // -- Doctor tests ----------------------------------------------------------
+    log("");
+    log("--- Doctor tests ---");
+
+    // Set up a profile entry for doctor to inspect.
+    // Create a standard wrapper under a profile subdir so parseWrapper can read it.
+    const doctorProfileDir = path.join(dataDir, "profiles", "integration");
+    fs.mkdirSync(doctorProfileDir, { recursive: true });
+
+    // Write a standard-format wrapper (same format as `tabctl setup` produces)
+    const doctorWrapperPath = path.join(doctorProfileDir, "tabctl-host.sh");
+    fs.writeFileSync(doctorWrapperPath, [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      `export TABCTL_PROFILE="integration"`,
+      `exec "${process.execPath}" "${hostPath}"`,
+      "",
+    ].join("\n"), { mode: 0o700 });
+
+    // Write profiles.json so doctor can discover the profile
+    const profilesPath = path.join(configDir, "profiles.json");
+    const profileRegistry = {
+      default: "integration",
+      profiles: {
+        integration: {
+          browser: "chrome",
+          extensionId,
+          nodePath: process.execPath,
+          hostPath,
+          dataDir: doctorProfileDir,
+        },
+      },
+    };
+    fs.writeFileSync(profilesPath, JSON.stringify(profileRegistry, null, 2));
+
+    // Test A: Doctor reports healthy profile
+    await runTestFn("doctor healthy", async () => {
+      const result = runCli(["doctor", "--json"]);
+      // Overall ok may be false due to extension sync in test env; just check profiles
+      if (!result.data?.profiles?.integration?.ok) {
+        log(`    expected integration profile ok, got: ${JSON.stringify(result.data?.profiles?.integration)}`);
+        return false;
+      }
+      if (result.data?.summary?.broken !== 0) {
+        log(`    expected 0 broken, got ${result.data?.summary?.broken}`);
+        return false;
+      }
+      return true;
+    });
+
+    // Test B: Doctor detects broken Node path
+    await runTestFn("doctor detects broken node path", async () => {
+      // Corrupt the wrapper
+      const content = fs.readFileSync(doctorWrapperPath, "utf-8");
+      fs.writeFileSync(doctorWrapperPath, content.replace(process.execPath, "/nonexistent/node-v99/bin/node"), "utf8");
+
+      const result = runCli(["doctor", "--json"]);
+      if (result.ok) { log(`    expected doctor to report failure`); return false; }
+      const profileResult = result.data?.profiles?.integration;
+      if (profileResult?.ok) { log(`    expected profile not ok`); return false; }
+      const hasNodeIssue = profileResult?.issues?.some((i: string) => i.includes("Node path not found"));
+      if (!hasNodeIssue) { log(`    expected 'Node path not found' issue, got: ${JSON.stringify(profileResult?.issues)}`); return false; }
+
+      // Restore for next test
+      fs.writeFileSync(doctorWrapperPath, content, { mode: 0o700 });
+      return true;
+    });
+
+    // Test C: Doctor --fix repairs broken Node path
+    await runTestFn("doctor --fix repairs broken node path", async () => {
+      // Corrupt the wrapper
+      const content = fs.readFileSync(doctorWrapperPath, "utf-8");
+      fs.writeFileSync(doctorWrapperPath, content.replace(process.execPath, "/nonexistent/node-v99/bin/node"), "utf8");
+
+      const result = runCli(["doctor", "--fix", "--json"]);
+      // Overall ok may be false due to extension sync; check profile-level fix
+      if (!result.data?.profiles?.integration?.fixed) {
+        log(`    expected fixed=true, got: ${JSON.stringify(result.data?.profiles?.integration)}`);
+        return false;
+      }
+      if (!result.data?.profiles?.integration?.ok) {
+        log(`    expected profile ok after fix, got: ${JSON.stringify(result.data?.profiles?.integration)}`);
+        return false;
+      }
+
+      // Verify wrapper was repaired with current Node path
+      const repaired = fs.readFileSync(doctorWrapperPath, "utf-8");
+      if (!repaired.includes(process.execPath)) {
+        log(`    wrapper should contain ${process.execPath}`);
+        return false;
+      }
+      return true;
+    });
+
+    // Test D: Doctor --fix repairs broken host path
+    await runTestFn("doctor --fix repairs broken host path", async () => {
+      // Sync host bundle to the data dir so doctor can find the stable path
+      const hostBundlePath = path.join(dataDir, "host.bundle.js");
+      if (!fs.existsSync(hostBundlePath)) {
+        // Copy the bundled host to the stable location
+        const bundledHost = path.resolve(__dirname, "..", "host", "host.bundle.js");
+        if (fs.existsSync(bundledHost)) {
+          fs.copyFileSync(bundledHost, hostBundlePath);
+        }
+      }
+
+      // Corrupt the wrapper's host path
+      const content = fs.readFileSync(doctorWrapperPath, "utf-8");
+      fs.writeFileSync(doctorWrapperPath, content.replace(hostPath, "/nonexistent/host.bundle.js"), "utf8");
+
+      const result = runCli(["doctor", "--fix", "--json"]);
+      // Overall ok may be false due to extension sync; check profile-level fix
+      if (!result.data?.profiles?.integration?.fixed) {
+        log(`    expected fixed=true, got: ${JSON.stringify(result.data?.profiles?.integration)}`);
+        return false;
+      }
+      if (!result.data?.profiles?.integration?.ok) {
+        log(`    expected profile ok after fix, got: ${JSON.stringify(result.data?.profiles?.integration)}`);
+        return false;
+      }
+      return true;
+    });
+
     // -- Summary -------------------------------------------------------------
     log("");
     log(`Results: ${passed} passed, ${failed} failed`);
