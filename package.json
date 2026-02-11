@@ -31,7 +31,7 @@
     "bump:major": "node scripts/bump-version.js major",
     "bump:minor": "node scripts/bump-version.js minor",
     "bump:patch": "node scripts/bump-version.js patch",
-    "test": "npm run build && node --test --test-timeout=5000 dist/tests/unit/*.js",
+    "test": "npm run build && node --test --test-timeout=5000 dist/tests/unit/*.js && node dist/scripts/integration-test.js",
     "test:unit": "npm run build && node --test --test-timeout=5000 dist/tests/unit/*.js",
     "test:integration": "node dist/scripts/integration-test.js",
     "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" ",
