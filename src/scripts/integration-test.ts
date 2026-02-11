@@ -675,14 +675,37 @@ async function main(): Promise<void> {
     fs.mkdirSync(doctorProfileDir, { recursive: true });
 
     // Write a standard-format wrapper (same format as `tabctl setup` produces)
-    const doctorWrapperPath = path.join(doctorProfileDir, "tabctl-host.sh");
-    fs.writeFileSync(doctorWrapperPath, [
-      "#!/usr/bin/env bash",
-      "set -euo pipefail",
-      `export TABCTL_PROFILE="integration"`,
-      `exec "${process.execPath}" "${hostPath}"`,
-      "",
-    ].join("\n"), { mode: 0o700 });
+    let doctorWrapperPath: string;
+    if (process.platform === "win32") {
+      // On Windows, use .exe + host-launcher.cfg (same as setup command)
+      doctorWrapperPath = path.join(doctorProfileDir, "tabctl-host.exe");
+      
+      // Copy the prebuilt launcher (we already have it from earlier setup)
+      fs.copyFileSync(wrapperPath, doctorWrapperPath);
+      
+      // Write the config file
+      const cfgLines = [
+        process.execPath,
+        hostPath,
+        `TABCTL_PROFILE=integration`,
+        "",
+      ];
+      fs.writeFileSync(
+        path.join(doctorProfileDir, "host-launcher.cfg"),
+        cfgLines.join("\r\n"),
+        "utf8"
+      );
+    } else {
+      // Unix: .sh wrapper
+      doctorWrapperPath = path.join(doctorProfileDir, "tabctl-host.sh");
+      fs.writeFileSync(doctorWrapperPath, [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        `export TABCTL_PROFILE="integration"`,
+        `exec "${process.execPath}" "${hostPath}"`,
+        "",
+      ].join("\n"), { mode: 0o700 });
+    }
 
     // Write profiles.json so doctor can discover the profile
     const profilesPath = path.join(configDir, "profiles.json");
@@ -718,8 +741,15 @@ async function main(): Promise<void> {
     // Test B: Doctor detects broken Node path
     await runTestFn("doctor detects broken node path", async () => {
       // Corrupt the wrapper
-      const content = fs.readFileSync(doctorWrapperPath, "utf-8");
-      fs.writeFileSync(doctorWrapperPath, content.replace(process.execPath, "/nonexistent/node-v99/bin/node"), "utf8");
+      if (process.platform === "win32") {
+        // On Windows, modify the .cfg file
+        const cfgPath = path.join(doctorProfileDir, "host-launcher.cfg");
+        const content = fs.readFileSync(cfgPath, "utf-8");
+        fs.writeFileSync(cfgPath, content.replace(process.execPath, "/nonexistent/node-v99/bin/node"), "utf8");
+      } else {
+        const content = fs.readFileSync(doctorWrapperPath, "utf-8");
+        fs.writeFileSync(doctorWrapperPath, content.replace(process.execPath, "/nonexistent/node-v99/bin/node"), "utf8");
+      }
 
       const result = runCli(["doctor", "--json"]);
       if (result.ok) { log(`    expected doctor to report failure`); return false; }
@@ -729,15 +759,39 @@ async function main(): Promise<void> {
       if (!hasNodeIssue) { log(`    expected 'Node path not found' issue, got: ${JSON.stringify(profileResult?.issues)}`); return false; }
 
       // Restore for next test
-      fs.writeFileSync(doctorWrapperPath, content, { mode: 0o700 });
+      if (process.platform === "win32") {
+        const cfgPath = path.join(doctorProfileDir, "host-launcher.cfg");
+        const cfgLines = [
+          process.execPath,
+          hostPath,
+          `TABCTL_PROFILE=integration`,
+          "",
+        ];
+        fs.writeFileSync(cfgPath, cfgLines.join("\r\n"), "utf8");
+      } else {
+        const content = [
+          "#!/usr/bin/env bash",
+          "set -euo pipefail",
+          `export TABCTL_PROFILE="integration"`,
+          `exec "${process.execPath}" "${hostPath}"`,
+          "",
+        ].join("\n");
+        fs.writeFileSync(doctorWrapperPath, content, { mode: 0o700 });
+      }
       return true;
     });
 
     // Test C: Doctor --fix repairs broken Node path
     await runTestFn("doctor --fix repairs broken node path", async () => {
       // Corrupt the wrapper
-      const content = fs.readFileSync(doctorWrapperPath, "utf-8");
-      fs.writeFileSync(doctorWrapperPath, content.replace(process.execPath, "/nonexistent/node-v99/bin/node"), "utf8");
+      if (process.platform === "win32") {
+        const cfgPath = path.join(doctorProfileDir, "host-launcher.cfg");
+        const content = fs.readFileSync(cfgPath, "utf-8");
+        fs.writeFileSync(cfgPath, content.replace(process.execPath, "/nonexistent/node-v99/bin/node"), "utf8");
+      } else {
+        const content = fs.readFileSync(doctorWrapperPath, "utf-8");
+        fs.writeFileSync(doctorWrapperPath, content.replace(process.execPath, "/nonexistent/node-v99/bin/node"), "utf8");
+      }
 
       const result = runCli(["doctor", "--fix", "--json"]);
       // Overall ok may be false due to extension sync; check profile-level fix
@@ -751,10 +805,19 @@ async function main(): Promise<void> {
       }
 
       // Verify wrapper was repaired with current Node path
-      const repaired = fs.readFileSync(doctorWrapperPath, "utf-8");
-      if (!repaired.includes(process.execPath)) {
-        log(`    wrapper should contain ${process.execPath}`);
-        return false;
+      if (process.platform === "win32") {
+        const cfgPath = path.join(doctorProfileDir, "host-launcher.cfg");
+        const repaired = fs.readFileSync(cfgPath, "utf-8");
+        if (!repaired.includes(process.execPath)) {
+          log(`    wrapper should contain ${process.execPath}`);
+          return false;
+        }
+      } else {
+        const repaired = fs.readFileSync(doctorWrapperPath, "utf-8");
+        if (!repaired.includes(process.execPath)) {
+          log(`    wrapper should contain ${process.execPath}`);
+          return false;
+        }
       }
       return true;
     });
@@ -772,8 +835,14 @@ async function main(): Promise<void> {
       }
 
       // Corrupt the wrapper's host path
-      const content = fs.readFileSync(doctorWrapperPath, "utf-8");
-      fs.writeFileSync(doctorWrapperPath, content.replace(hostPath, "/nonexistent/host.bundle.js"), "utf8");
+      if (process.platform === "win32") {
+        const cfgPath = path.join(doctorProfileDir, "host-launcher.cfg");
+        const content = fs.readFileSync(cfgPath, "utf-8");
+        fs.writeFileSync(cfgPath, content.replace(hostPath, "/nonexistent/host.bundle.js"), "utf8");
+      } else {
+        const content = fs.readFileSync(doctorWrapperPath, "utf-8");
+        fs.writeFileSync(doctorWrapperPath, content.replace(hostPath, "/nonexistent/host.bundle.js"), "utf8");
+      }
 
       const result = runCli(["doctor", "--fix", "--json"]);
       // Overall ok may be false due to extension sync; check profile-level fix

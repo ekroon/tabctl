@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { runCli, parseOutput } from "./cli-helpers";
+import { resolveWrapperPath } from "../../shared/wrapper-health";
 
 function makeTmpHome(): { homeDir: string; stateHome: string; configHome: string; env: Record<string, string> } {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-doctor-"));
@@ -52,7 +53,8 @@ test("doctor detects broken Node path", async () => {
   await setupProfile(env, "chrome");
 
   // Corrupt the wrapper by replacing Node path with a bad one
-  const wrapperPath = path.join(stateHome, "tabctl", "profiles", "chrome", "tabctl-host.sh");
+  const profileDir = path.join(stateHome, "tabctl", "profiles", "chrome");
+  const wrapperPath = resolveWrapperPath(profileDir);
   let content = fs.readFileSync(wrapperPath, "utf-8");
   content = content.replace(process.execPath, "/nonexistent/node-v99/bin/node");
   fs.writeFileSync(wrapperPath, content, "utf8");
@@ -71,7 +73,8 @@ test("doctor --fix repairs broken Node path", async () => {
   await setupProfile(env, "edge");
 
   // Break the wrapper
-  const wrapperPath = path.join(stateHome, "tabctl", "profiles", "edge", "tabctl-host.sh");
+  const profileDir = path.join(stateHome, "tabctl", "profiles", "edge");
+  const wrapperPath = resolveWrapperPath(profileDir);
   let content = fs.readFileSync(wrapperPath, "utf-8");
   content = content.replace(process.execPath, "/nonexistent/node-v99/bin/node");
   fs.writeFileSync(wrapperPath, content, "utf8");
@@ -98,7 +101,8 @@ test("doctor --fix repairs broken host path", async () => {
   await setupProfile(env, "edge");
 
   // Break the wrapper by replacing host path
-  const wrapperPath = path.join(stateHome, "tabctl", "profiles", "edge", "tabctl-host.sh");
+  const profileDir = path.join(stateHome, "tabctl", "profiles", "edge");
+  const wrapperPath = resolveWrapperPath(profileDir);
   let content = fs.readFileSync(wrapperPath, "utf-8");
   const hostBundlePath = path.join(stateHome, "tabctl", "host.bundle.js");
   content = content.replace(hostBundlePath, "/nonexistent/host.bundle.js");
@@ -121,7 +125,8 @@ test("doctor with multiple profiles reports each", async () => {
   await setupProfile(env, "chrome");
 
   // Break chrome only
-  const wrapperPath = path.join(stateHome, "tabctl", "profiles", "chrome", "tabctl-host.sh");
+  const profileDir = path.join(stateHome, "tabctl", "profiles", "chrome");
+  const wrapperPath = resolveWrapperPath(profileDir);
   let content = fs.readFileSync(wrapperPath, "utf-8");
   content = content.replace(process.execPath, "/nonexistent/node");
   fs.writeFileSync(wrapperPath, content, "utf8");
