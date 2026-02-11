@@ -59,7 +59,7 @@ tabctl list       # see your open tabs
 
 ## Commands
 
-<!-- test: "list sends list action", "analyze passes tab ids and github options", "inspect passes signal options", "close without confirm fails", "report format md returns markdown content", "undo sends undo action with txid" -->
+<!-- test: "list sends list action", "analyze passes tab ids and progress option", "inspect passes signal options", "close without confirm fails", "report format md returns markdown content", "undo sends undo action with txid" -->
 | Command | Description |
 |---------|-------------|
 | `tabctl list` | List open tabs and groups |
@@ -255,7 +255,7 @@ Notes:
 - `list` and `group-list` paginate by default (limit 100); use `--limit`, `--offset`, or `--no-page`.
 - Use `--group-id -1` or `--ungrouped` to target ungrouped tabs.
 - `--selector` implies `--signal selector`.
-- Unknown inspect signals are rejected (valid: `page-meta`, `github-state`, `selector`).
+- Unknown inspect signals are rejected (valid: `page-meta`, `selector`).
 - Selector `attr` supports `href-url`/`src-url` to return absolute http(s) URLs.
 - `screenshot --out` writes per-tab folders into the target directory.
 - `tabctl undo` accepts a positional txid, `--txid`, or `--latest`.

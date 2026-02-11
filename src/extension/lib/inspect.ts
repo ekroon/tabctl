@@ -1,7 +1,7 @@
 // Analysis/inspection pipeline — extracted from tabs.ts (pure structural refactor).
 
 const content = require("./content") as typeof import("./content");
-const { isScriptableUrl, isGitHubIssueOrPr, detectGitHubState, extractPageMeta, extractSelectorSignal, waitForSettle, waitForTabReady } = content;
+const { isScriptableUrl, extractPageMeta, extractSelectorSignal, waitForSettle, waitForTabReady } = content;
 const tabs = require("./tabs") as typeof import("./tabs");
 const { normalizeUrl } = tabs;
 
@@ -13,15 +13,6 @@ import type { ExtensionDeps } from "./deps";
 
 export async function analyzeTabs(params: Record<string, unknown>, requestId: string, deps: Pick<ExtensionDeps, "getTabSnapshot" | "selectTabsByScope" | "sendProgress">) {
   const staleDays = Number.isFinite(params.staleDays) ? params.staleDays : DEFAULT_STALE_DAYS;
-  const checkGitHub = params.checkGitHub === true;
-  const githubConcurrencyRaw = Number(params.githubConcurrency);
-  const githubConcurrency = Number.isFinite(githubConcurrencyRaw) && githubConcurrencyRaw > 0
-    ? Math.min(10, Math.floor(githubConcurrencyRaw))
-    : 4;
-  const githubTimeoutRaw = Number(params.githubTimeoutMs);
-  const githubTimeoutMs = Number.isFinite(githubTimeoutRaw) && githubTimeoutRaw > 0
-    ? Math.floor(githubTimeoutRaw)
-    : 4000;
   const progressEnabled = params.progress === true;
   const snapshot = await deps.getTabSnapshot();
   const selection = deps.selectTabsByScope(snapshot, params) as { tabs: Array<Record<string, unknown>>; error?: Record<string, unknown> };
@@ -32,9 +23,6 @@ export async function analyzeTabs(params: Record<string, unknown>, requestId: st
   const scopeTabs = selectedTabs;
   const now = Date.now();
   const startedAt = Date.now();
-  let githubChecked = 0;
-  let githubTotal = 0;
-  let githubMatched = 0;
 
   const normalizedMap = new Map<string, Record<string, unknown>>();
   const duplicates = new Map<number, number>();
@@ -79,51 +67,9 @@ export async function analyzeTabs(params: Record<string, unknown>, requestId: st
     }
   }
 
-  const githubTabs = checkGitHub
-    ? selectedTabs.filter((tab) => isGitHubIssueOrPr(tab.url as string) && isScriptableUrl(tab.url))
-    : [];
-  githubTotal = githubTabs.length;
-
-  if (checkGitHub && githubTabs.length > 0) {
-    let index = 0;
-    const total = githubTabs.length;
-    const workers = Array.from({ length: Math.min(githubConcurrency, total) }, async () => {
-      while (true) {
-        const currentIndex = index;
-        if (currentIndex >= total) {
-          return;
-        }
-        index += 1;
-        const tab = githubTabs[currentIndex];
-        const state = await detectGitHubState(tab.tabId as number, githubTimeoutMs);
-        githubChecked += 1;
-        if (state === "closed" || state === "merged") {
-          githubMatched += 1;
-          addReason(tab, {
-            type: "closed_issue",
-            detail: `GitHub state: ${state}`,
-          });
-        }
-
-        if (progressEnabled) {
-          deps.sendProgress(requestId, {
-            phase: "github",
-            processed: githubChecked,
-            total,
-            matched: githubMatched,
-            tabId: tab.tabId,
-            timeoutMs: githubTimeoutMs,
-          });
-        }
-      }
-    });
-
-    await Promise.all(workers);
-  }
-
   const candidates = Array.from(candidateMap.values()).map((entry) => {
     const reasons = entry.reasons;
-    const severity = reasons.some((reason) => reason.type === "duplicate" || reason.type === "closed_issue")
+    const severity = reasons.some((reason) => reason.type === "duplicate")
       ? "high"
       : "medium";
     return {
@@ -148,10 +94,6 @@ export async function analyzeTabs(params: Record<string, unknown>, requestId: st
     },
     meta: {
       durationMs: Date.now() - startedAt,
-      githubChecked,
-      githubTotal,
-      githubMatched,
-      githubTimeoutMs,
     },
     candidates,
   };
@@ -228,16 +170,7 @@ export async function inspectTabs(params: Record<string, unknown>, requestId: st
 
   const signalDefs: Array<{ id: string; match: (tab: Record<string, unknown>) => boolean; run: (tabId: number) => Promise<unknown> }> = [];
   for (const signalId of signalList) {
-    if (signalId === "github-state") {
-      signalDefs.push({
-        id: signalId,
-        match: (tab) => isGitHubIssueOrPr(tab.url as string) && isScriptableUrl(tab.url),
-        run: async (tabId) => {
-          const state = await detectGitHubState(tabId, signalTimeoutMs);
-          return state ? { state } : null;
-        },
-      });
-    } else if (signalId === "page-meta") {
+    if (signalId === "page-meta") {
       signalDefs.push({
         id: signalId,
         match: (tab) => isScriptableUrl(tab.url),

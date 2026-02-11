@@ -160,7 +160,7 @@ export function applyPolicyFilter(
             generatedAt,
             staleDays: params.staleDays || 0,
             totals: { tabs: 0, analyzed: 0, candidates: 0 },
-            meta: { durationMs: 0, githubChecked: 0, githubTotal: 0, githubMatched: 0, githubTimeoutMs: params.githubTimeoutMs || 0 },
+            meta: { durationMs: 0 },
             candidates: [],
             analysisId: null,
             policy: policySummary,

@@ -39,7 +39,6 @@ When you need custom filtering, pipe the JSON output to jq or node.
 
 - JSON output shape (list): `.data.windows[].tabs[]`
 - Stale candidates only (jq): `tabctl analyze --stale-days 7 | jq '.data.candidates[] | select(.reasons | any(.type == "stale")) | {tabId,title,url}'`
-- Only GitHub URLs (jq): `tabctl analyze --stale-days 7 | jq '.data.candidates[] | select(.url | test("github.com"))'`
 - Stale candidates only (node): `tabctl analyze --stale-days 7 | node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync(0,"utf8")); const stale=(data.data?.candidates||[]).filter(c=> (c.reasons||[]).some(r=>r.type==="stale")); console.log(JSON.stringify(stale,null,2));'`
 - List tabs (jq): `tabctl list --json | jq -r '.data.windows[].tabs[] | select(.url | contains("devportal")) | {tabId,title,url}'`
 - Search tabs by URL (jq): `tabctl list --json | jq '.data.windows[].tabs[] | select(.url | test("zoom"; "i")) | {tabId,title,url}'`

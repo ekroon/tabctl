@@ -13,8 +13,6 @@ test("inspect passes signal options", async () => {
     "--signal",
     "page-meta",
     "--signal",
-    "github-state",
-    "--signal",
     "selector",
     "--selector",
     "price=.price",
@@ -32,7 +30,7 @@ test("inspect passes signal options", async () => {
   assert.equal(requests[0].action, "inspect");
   const params = requests[0].params as { tabIds?: number[]; signals?: string[]; selectorSpecs?: Array<Record<string, unknown>>; signalConcurrency?: number; signalTimeoutMs?: number; progress?: boolean } | undefined;
   assert.deepEqual(params?.tabIds, [42]);
-  assert.deepEqual(params?.signals, ["page-meta", "github-state", "selector"]);
+  assert.deepEqual(params?.signals, ["page-meta", "selector"]);
   assert.deepEqual(params?.selectorSpecs, [{ name: "price", selector: ".price" }]);
   assert.equal(params?.signalConcurrency, 2);
   assert.equal(params?.signalTimeoutMs, 1500);

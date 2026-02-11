@@ -66,29 +66,21 @@ test("close --dry-run maps to analyze", async () => {
   assert.equal(output.ok, true);
 });
 
-test("analyze passes tab ids and github options", async () => {
+test("analyze passes tab ids and progress option", async () => {
   const { socketPath, server, requests, sockets } = await startMockSocket((req) => (mockResponse(req, { candidates: [], totals: { tabs: 0, candidates: 0 } })));
 
   const result = await runCli([
     "analyze",
     "--tab",
     "12",
-    "--github",
-    "--github-concurrency",
-    "3",
-    "--github-timeout-ms",
-    "2500",
     "--progress",
   ], socketPath);
   await stopMockSocket(server, socketPath, sockets);
 
   assert.equal(result.status, 0);
   assert.equal(requests[0].action, "analyze");
-  const params = requests[0].params as { tabIds?: number[]; checkGitHub?: boolean; githubConcurrency?: number; githubTimeoutMs?: number; progress?: boolean } | undefined;
+  const params = requests[0].params as { tabIds?: number[]; progress?: boolean } | undefined;
   assert.deepEqual(params?.tabIds, [12]);
-  assert.equal(params?.checkGitHub, true);
-  assert.equal(params?.githubConcurrency, 3);
-  assert.equal(params?.githubTimeoutMs, 2500);
   assert.equal(params?.progress, true);
 });
 
@@ -166,7 +158,7 @@ test("analyze --window-title includes window title", async () => {
     generatedAt: 1700000000000,
     staleDays: 30,
     totals: { tabs: 2, analyzed: 2, candidates: 1 },
-    meta: { durationMs: 0, githubChecked: 0, githubTotal: 0, githubMatched: 0, githubTimeoutMs: 4000 },
+    meta: { durationMs: 0 },
     candidates: [
       {
         tabId: 11,

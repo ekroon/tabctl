@@ -96,15 +96,12 @@ Additional options:
 - `--groups` (alias for group-list command)
 
 ### analyze
-Find duplicates and stale tabs (optional GitHub state checks).
+Find duplicates and stale tabs.
 
 **Uses:** [Scope Options](#scope-options)
 
 Additional options:
 - `--stale-days <n>`
-- `--github`
-- `--github-concurrency <n>`
-- `--github-timeout-ms <ms>`
 - `--window-title` (include active window title in output)
 - `--progress`
 
@@ -117,16 +114,13 @@ Plan (and optionally close) duplicate tabs.
 
 Additional options:
 - `--stale-days <n>`
-- `--github`
-- `--github-concurrency <n>`
-- `--github-timeout-ms <ms>`
 - `--include-stale`
 - `--window-title` (include active window title in output)
 - `--progress`
 - `--confirm`
 
 ### inspect
-Run signals to collect metadata (page-meta, github-state, selector).
+Run signals to collect metadata (page-meta, selector).
 
 **Uses:** [Scope Options](#scope-options), [Pagination Options](#pagination-options)
 
@@ -149,12 +143,11 @@ Wait modes:
 
 Signals:
 - `page-meta` (description + h1)
-- `github-state` (PR/issue state when available)
 - `selector` (runtime-configured selectors)
 
 Notes:
 - `--selector` implies `--signal selector`.
-- Unknown signals are rejected; valid signals: `page-meta`, `github-state`, `selector`.
+- Unknown signals are rejected; valid signals: `page-meta`, `selector`.
 - Selector `attr` supports `href-url`/`src-url` to return absolute http(s) URLs.
 - Selector `:contains()` is not supported; use selector text filters or screenshots.
 

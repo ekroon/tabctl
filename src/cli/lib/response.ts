@@ -84,7 +84,7 @@ export function buildDedupeOutput(
   const candidates = Array.isArray(data.candidates) ? (data.candidates as Array<Record<string, unknown>>) : [];
   const planned = candidates.filter((candidate) => {
     const reasons = Array.isArray(candidate.reasons) ? (candidate.reasons as Array<Record<string, unknown>>) : [];
-    const hasDuplicate = reasons.some((reason) => reason.type === "duplicate" || reason.type === "closed_issue");
+    const hasDuplicate = reasons.some((reason) => reason.type === "duplicate");
     const hasStale = reasons.some((reason) => reason.type === "stale");
     return hasDuplicate || (includeStale && hasStale);
   });
@@ -143,7 +143,7 @@ export function extractDedupePlan(
   const candidates = Array.isArray(data.candidates) ? (data.candidates as Array<Record<string, unknown>>) : [];
   const planned = candidates.filter((candidate) => {
     const reasons = Array.isArray(candidate.reasons) ? (candidate.reasons as Array<Record<string, unknown>>) : [];
-    const hasDuplicate = reasons.some((reason) => reason.type === "duplicate" || reason.type === "closed_issue");
+    const hasDuplicate = reasons.some((reason) => reason.type === "duplicate");
     const hasStale = reasons.some((reason) => reason.type === "stale");
     return hasDuplicate || (includeStale && hasStale);
   });
