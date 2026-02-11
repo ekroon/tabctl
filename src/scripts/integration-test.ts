@@ -674,6 +674,34 @@ async function main(): Promise<void> {
     const doctorProfileDir = path.join(dataDir, "profiles", "integration");
     fs.mkdirSync(doctorProfileDir, { recursive: true });
 
+    // Helper to write/restore the test wrapper
+    function writeDoctorWrapper() {
+      if (process.platform === "win32") {
+        // On Windows, write .exe + host-launcher.cfg (same as setup command)
+        const cfgLines = [
+          process.execPath,
+          hostPath,
+          `TABCTL_PROFILE=integration`,
+          "",
+        ];
+        fs.writeFileSync(
+          path.join(doctorProfileDir, "host-launcher.cfg"),
+          cfgLines.join("\r\n"),
+          "utf8"
+        );
+      } else {
+        // Unix: .sh wrapper
+        const content = [
+          "#!/usr/bin/env bash",
+          "set -euo pipefail",
+          `export TABCTL_PROFILE="integration"`,
+          `exec "${process.execPath}" "${hostPath}"`,
+          "",
+        ].join("\n");
+        fs.writeFileSync(doctorWrapperPath, content, { mode: 0o700 });
+      }
+    }
+
     // Write a standard-format wrapper (same format as `tabctl setup` produces)
     let doctorWrapperPath: string;
     if (process.platform === "win32") {
@@ -682,30 +710,11 @@ async function main(): Promise<void> {
       
       // Copy the prebuilt launcher (we already have it from earlier setup)
       fs.copyFileSync(wrapperPath, doctorWrapperPath);
-      
-      // Write the config file
-      const cfgLines = [
-        process.execPath,
-        hostPath,
-        `TABCTL_PROFILE=integration`,
-        "",
-      ];
-      fs.writeFileSync(
-        path.join(doctorProfileDir, "host-launcher.cfg"),
-        cfgLines.join("\r\n"),
-        "utf8"
-      );
     } else {
       // Unix: .sh wrapper
       doctorWrapperPath = path.join(doctorProfileDir, "tabctl-host.sh");
-      fs.writeFileSync(doctorWrapperPath, [
-        "#!/usr/bin/env bash",
-        "set -euo pipefail",
-        `export TABCTL_PROFILE="integration"`,
-        `exec "${process.execPath}" "${hostPath}"`,
-        "",
-      ].join("\n"), { mode: 0o700 });
     }
+    writeDoctorWrapper();
 
     // Write profiles.json so doctor can discover the profile
     const profilesPath = path.join(configDir, "profiles.json");
@@ -759,25 +768,7 @@ async function main(): Promise<void> {
       if (!hasNodeIssue) { log(`    expected 'Node path not found' issue, got: ${JSON.stringify(profileResult?.issues)}`); return false; }
 
       // Restore for next test
-      if (process.platform === "win32") {
-        const cfgPath = path.join(doctorProfileDir, "host-launcher.cfg");
-        const cfgLines = [
-          process.execPath,
-          hostPath,
-          `TABCTL_PROFILE=integration`,
-          "",
-        ];
-        fs.writeFileSync(cfgPath, cfgLines.join("\r\n"), "utf8");
-      } else {
-        const content = [
-          "#!/usr/bin/env bash",
-          "set -euo pipefail",
-          `export TABCTL_PROFILE="integration"`,
-          `exec "${process.execPath}" "${hostPath}"`,
-          "",
-        ].join("\n");
-        fs.writeFileSync(doctorWrapperPath, content, { mode: 0o700 });
-      }
+      writeDoctorWrapper();
       return true;
     });
 
