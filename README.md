@@ -1,15 +1,65 @@
 # tabctl
 
-`tabctl` is a command-line tool that gives you terminal control over your browser tabs. List, search, group, move, close, deduplicate, inspect, and report on tabs without leaving your terminal — across Chrome and Edge.
+Every open tab is a thread you forgot to pull. Tabctl finds them all.
 
-It works through a lightweight local stack: the CLI talks to a native messaging host, which proxies requests to a browser extension. A policy file can protect pinned tabs or specific groups from automated actions, and every mutation is undoable.
+A command-line instrument for browser tab orchestration — list, search, group, archive, close, undo — wired into Edge or Chrome through a native messaging bridge. Built for humans who hoard tabs and the AI agents who clean up after them.
+
+## Install
+
+```bash
+npm install -g tabctl
+tabctl setup --browser chrome
+# Load the extension: chrome://extensions → Developer mode → Load unpacked → paste: ~/.local/state/tabctl/extension/
+tabctl ping
+```
+
+If it pings back, the wire is live. You're connected.
+
+## Agent Skill
+
+Give your coding agent eyes into the browser. One command and it learns the protocol.
+
+```bash
+tabctl skill
+# or: npx skills add https://github.com/ekroon/tabctl --skill tabctl -a opencode -a github-copilot -a claude-code
+```
+
+## Safety
+
+Nothing leaves your machine. No cloud. No telemetry. Just a socket between your terminal and your browser, quiet as rain on neon.
+
+Every mutation is undoable — `tabctl undo` rewinds closes, archives, and group changes like they never happened. A configurable policy layer shields pinned tabs and protected domains from accidental destruction. You pull the trigger; tabctl keeps the safety on until you mean it.
+
+## What You Can Say
+
+When tabctl is installed as a skill, your agent sees what you see. Just talk to it.
+
+> *"Which of my tabs can I close?"*
+> The agent scans for duplicates, stale pages, and tabs you haven't touched in days — then offers to clean house.
+
+> *"Are any of my open tabs relevant to my note on Project Helios?"*
+> When connected to Obsidian, your agent cross-references every open tab against your notes and surfaces the ones that matter.
+
+> *"I just finished researching service mesh architectures. Organize what I found."*
+> Groups your tabs by theme, extracts key URLs, and drops a summary into your notes — before you forget what you were looking at.
+
+> *"Where's that AWS pricing page I had open somewhere?"*
+> The agent searches your open tabs and groups by title and URL — and brings it back into focus.
+
+> *"Pull every error message from my open Sentry tabs into a markdown table."*
+> The agent reads each tab, extracts what you need, and formats it — no copy-paste, no context switching.
+
+> *"Group everything by project. You know which ones."*
+> Your agent infers context from URLs, titles, and your workspace — then sorts ninety tabs into five groups with names that actually make sense.
+
+---
+
+`tabctl` works through a lightweight local stack: the CLI talks to a native messaging host, which proxies requests to a browser extension. The host only runs while the browser is open and the extension is connected.
 
 This repo contains:
 - Chrome/Edge extension (tab/group inspection + actions)
 - Native messaging host (Node)
 - CLI (`tabctl`) for on-demand workflows
-
-The host only runs while the browser is open and the extension is connected.
 
 ## Quick Start
 
