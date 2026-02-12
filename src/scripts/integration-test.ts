@@ -678,15 +678,31 @@ async function main(): Promise<void> {
     let doctorWrapperPath: string;
     let doctorTextPath: string; // text-editable config file for corruption
     if (process.platform === "win32") {
-      // .cmd wrapper (text-based, no Go launcher binary needed in tests)
-      doctorWrapperPath = path.join(doctorProfileDir, "tabctl-host.cmd");
-      doctorTextPath = doctorWrapperPath;
-      fs.writeFileSync(doctorWrapperPath, [
-        "@echo off",
-        `set TABCTL_PROFILE=integration`,
-        `"${process.execPath}" "${hostPath}" %*`,
-        "",
-      ].join("\r\n"), "utf8");
+      // Match writeWrapper: prefer .exe + .cfg when Go launcher is available
+      let exeSrc: string | undefined;
+      try { exeSrc = require.resolve("tabctl-win32-x64/tabctl-host.exe"); } catch {}
+
+      if (exeSrc) {
+        doctorWrapperPath = path.join(doctorProfileDir, "tabctl-host.exe");
+        fs.copyFileSync(exeSrc, doctorWrapperPath);
+        doctorTextPath = path.join(doctorProfileDir, "host-launcher.cfg");
+        fs.writeFileSync(doctorTextPath, [
+          process.execPath,
+          hostPath,
+          "TABCTL_PROFILE=integration",
+          "",
+        ].join("\r\n"), "utf8");
+      } else {
+        // Fallback: .cmd wrapper (dev/testing without Go launcher)
+        doctorWrapperPath = path.join(doctorProfileDir, "tabctl-host.cmd");
+        doctorTextPath = doctorWrapperPath;
+        fs.writeFileSync(doctorWrapperPath, [
+          "@echo off",
+          `set TABCTL_PROFILE=integration`,
+          `"${process.execPath}" "${hostPath}" %*`,
+          "",
+        ].join("\r\n"), "utf8");
+      }
     } else {
       doctorWrapperPath = path.join(doctorProfileDir, "tabctl-host.sh");
       doctorTextPath = doctorWrapperPath;
