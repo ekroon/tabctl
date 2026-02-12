@@ -258,6 +258,12 @@ export const COMMANDS: Record<string, CommandMeta> = {
       { flag: "<name>", desc: "Profile name (positional)" },
     ],
   },
+  doctor: {
+    description: "Diagnose and repair profile health",
+    options: [
+      { flag: "--fix", desc: "Auto-repair broken wrappers" },
+    ],
+  },
   version: {
     description: "Show version information",
   },

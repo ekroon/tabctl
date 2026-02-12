@@ -6,6 +6,9 @@
 // Setup command
 export { runSetup } from "./setup";
 
+// Doctor command
+export { runDoctor } from "./doctor";
+
 // Meta commands (version, ping, skill, policy, history, undo)
 export {
   runSkillInstall,

@@ -7,7 +7,7 @@ import { sendRequest, createRequestId, fetchSnapshot } from "./lib/client";
 import { printHelp } from "./lib/help";
 import { annotateEntries, annotateCandidates, extractDedupePlan, buildDedupeOutput, formatReport, writeScreenshots } from "./lib/response";
 import { applyPolicyFilter } from "./lib/policy-filter";
-import { runSetup, runSkillInstall, runVersion, runPolicy, runList, runGroupList, runPing, runHistory, runUndo, runProfileList, runProfileShow, runProfileSwitch, runProfileRemove } from "./lib/commands";
+import { runSetup, runDoctor, runSkillInstall, runVersion, runPolicy, runList, runGroupList, runPing, runHistory, runUndo, runProfileList, runProfileShow, runProfileSwitch, runProfileRemove } from "./lib/commands";
 import {
   buildAnalyzeParams,
   buildInspectParams,
@@ -179,6 +179,11 @@ async function main() {
 
   if (command === "setup") {
     await runSetup(options, prettyOutput);
+    return;
+  }
+
+  if (command === "doctor") {
+    runDoctor(options, prettyOutput);
     return;
   }
 

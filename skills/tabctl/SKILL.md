@@ -48,6 +48,12 @@ When you need custom filtering, pipe the JSON output to jq or node.
 Use one or more of: `--window`, `--group`, `--group-id`, `--tab`, `--ungrouped`.
 If scope is unclear, ask for it before running mutating commands.
 
+## Troubleshooting
+
+- Check profile health: `tabctl doctor`
+- Auto-repair broken profiles (e.g., after Node upgrade): `tabctl doctor --fix`
+- Verify connection: `tabctl ping`
+
 ## Output flags
 
 - Use `--json` for JSON output (list/analyze/inspect/etc.).

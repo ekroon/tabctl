@@ -1,9 +1,11 @@
 import { VERSION, BASE_VERSION } from "../../shared/version";
 import { getActiveProfile } from "../../shared/profiles";
-import { syncExtension, syncHost } from "../../shared/extension-sync";
+import { syncExtension, syncHost, resolveInstalledHostPath } from "../../shared/extension-sync";
 import { resolveConfig } from "../../shared/config";
+import { checkWrapper, resolveWrapperPath } from "../../shared/wrapper-health";
 import { sendFireAndForget } from "./client";
 import { createRequestId } from "./client";
+import { writeWrapper } from "./commands/setup";
 
 export function printJson(payload: Record<string, unknown>, pretty = true): void {
   try {
@@ -74,6 +76,12 @@ export function emitVersionWarnings(response: Record<string, unknown>, fallbackA
         process.stderr.write(`[tabctl] host is stale (${hostVersion}), reloading extension...\n`);
       }
       sendFireAndForget({ id: createRequestId(), action: "reload", params: {} });
+      // Check and fix wrapper Node path for the active profile
+      try {
+        repairActiveWrapper(config.baseDataDir);
+      } catch {
+        // Wrapper repair is best-effort
+      }
     } catch {
       process.stderr.write(`[tabctl] version mismatch: cli ${VERSION}, host ${hostVersion}. Run: tabctl setup\n`);
     }
@@ -93,5 +101,39 @@ export function emitVersionWarnings(response: Record<string, unknown>, fallbackA
   const extensionExpected = !["history", "version"].includes(action);
   if (extensionExpected && !extensionVersion) {
     process.stderr.write("[tabctl] extension version unavailable. Reload the extension in your browser\n");
+  }
+}
+
+/**
+ * Repair the active profile's wrapper if the Node path is broken.
+ * Conservative: only fixes paths that are confirmed missing.
+ */
+function repairActiveWrapper(baseDataDir: string): void {
+  const active = getActiveProfile();
+  if (!active) return;
+
+  const wrapperPath = resolveWrapperPath(active.profile.dataDir);
+  const check = checkWrapper(wrapperPath);
+  if (check.ok || !check.info) return;
+
+  const fs = require("node:fs") as typeof import("node:fs");
+  const path = require("node:path") as typeof import("node:path");
+  const needsNodeFix = !fs.existsSync(check.info.nodePath);
+  const needsHostFix = !fs.existsSync(check.info.hostPath);
+
+  if (!needsNodeFix && !needsHostFix) return;
+
+  const newNodePath = needsNodeFix ? process.execPath : check.info.nodePath;
+  const newHostPath = needsHostFix
+    ? resolveInstalledHostPath(baseDataDir)
+    : check.info.hostPath;
+
+  writeWrapper(newNodePath, newHostPath, check.info.profileName, path.dirname(wrapperPath));
+
+  if (needsNodeFix) {
+    process.stderr.write(`[tabctl] fixed wrapper Node path: ${check.info.nodePath} → ${newNodePath}\n`);
+  }
+  if (needsHostFix) {
+    process.stderr.write(`[tabctl] fixed wrapper host path: ${check.info.hostPath} → ${newHostPath}\n`);
   }
 }
