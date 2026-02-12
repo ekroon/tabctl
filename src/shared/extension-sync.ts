@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { resolveConfig } from "./config";
+import { GIT_SHA } from "./version";
 
 export const EXTENSION_DIR_NAME = "extension";
 export const HOST_BUNDLE_NAME = "host.bundle.js";
@@ -63,7 +64,35 @@ export function readHostVersion(hostPath: string): string | null {
   }
 }
 
-export function syncExtension(dataDir?: string): {
+/**
+ * Compare two semver versions by their base (major.minor.patch) components.
+ * Strips any prerelease/build metadata before comparing.
+ * Returns -1 if a < b, 0 if equal, 1 if a > b.
+ */
+export function compareBaseVersions(a: string, b: string): -1 | 0 | 1 {
+  const strip = (v: string) => v.replace(/[-+].*$/, "");
+  const pa = strip(a).split(".").map(Number);
+  const pb = strip(b).split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    const va = pa[i] ?? 0;
+    const vb = pb[i] ?? 0;
+    if (va < vb) return -1;
+    if (va > vb) return 1;
+  }
+  return 0;
+}
+
+/** Returns true when the current CLI is a dev build (has a git SHA). */
+export function isDevBuild(): boolean {
+  return GIT_SHA !== null;
+}
+
+export interface SyncOptions {
+  /** Skip dev-build and downgrade guards. Used by setup and tests. */
+  force?: boolean;
+}
+
+export function syncExtension(dataDir?: string, options?: SyncOptions): {
   synced: boolean;
   bundledVersion: string | null;
   installedVersion: string | null;
@@ -73,6 +102,17 @@ export function syncExtension(dataDir?: string): {
   const installedDir = resolveInstalledExtensionDir(dataDir);
   const bundledVersion = readExtensionVersion(bundledDir);
   const installedVersion = readExtensionVersion(installedDir);
+
+  if (!options?.force) {
+    // Dev builds never overwrite installed files
+    if (isDevBuild()) {
+      return { synced: false, bundledVersion, installedVersion, extensionDir: installedDir };
+    }
+    // Downgrade protection: don't replace a newer installed version
+    if (bundledVersion && installedVersion && compareBaseVersions(bundledVersion, installedVersion) < 0) {
+      return { synced: false, bundledVersion, installedVersion, extensionDir: installedDir };
+    }
+  }
 
   const needsCopy = !fs.existsSync(installedDir) || bundledVersion !== installedVersion;
 
@@ -89,7 +129,7 @@ export function syncExtension(dataDir?: string): {
   };
 }
 
-export function syncHost(dataDir?: string): {
+export function syncHost(dataDir?: string, options?: SyncOptions): {
   synced: boolean;
   bundledVersion: string | null;
   installedVersion: string | null;
@@ -99,6 +139,17 @@ export function syncHost(dataDir?: string): {
   const installedPath = resolveInstalledHostPath(dataDir);
   const bundledVersion = readHostVersion(bundledPath);
   const installedVersion = readHostVersion(installedPath);
+
+  if (!options?.force) {
+    // Dev builds never overwrite installed files
+    if (isDevBuild()) {
+      return { synced: false, bundledVersion, installedVersion, hostPath: installedPath };
+    }
+    // Downgrade protection: don't replace a newer installed version
+    if (bundledVersion && installedVersion && compareBaseVersions(bundledVersion, installedVersion) < 0) {
+      return { synced: false, bundledVersion, installedVersion, hostPath: installedPath };
+    }
+  }
 
   const needsCopy = !fs.existsSync(installedPath) || bundledVersion !== installedVersion;
 

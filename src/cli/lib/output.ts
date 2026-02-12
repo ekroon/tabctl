@@ -1,6 +1,6 @@
-import { VERSION, BASE_VERSION } from "../../shared/version";
+import { VERSION, BASE_VERSION, GIT_SHA } from "../../shared/version";
 import { getActiveProfile } from "../../shared/profiles";
-import { syncExtension, syncHost, resolveInstalledHostPath } from "../../shared/extension-sync";
+import { syncExtension, syncHost, resolveInstalledHostPath, compareBaseVersions } from "../../shared/extension-sync";
 import { resolveConfig } from "../../shared/config";
 import { checkWrapper, resolveWrapperPath } from "../../shared/wrapper-health";
 import { sendFireAndForget } from "./client";
@@ -61,33 +61,40 @@ export function setupStdoutErrorHandling(): void {
 
 export function emitVersionWarnings(response: Record<string, unknown>, fallbackAction: string): void {
   const hostVersion = typeof response.version === "string" ? response.version : null;
+  const data = response.data as Record<string, unknown> | undefined;
+  const hostBaseVersion = data && typeof data.hostBaseVersion === "string" ? data.hostBaseVersion : null;
+  const isDevBuild = GIT_SHA !== null;
 
-  // CLI ↔ host version mismatch: auto-upgrade (sync files + trigger reload)
-  if (hostVersion && hostVersion !== VERSION) {
-    try {
-      const config = resolveConfig();
-      const hostResult = syncHost(config.baseDataDir);
-      const extResult = syncExtension(config.baseDataDir);
-      const anySynced = hostResult.synced || extResult.synced;
-      // Send reload if we synced new files OR if the running host is stale
-      if (anySynced) {
-        process.stderr.write(`[tabctl] upgraded: ${hostVersion} → ${BASE_VERSION}. Reloading extension...\n`);
-      } else {
-        process.stderr.write(`[tabctl] host is stale (${hostVersion}), reloading extension...\n`);
-      }
-      sendFireAndForget({ id: createRequestId(), action: "reload", params: {} });
-      // Check and fix wrapper Node path for the active profile
+  // CLI ↔ host BASE_VERSION mismatch: auto-upgrade (sync files + trigger reload).
+  // Dev builds never sync — they use whatever host is already installed.
+  const effectiveHostBase = hostBaseVersion ?? hostVersion;
+  if (effectiveHostBase && effectiveHostBase !== BASE_VERSION && !isDevBuild) {
+    // Downgrade: host is newer than CLI — warn but don't sync/reload
+    if (compareBaseVersions(BASE_VERSION, effectiveHostBase) < 0) {
+      process.stderr.write(`[tabctl] cli (${BASE_VERSION}) is older than host (${effectiveHostBase}). Consider upgrading: npm install -g tabctl\n`);
+    } else {
       try {
-        repairActiveWrapper(config.baseDataDir);
+        const config = resolveConfig();
+        const hostResult = syncHost(config.baseDataDir);
+        const extResult = syncExtension(config.baseDataDir);
+        const anySynced = hostResult.synced || extResult.synced;
+        if (anySynced) {
+          process.stderr.write(`[tabctl] upgraded: ${effectiveHostBase} → ${BASE_VERSION}. Reloading extension...\n`);
+        } else {
+          process.stderr.write(`[tabctl] host is stale (${effectiveHostBase}), reloading extension...\n`);
+        }
+        sendFireAndForget({ id: createRequestId(), action: "reload", params: {} });
+        try {
+          repairActiveWrapper(config.baseDataDir);
+        } catch {
+          // Wrapper repair is best-effort
+        }
       } catch {
-        // Wrapper repair is best-effort
+        process.stderr.write(`[tabctl] version mismatch: cli ${BASE_VERSION}, host ${effectiveHostBase}. Run: tabctl setup\n`);
       }
-    } catch {
-      process.stderr.write(`[tabctl] version mismatch: cli ${VERSION}, host ${hostVersion}. Run: tabctl setup\n`);
     }
   }
 
-  const data = response.data as Record<string, unknown> | undefined;
   const extensionVersion = data && typeof data.extensionVersion === "string" ? (data.extensionVersion as string) : null;
   const extensionComponent = data && typeof data.extensionComponent === "string" ? (data.extensionComponent as string) : null;
   if (extensionVersion && hostVersion && extensionVersion !== hostVersion) {
