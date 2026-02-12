@@ -12,6 +12,8 @@ import {
   readHostVersion,
   resolveInstalledHostPath,
   syncHost,
+  compareBaseVersions,
+  isDevBuild,
 } from "../../shared/extension-sync";
 
 function makeTmpDir(): string {
@@ -62,7 +64,7 @@ test("resolveInstalledExtensionDir returns dataDir/extension", () => {
 test("syncExtension copies bundled to installed when not present", () => {
   const dir = makeTmpDir();
   try {
-    const result = syncExtension(dir);
+    const result = syncExtension(dir, { force: true });
     assert.equal(result.synced, true);
     assert.ok(fs.existsSync(result.extensionDir));
     assert.ok(fs.existsSync(path.join(result.extensionDir, "manifest.json")));
@@ -75,10 +77,10 @@ test("syncExtension copies bundled to installed when not present", () => {
 test("syncExtension skips when versions match", () => {
   const dir = makeTmpDir();
   try {
-    const first = syncExtension(dir);
+    const first = syncExtension(dir, { force: true });
     assert.equal(first.synced, true);
 
-    const second = syncExtension(dir);
+    const second = syncExtension(dir, { force: true });
     assert.equal(second.synced, false);
     assert.equal(second.bundledVersion, second.installedVersion);
   } finally {
@@ -103,8 +105,7 @@ test("checkExtensionSync detects missing extension", () => {
 test("checkExtensionSync detects matching versions", () => {
   const dir = makeTmpDir();
   try {
-    syncExtension(dir);
-    const result = checkExtensionSync(dir);
+    syncExtension(dir, { force: true });    const result = checkExtensionSync(dir);
     assert.equal(result.needsSync, false);
     assert.equal(result.needsReload, false);
     assert.equal(result.bundledVersion, result.installedVersion);
@@ -176,7 +177,7 @@ test("resolveInstalledHostPath returns dataDir/host.bundle.js", () => {
 test("syncHost copies bundled host when not present", () => {
   const dir = makeTmpDir();
   try {
-    const result = syncHost(dir);
+    const result = syncHost(dir, { force: true });
     assert.equal(result.synced, true);
     assert.ok(fs.existsSync(result.hostPath));
     assert.ok(result.bundledVersion, "bundledVersion should be set");
@@ -188,10 +189,10 @@ test("syncHost copies bundled host when not present", () => {
 test("syncHost skips when versions match", () => {
   const dir = makeTmpDir();
   try {
-    const first = syncHost(dir);
+    const first = syncHost(dir, { force: true });
     assert.equal(first.synced, true);
 
-    const second = syncHost(dir);
+    const second = syncHost(dir, { force: true });
     assert.equal(second.synced, false);
     assert.equal(second.bundledVersion, second.installedVersion);
   } finally {
@@ -203,7 +204,7 @@ test("syncHost overwrites when versions differ", () => {
   const dir = makeTmpDir();
   try {
     // First sync
-    const first = syncHost(dir);
+    const first = syncHost(dir, { force: true });
     assert.equal(first.synced, true);
 
     // Tamper with installed version
@@ -211,7 +212,7 @@ test("syncHost overwrites when versions differ", () => {
     fs.writeFileSync(first.hostPath, content.replace(/BASE_VERSION\s*=\s*"[^"]*"/, 'BASE_VERSION = "0.0.0"'));
 
     // Second sync should detect mismatch and re-copy
-    const second = syncHost(dir);
+    const second = syncHost(dir, { force: true });
     assert.equal(second.synced, true);
     assert.equal(second.installedVersion, "0.0.0");
     assert.notEqual(second.bundledVersion, "0.0.0");
@@ -224,7 +225,7 @@ test("synced host bundle is executable", () => {
   const dir = makeTmpDir();
   const cleanConfigHome = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-extsync-cfg-"));
   try {
-    const result = syncHost(dir);
+    const result = syncHost(dir, { force: true });
     assert.equal(result.synced, true);
 
     // Verify the bundle actually runs (will exit when stdin closes)
@@ -241,5 +242,52 @@ test("synced host bundle is executable", () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(cleanConfigHome, { recursive: true, force: true });
+  }
+});
+
+// --- compareBaseVersions ---
+
+test("compareBaseVersions compares correctly", () => {
+  assert.equal(compareBaseVersions("0.5.0", "0.5.0"), 0);
+  assert.equal(compareBaseVersions("0.5.1", "0.5.0"), 1);
+  assert.equal(compareBaseVersions("0.5.0", "0.5.1"), -1);
+  assert.equal(compareBaseVersions("1.0.0", "0.9.9"), 1);
+  assert.equal(compareBaseVersions("0.4.0", "0.5.0"), -1);
+});
+
+test("compareBaseVersions strips prerelease metadata", () => {
+  assert.equal(compareBaseVersions("0.5.0", "0.5.0-dev.abc123"), 0);
+  assert.equal(compareBaseVersions("0.5.0-dev.abc", "0.5.1-dev.xyz"), -1);
+  assert.equal(compareBaseVersions("0.5.1-dev.abc.dirty", "0.5.0"), 1);
+});
+
+// --- isDevBuild ---
+
+test("isDevBuild reflects GIT_SHA", () => {
+  // In test/dev mode GIT_SHA is set, so isDevBuild() should be true
+  assert.equal(isDevBuild(), true);
+});
+
+// --- dev guard ---
+
+test("syncHost skips in dev mode without force", () => {
+  const dir = makeTmpDir();
+  try {
+    // Without force, dev builds should not sync
+    const result = syncHost(dir);
+    assert.equal(result.synced, false);
+    assert.ok(!fs.existsSync(result.hostPath), "host bundle should not be copied in dev mode");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("syncExtension skips in dev mode without force", () => {
+  const dir = makeTmpDir();
+  try {
+    const result = syncExtension(dir);
+    assert.equal(result.synced, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -30,7 +30,7 @@ function readGitSha() {
 
 function isDirty() {
   try {
-    const out = execSync("git status --porcelain", {
+    const out = execSync("git status --porcelain -uno", {
       cwd: root,
       stdio: ["ignore", "pipe", "ignore"],
     }).toString().trim();

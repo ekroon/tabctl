@@ -72,7 +72,7 @@ export function resolveNodePath(options: Options): string {
 function resolveHostPath(dataDir: string): string {
   // Sync host bundle to stable path so wrapper survives npm upgrades
   try {
-    const result = syncHost(dataDir);
+    const result = syncHost(dataDir, { force: true });
     return result.hostPath;
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
@@ -181,7 +181,7 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
   const hostPath = resolveHostPath(config.baseDataDir);
   let extensionSync;
   try {
-    extensionSync = syncExtension(config.baseDataDir);
+    extensionSync = syncExtension(config.baseDataDir, { force: true });
   } catch {
     extensionSync = null;
   }
