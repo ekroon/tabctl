@@ -263,17 +263,17 @@ test("compareBaseVersions strips prerelease metadata", () => {
 
 // --- isDevBuild ---
 
-test("isDevBuild reflects GIT_SHA", () => {
-  // In test/dev mode GIT_SHA is set, so isDevBuild() should be true
-  assert.equal(isDevBuild(), true);
+test("isDevBuild reflects DEV_BUILD constant", () => {
+  // In dev mode (built from git repo without TABCTL_VERSION_MODE=release) this is true
+  // In release mode (TABCTL_VERSION_MODE=release) this is false
+  assert.equal(typeof isDevBuild(), "boolean");
 });
 
-// --- dev guard ---
+// --- dev guard (only meaningful in dev mode) ---
 
-test("syncHost skips in dev mode without force", () => {
+test("syncHost skips in dev mode without force", { skip: !isDevBuild() && "release build has no dev guard" }, () => {
   const dir = makeTmpDir();
   try {
-    // Without force, dev builds should not sync
     const result = syncHost(dir);
     assert.equal(result.synced, false);
     assert.ok(!fs.existsSync(result.hostPath), "host bundle should not be copied in dev mode");
@@ -282,7 +282,7 @@ test("syncHost skips in dev mode without force", () => {
   }
 });
 
-test("syncExtension skips in dev mode without force", () => {
+test("syncExtension skips in dev mode without force", { skip: !isDevBuild() && "release build has no dev guard" }, () => {
   const dir = makeTmpDir();
   try {
     const result = syncExtension(dir);

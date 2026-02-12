@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { resolveConfig } from "./config";
-import { GIT_SHA } from "./version";
+import { GIT_SHA, DEV_BUILD } from "./version";
 
 export const EXTENSION_DIR_NAME = "extension";
 export const HOST_BUNDLE_NAME = "host.bundle.js";
@@ -82,9 +82,9 @@ export function compareBaseVersions(a: string, b: string): -1 | 0 | 1 {
   return 0;
 }
 
-/** Returns true when the current CLI is a dev build (has a git SHA). */
+/** Returns true when the current CLI is a dev build. */
 export function isDevBuild(): boolean {
-  return GIT_SHA !== null;
+  return DEV_BUILD;
 }
 
 export interface SyncOptions {

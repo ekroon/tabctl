@@ -52,16 +52,14 @@ const mode = (() => {
   return fs.existsSync(gitDir) ? "dev" : "release";
 })();
 
-let gitSha = null;
+let gitSha = readGitSha();
 let dirty = false;
 let version = baseVersion;
+const devBuild = mode === "dev";
 
-if (mode === "dev") {
-  gitSha = readGitSha();
-  if (gitSha) {
-    dirty = isDirty();
-    version = `${baseVersion}-dev.${gitSha}${dirty ? ".dirty" : ""}`;
-  }
+if (devBuild && gitSha) {
+  dirty = isDirty();
+  version = `${baseVersion}-dev.${gitSha}${dirty ? ".dirty" : ""}`;
 }
 
 const content = [
@@ -69,6 +67,7 @@ const content = [
   `export const VERSION = "${version}";`,
   `export const GIT_SHA = ${gitSha ? `"${gitSha}"` : "null"};`,
   `export const DIRTY = ${dirty};`,
+  `export const DEV_BUILD = ${devBuild};`,
   "",
 ].join("\n");
 
