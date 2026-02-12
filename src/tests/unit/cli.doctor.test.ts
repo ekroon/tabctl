@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { runCli, parseOutput } from "./cli-helpers";
+import { resolveWrapperPath, resolveWrapperTextPath } from "../../shared/wrapper-health";
 
 function makeTmpHome(): { homeDir: string; stateHome: string; configHome: string; env: Record<string, string> } {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-doctor-"));
@@ -52,10 +53,12 @@ test("doctor detects broken Node path", async () => {
   await setupProfile(env, "chrome");
 
   // Corrupt the wrapper by replacing Node path with a bad one
-  const wrapperPath = path.join(stateHome, "tabctl", "profiles", "chrome", "tabctl-host.sh");
-  let content = fs.readFileSync(wrapperPath, "utf-8");
+  const profileDir = path.join(stateHome, "tabctl", "profiles", "chrome");
+  const wrapperPath = resolveWrapperPath(profileDir);
+  const textPath = resolveWrapperTextPath(wrapperPath);
+  let content = fs.readFileSync(textPath, "utf-8");
   content = content.replace(process.execPath, "/nonexistent/node-v99/bin/node");
-  fs.writeFileSync(wrapperPath, content, "utf8");
+  fs.writeFileSync(textPath, content, "utf8");
 
   const result = await runCli(["doctor", "--json"], undefined, env);
   // doctor exits 1 on broken profiles (errorOut is not called; printJson + exit code depends on ok)
@@ -71,10 +74,12 @@ test("doctor --fix repairs broken Node path", async () => {
   await setupProfile(env, "edge");
 
   // Break the wrapper
-  const wrapperPath = path.join(stateHome, "tabctl", "profiles", "edge", "tabctl-host.sh");
-  let content = fs.readFileSync(wrapperPath, "utf-8");
+  const profileDir = path.join(stateHome, "tabctl", "profiles", "edge");
+  const wrapperPath = resolveWrapperPath(profileDir);
+  const textPath = resolveWrapperTextPath(wrapperPath);
+  let content = fs.readFileSync(textPath, "utf-8");
   content = content.replace(process.execPath, "/nonexistent/node-v99/bin/node");
-  fs.writeFileSync(wrapperPath, content, "utf8");
+  fs.writeFileSync(textPath, content, "utf8");
 
   // Verify it's broken
   const broken = await runCli(["doctor", "--json"], undefined, env);
@@ -89,7 +94,7 @@ test("doctor --fix repairs broken Node path", async () => {
   assert.equal(fixedOutput.data.summary.fixed, 1);
 
   // Verify wrapper now has current Node path
-  const newContent = fs.readFileSync(wrapperPath, "utf-8");
+  const newContent = fs.readFileSync(textPath, "utf-8");
   assert.ok(newContent.includes(process.execPath), "wrapper should contain current Node path");
 });
 
@@ -98,11 +103,13 @@ test("doctor --fix repairs broken host path", async () => {
   await setupProfile(env, "edge");
 
   // Break the wrapper by replacing host path
-  const wrapperPath = path.join(stateHome, "tabctl", "profiles", "edge", "tabctl-host.sh");
-  let content = fs.readFileSync(wrapperPath, "utf-8");
+  const profileDir = path.join(stateHome, "tabctl", "profiles", "edge");
+  const wrapperPath = resolveWrapperPath(profileDir);
+  const textPath = resolveWrapperTextPath(wrapperPath);
+  let content = fs.readFileSync(textPath, "utf-8");
   const hostBundlePath = path.join(stateHome, "tabctl", "host.bundle.js");
   content = content.replace(hostBundlePath, "/nonexistent/host.bundle.js");
-  fs.writeFileSync(wrapperPath, content, "utf8");
+  fs.writeFileSync(textPath, content, "utf8");
 
   // Fix it
   const fixed = await runCli(["doctor", "--fix", "--json"], undefined, env);
@@ -111,7 +118,7 @@ test("doctor --fix repairs broken host path", async () => {
   assert.equal(fixedOutput.data.profiles.edge.fixed, true);
 
   // Verify wrapper now has correct host path
-  const newContent = fs.readFileSync(wrapperPath, "utf-8");
+  const newContent = fs.readFileSync(textPath, "utf-8");
   assert.ok(newContent.includes(hostBundlePath), "wrapper should contain stable host path");
 });
 
@@ -121,10 +128,12 @@ test("doctor with multiple profiles reports each", async () => {
   await setupProfile(env, "chrome");
 
   // Break chrome only
-  const wrapperPath = path.join(stateHome, "tabctl", "profiles", "chrome", "tabctl-host.sh");
-  let content = fs.readFileSync(wrapperPath, "utf-8");
+  const profileDir = path.join(stateHome, "tabctl", "profiles", "chrome");
+  const wrapperPath = resolveWrapperPath(profileDir);
+  const textPath = resolveWrapperTextPath(wrapperPath);
+  let content = fs.readFileSync(textPath, "utf-8");
   content = content.replace(process.execPath, "/nonexistent/node");
-  fs.writeFileSync(wrapperPath, content, "utf8");
+  fs.writeFileSync(textPath, content, "utf8");
 
   const result = await runCli(["doctor", "--json"], undefined, env);
   const output = parseOutput(result);

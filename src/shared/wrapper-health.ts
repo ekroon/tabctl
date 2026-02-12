@@ -132,3 +132,16 @@ export function resolveWrapperPath(profileDataDir: string): string {
   }
   return path.join(profileDataDir, "tabctl-host.sh");
 }
+
+/**
+ * Resolve the text-editable config path for a wrapper.
+ * For .exe wrappers, this is the adjacent host-launcher.cfg.
+ * For .sh/.cmd, it's the wrapper itself.
+ */
+export function resolveWrapperTextPath(wrapperPath: string): string {
+  const ext = path.extname(wrapperPath).toLowerCase();
+  if (ext === ".exe") {
+    return path.join(path.dirname(wrapperPath), "host-launcher.cfg");
+  }
+  return wrapperPath;
+}

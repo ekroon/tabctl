@@ -674,15 +674,30 @@ async function main(): Promise<void> {
     const doctorProfileDir = path.join(dataDir, "profiles", "integration");
     fs.mkdirSync(doctorProfileDir, { recursive: true });
 
-    // Write a standard-format wrapper (same format as `tabctl setup` produces)
-    const doctorWrapperPath = path.join(doctorProfileDir, "tabctl-host.sh");
-    fs.writeFileSync(doctorWrapperPath, [
-      "#!/usr/bin/env bash",
-      "set -euo pipefail",
-      `export TABCTL_PROFILE="integration"`,
-      `exec "${process.execPath}" "${hostPath}"`,
-      "",
-    ].join("\n"), { mode: 0o700 });
+    // Write a platform-appropriate wrapper (same format as `tabctl setup` produces)
+    let doctorWrapperPath: string;
+    let doctorTextPath: string; // text-editable config file for corruption
+    if (process.platform === "win32") {
+      // .cmd wrapper (text-based, no Go launcher binary needed in tests)
+      doctorWrapperPath = path.join(doctorProfileDir, "tabctl-host.cmd");
+      doctorTextPath = doctorWrapperPath;
+      fs.writeFileSync(doctorWrapperPath, [
+        "@echo off",
+        `set TABCTL_PROFILE=integration`,
+        `"${process.execPath}" "${hostPath}" %*`,
+        "",
+      ].join("\r\n"), "utf8");
+    } else {
+      doctorWrapperPath = path.join(doctorProfileDir, "tabctl-host.sh");
+      doctorTextPath = doctorWrapperPath;
+      fs.writeFileSync(doctorWrapperPath, [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        `export TABCTL_PROFILE="integration"`,
+        `exec "${process.execPath}" "${hostPath}"`,
+        "",
+      ].join("\n"), { mode: 0o700 });
+    }
 
     // Write profiles.json so doctor can discover the profile
     const profilesPath = path.join(configDir, "profiles.json");
@@ -718,8 +733,8 @@ async function main(): Promise<void> {
     // Test B: Doctor detects broken Node path
     await runTestFn("doctor detects broken node path", async () => {
       // Corrupt the wrapper
-      const content = fs.readFileSync(doctorWrapperPath, "utf-8");
-      fs.writeFileSync(doctorWrapperPath, content.replace(process.execPath, "/nonexistent/node-v99/bin/node"), "utf8");
+      const content = fs.readFileSync(doctorTextPath, "utf-8");
+      fs.writeFileSync(doctorTextPath, content.replace(process.execPath, "/nonexistent/node-v99/bin/node"), "utf8");
 
       const result = runCli(["doctor", "--json"]);
       if (result.ok) { log(`    expected doctor to report failure`); return false; }
@@ -729,15 +744,15 @@ async function main(): Promise<void> {
       if (!hasNodeIssue) { log(`    expected 'Node path not found' issue, got: ${JSON.stringify(profileResult?.issues)}`); return false; }
 
       // Restore for next test
-      fs.writeFileSync(doctorWrapperPath, content, { mode: 0o700 });
+      fs.writeFileSync(doctorTextPath, content, process.platform === "win32" ? "utf8" : { mode: 0o700 } as any);
       return true;
     });
 
     // Test C: Doctor --fix repairs broken Node path
     await runTestFn("doctor --fix repairs broken node path", async () => {
       // Corrupt the wrapper
-      const content = fs.readFileSync(doctorWrapperPath, "utf-8");
-      fs.writeFileSync(doctorWrapperPath, content.replace(process.execPath, "/nonexistent/node-v99/bin/node"), "utf8");
+      const content = fs.readFileSync(doctorTextPath, "utf-8");
+      fs.writeFileSync(doctorTextPath, content.replace(process.execPath, "/nonexistent/node-v99/bin/node"), "utf8");
 
       const result = runCli(["doctor", "--fix", "--json"]);
       // Overall ok may be false due to extension sync; check profile-level fix
@@ -751,7 +766,7 @@ async function main(): Promise<void> {
       }
 
       // Verify wrapper was repaired with current Node path
-      const repaired = fs.readFileSync(doctorWrapperPath, "utf-8");
+      const repaired = fs.readFileSync(doctorTextPath, "utf-8");
       if (!repaired.includes(process.execPath)) {
         log(`    wrapper should contain ${process.execPath}`);
         return false;
@@ -772,8 +787,8 @@ async function main(): Promise<void> {
       }
 
       // Corrupt the wrapper's host path
-      const content = fs.readFileSync(doctorWrapperPath, "utf-8");
-      fs.writeFileSync(doctorWrapperPath, content.replace(hostPath, "/nonexistent/host.bundle.js"), "utf8");
+      const content = fs.readFileSync(doctorTextPath, "utf-8");
+      fs.writeFileSync(doctorTextPath, content.replace(hostPath, "/nonexistent/host.bundle.js"), "utf8");
 
       const result = runCli(["doctor", "--fix", "--json"]);
       // Overall ok may be false due to extension sync; check profile-level fix
