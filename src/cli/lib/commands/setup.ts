@@ -284,9 +284,20 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
       "",
     ].join("\n"));
   }
+  const extensionsUrl = browser === "edge" ? "edge://extensions" : "chrome://extensions";
+  const browserName = browser === "edge" ? "Edge" : "Chrome";
+  const extensionDir = extensionSync?.extensionDir || null;
+  const loadSteps = extensionDir
+    ? [
+        `Load the extension: ${extensionsUrl} → Developer mode → Load unpacked`,
+        `  Path: ${extensionDir}`,
+        process.platform === "darwin" ? "  Tip: press Cmd+Shift+G in the file dialog to paste the path" : null,
+      ].filter(Boolean).join("\n")
+    : `Load the extension: ${extensionsUrl} → Developer mode → Load unpacked`;
   process.stderr.write([
+    loadSteps,
     `Verify connection: tabctl --profile ${profileName} ping`,
-    `If ping fails, ensure the ${browser === "edge" ? "Edge" : "Chrome"} extension is active.`,
+    `If ping fails, ensure the ${browserName} extension is active.`,
     "",
   ].join("\n"));
 }
