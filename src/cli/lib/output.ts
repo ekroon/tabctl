@@ -1,4 +1,4 @@
-import { VERSION, BASE_VERSION, GIT_SHA } from "../../shared/version";
+import { VERSION, BASE_VERSION, DEV_BUILD } from "../../shared/version";
 import { getActiveProfile } from "../../shared/profiles";
 import { syncExtension, syncHost, resolveInstalledHostPath, compareBaseVersions } from "../../shared/extension-sync";
 import { resolveConfig } from "../../shared/config";
@@ -63,12 +63,12 @@ export function emitVersionWarnings(response: Record<string, unknown>, fallbackA
   const hostVersion = typeof response.version === "string" ? response.version : null;
   const data = response.data as Record<string, unknown> | undefined;
   const hostBaseVersion = data && typeof data.hostBaseVersion === "string" ? data.hostBaseVersion : null;
-  const isDevBuild = GIT_SHA !== null;
+  const isDevCli = DEV_BUILD;
 
   // CLI ↔ host BASE_VERSION mismatch: auto-upgrade (sync files + trigger reload).
   // Dev builds never sync — they use whatever host is already installed.
   const effectiveHostBase = hostBaseVersion ?? hostVersion;
-  if (effectiveHostBase && effectiveHostBase !== BASE_VERSION && !isDevBuild) {
+  if (effectiveHostBase && effectiveHostBase !== BASE_VERSION && !isDevCli) {
     // Downgrade: host is newer than CLI — warn but don't sync/reload
     if (compareBaseVersions(BASE_VERSION, effectiveHostBase) < 0) {
       process.stderr.write(`[tabctl] cli (${BASE_VERSION}) is older than host (${effectiveHostBase}). Consider upgrading: npm install -g tabctl\n`);
