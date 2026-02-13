@@ -33,14 +33,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Detect WSL distro
+      - name: Detect or install WSL distro
         shell: pwsh
         run: |
           wsl --status
-          $distro = (wsl --list --quiet | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -First 1)
+          $distros = wsl --list --quiet |
+            ForEach-Object { ($_ -replace "`0", "").Trim() } |
+            Where-Object { $_ -and $_ -notlike "docker-desktop*" }
+          $distro = $distros | Where-Object { $_ -like "Ubuntu*" } | Select-Object -First 1
           if (-not $distro) {
-            throw "No WSL distro found on this runner."
+            $distro = $distros | Select-Object -First 1
           }
+          if (-not $distro) {
+            Write-Host "No WSL distro found; installing Ubuntu..."
+            wsl --install -d Ubuntu --no-launch
+            $distros = wsl --list --quiet |
+              ForEach-Object { ($_ -replace "`0", "").Trim() } |
+              Where-Object { $_ -and $_ -notlike "docker-desktop*" }
+            $distro = $distros | Where-Object { $_ -like "Ubuntu*" } | Select-Object -First 1
+            if (-not $distro) {
+              $distro = $distros | Select-Object -First 1
+            }
+          }
+          if (-not $distro) {
+            throw "No WSL distro available after installation attempt."
+          }
+          wsl -d $distro -- uname -a
           "WSL_DISTRO=$distro" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Using WSL distro: $distro"
 
