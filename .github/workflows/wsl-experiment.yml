@@ -120,6 +120,9 @@ jobs:
           $script = @'
           set -euxo pipefail
           cd "$WSL_WORKSPACE"
+          if [ -f src/tests/unit/fixtures/npx ]; then
+            sed -i 's/\r$//' src/tests/unit/fixtures/npx
+          fi
           npm ci
           npm run build
           npm run test:unit
