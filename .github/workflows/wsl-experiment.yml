@@ -142,7 +142,14 @@ jobs:
           npm run build
           npm run test:unit
           '@
-          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" bash -lc ($script -replace "`r", "")
+          $tmpScript = "${{ github.workspace }}/wsl-build-unit.sh"
+          [System.IO.File]::WriteAllText($tmpScript, ($script -replace "`r", ""), [System.Text.UTF8Encoding]::new($false))
+          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" bash "$env:WSL_WORKSPACE/wsl-build-unit.sh"
+          $status = $LASTEXITCODE
+          Remove-Item -Path $tmpScript -ErrorAction SilentlyContinue
+          if ($status -ne 0) {
+            exit $status
+          }
 
       - name: Setup from WSL for Windows browser
         shell: pwsh
@@ -150,7 +157,7 @@ jobs:
           $script = @'
           set -euo pipefail
           cd "$WSL_WORKSPACE"
-          extension_id="$(node - <<'NODE'
+          extension_id="$(node <<'NODE'
           const crypto = require("node:crypto");
           const path = require("node:path");
           const extensionDir = path.resolve("dist/extension");
@@ -163,7 +170,7 @@ jobs:
           NODE
           )"
           node dist/cli/tabctl.js setup --browser chrome --extension-id "$extension_id" --json > /tmp/tabctl-wsl-setup.json
-          node - <<'NODE'
+          node <<'NODE'
           const fs = require("node:fs");
           const output = JSON.parse(fs.readFileSync("/tmp/tabctl-wsl-setup.json", "utf8"));
           if (!output.ok) throw new Error("setup command failed");
@@ -182,7 +189,18 @@ jobs:
           NODE
           cp /tmp/tabctl-wsl-setup.json "$WSL_WORKSPACE/wsl-setup.json" || true
           '@
-          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" bash -lc ($script -replace "`r", "")
+          $tmpScript = "${{ github.workspace }}/wsl-setup-check.sh"
+          [System.IO.File]::WriteAllText($tmpScript, ($script -replace "`r", ""), [System.Text.UTF8Encoding]::new($false))
+          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" bash "$env:WSL_WORKSPACE/wsl-setup-check.sh"
+          $status = $LASTEXITCODE
+          $setupOutput = wsl -d $env:WSL_DISTRO -- bash -lc 'cat /tmp/tabctl-wsl-setup.json 2>/dev/null'
+          if ($LASTEXITCODE -eq 0 -and $setupOutput) {
+            $setupOutput | Out-File -FilePath "${{ github.workspace }}/wsl-setup.json" -Encoding utf8
+          }
+          Remove-Item -Path $tmpScript -ErrorAction SilentlyContinue
+          if ($status -ne 0) {
+            exit $status
+          }
 
       - name: Integration test from WSL against Windows browser
         shell: pwsh
