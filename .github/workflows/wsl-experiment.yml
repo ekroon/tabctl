@@ -32,6 +32,9 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
 
       - name: Detect or install WSL distro
         shell: pwsh
@@ -131,7 +134,7 @@ jobs:
           '@
           wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" bash -lc ($script -replace "`r", "")
 
-      - name: Integration test in WSL
+      - name: Integration test from WSL against Windows browser
         shell: pwsh
         continue-on-error: true
         run: |
@@ -139,15 +142,25 @@ jobs:
           set -euo pipefail
           cd "$WSL_WORKSPACE"
           log_file="/tmp/tabctl-wsl-integration.log"
-          chrome_bin="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
-          if [ -z "$chrome_bin" ]; then
-            echo "No Chrome binary found in WSL; skipping integration test." > "$log_file"
+          win_workspace="$(wslpath -w "$WSL_WORKSPACE")"
+          win_chrome=""
+          for candidate in \
+            "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe" \
+            "/mnt/c/Program Files/Microsoft/Edge/Application/msedge.exe" \
+            "/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
+          do
+            if [ -f "$candidate" ]; then
+              win_chrome="$(wslpath -w "$candidate")"
+              break
+            fi
+          done
+          if [ -z "$win_chrome" ]; then
+            echo "No Windows Chrome/Edge binary found; skipping integration test." > "$log_file"
             cp "$log_file" "$WSL_WORKSPACE/wsl-integration.log" || true
             exit 0
           fi
-          export CHROME_PATH="$chrome_bin"
           set +e
-          npm run test:integration 2>&1 | tee "$log_file"
+          powershell.exe -NoProfile -Command "\$ErrorActionPreference='Stop'; Set-Location '$win_workspace'; \$env:CHROME_PATH='$win_chrome'; node dist/scripts/integration-test.js" 2>&1 | tee "$log_file"
           status=${PIPESTATUS[0]}
           set -e
           cp "$log_file" "$WSL_WORKSPACE/wsl-integration.log" || true
