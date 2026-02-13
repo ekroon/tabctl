@@ -101,6 +101,7 @@ jobs:
 
       - name: Capture WSL diagnostics
         shell: pwsh
+        continue-on-error: true
         run: |
           $script = @'
           set -euxo pipefail
