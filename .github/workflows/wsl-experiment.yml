@@ -165,7 +165,8 @@ jobs:
           cp "$log_file" "$WSL_WORKSPACE/wsl-integration.log" || true
           exit "$status"
           '@
-          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" bash -lc ($script -replace "`r", "")
+          $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($script -replace "`r", "")))
+          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" SCRIPT_B64="$encoded" bash -lc 'printf "%s" "$SCRIPT_B64" | base64 -d | bash'
 
       - name: Ensure artifact files exist
         if: always()
