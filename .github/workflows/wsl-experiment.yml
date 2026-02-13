@@ -145,12 +145,12 @@ jobs:
           log_file="/tmp/tabctl-wsl-integration.log"
           win_workspace="$(wslpath -w "$WSL_WORKSPACE")"
           win_chrome=""
-          if [ -f "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe" ]; then
-            win_chrome="$(wslpath -w "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe")"
-          elif [ -f "/mnt/c/Program Files/Microsoft/Edge/Application/msedge.exe" ]; then
-            win_chrome="$(wslpath -w "/mnt/c/Program Files/Microsoft/Edge/Application/msedge.exe")"
-          elif [ -f "/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" ]; then
-            win_chrome="$(wslpath -w "/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe")"
+          if [ -f /mnt/c/Program\ Files/Google/Chrome/Application/chrome.exe ]; then
+            win_chrome="$(wslpath -w /mnt/c/Program\ Files/Google/Chrome/Application/chrome.exe)"
+          elif [ -f /mnt/c/Program\ Files/Microsoft/Edge/Application/msedge.exe ]; then
+            win_chrome="$(wslpath -w /mnt/c/Program\ Files/Microsoft/Edge/Application/msedge.exe)"
+          elif [ -f /mnt/c/Program\ Files\ \(x86\)/Microsoft/Edge/Application/msedge.exe ]; then
+            win_chrome="$(wslpath -w /mnt/c/Program\ Files\ \(x86\)/Microsoft/Edge/Application/msedge.exe)"
           fi
           if [ -z "$win_chrome" ]; then
             echo "No Windows Chrome/Edge binary found; skipping integration test." > "$log_file"
