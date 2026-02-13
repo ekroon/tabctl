@@ -83,7 +83,7 @@ jobs:
           go version
           (google-chrome --version || google-chrome-stable --version || chromium --version || chromium-browser --version)
           '@
-          wsl -d $env:WSL_DISTRO -- bash -lc "$script"
+          wsl -d $env:WSL_DISTRO -- bash -lc ($script -replace "`r", "")
 
       - name: Resolve WSL workspace path
         shell: pwsh
@@ -108,7 +108,7 @@ jobs:
             echo "chrome: $(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || echo missing)"
           } > "$WSL_WORKSPACE/wsl-diagnostics.txt"
           '@
-          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" WSL_DISTRO="$env:WSL_DISTRO" bash -lc "$script"
+          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" WSL_DISTRO="$env:WSL_DISTRO" bash -lc ($script -replace "`r", "")
 
       - name: Build and unit test in WSL
         shell: pwsh
@@ -120,7 +120,7 @@ jobs:
           npm run build
           npm run test:unit
           '@
-          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" bash -lc "$script"
+          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" bash -lc ($script -replace "`r", "")
 
       - name: Integration test in WSL
         shell: pwsh
@@ -142,7 +142,7 @@ jobs:
           set -e
           exit "$status"
           '@
-          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" bash -lc "$script"
+          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" bash -lc ($script -replace "`r", "")
 
       - name: Upload WSL experiment artifacts
         if: always()
