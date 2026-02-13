@@ -116,9 +116,17 @@ jobs:
             echo "go: $(go version 2>/dev/null || echo missing)"
             echo "chrome: $(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || echo missing)"
           } > "$diag_file"
-          cp "$diag_file" "$WSL_WORKSPACE/wsl-diagnostics.txt" || true
           '@
-          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" WSL_DISTRO="$env:WSL_DISTRO" bash -lc ($script -replace "`r", "")
+          $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($script -replace "`r", "")))
+          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" WSL_DISTRO="$env:WSL_DISTRO" SCRIPT_B64="$encoded" bash -lc 'printf "%s" "$SCRIPT_B64" | base64 -d | bash'
+          $status = $LASTEXITCODE
+          $diagOutput = wsl -d $env:WSL_DISTRO -- bash -lc 'cat /tmp/tabctl-wsl-diagnostics.txt 2>/dev/null'
+          if ($LASTEXITCODE -eq 0 -and $diagOutput) {
+            $diagOutput | Out-File -FilePath "${{ github.workspace }}/wsl-diagnostics.txt" -Encoding utf8
+          }
+          if ($status -ne 0) {
+            exit $status
+          }
 
       - name: Build and unit test in WSL
         shell: pwsh
@@ -167,6 +175,14 @@ jobs:
           '@
           $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($script -replace "`r", "")))
           wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" SCRIPT_B64="$encoded" bash -lc 'printf "%s" "$SCRIPT_B64" | base64 -d | bash'
+          $status = $LASTEXITCODE
+          $integrationOutput = wsl -d $env:WSL_DISTRO -- bash -lc 'cat /tmp/tabctl-wsl-integration.log 2>/dev/null'
+          if ($LASTEXITCODE -eq 0 -and $integrationOutput) {
+            $integrationOutput | Out-File -FilePath "${{ github.workspace }}/wsl-integration.log" -Encoding utf8
+          }
+          if ($status -ne 0) {
+            exit $status
+          }
 
       - name: Ensure artifact files exist
         if: always()
