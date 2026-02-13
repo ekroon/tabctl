@@ -117,15 +117,15 @@ jobs:
             echo "chrome: $(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || echo missing)"
           } > "$diag_file"
           '@
-          $tmpScript = Join-Path $env:RUNNER_TEMP "wsl-diagnostics.sh"
+          $tmpScript = "${{ github.workspace }}/wsl-diagnostics.sh"
           [System.IO.File]::WriteAllText($tmpScript, ($script -replace "`r", ""), [System.Text.UTF8Encoding]::new($false))
-          $wslScript = (wsl -d $env:WSL_DISTRO -- env WIN_SCRIPT="$tmpScript" bash -lc 'wslpath -a -u "$WIN_SCRIPT"').Trim()
-          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" WSL_DISTRO="$env:WSL_DISTRO" bash "$wslScript"
+          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" WSL_DISTRO="$env:WSL_DISTRO" bash "$env:WSL_WORKSPACE/wsl-diagnostics.sh"
           $status = $LASTEXITCODE
           $diagOutput = wsl -d $env:WSL_DISTRO -- bash -lc 'cat /tmp/tabctl-wsl-diagnostics.txt 2>/dev/null'
           if ($LASTEXITCODE -eq 0 -and $diagOutput) {
             $diagOutput | Out-File -FilePath "${{ github.workspace }}/wsl-diagnostics.txt" -Encoding utf8
           }
+          Remove-Item -Path $tmpScript -ErrorAction SilentlyContinue
           if ($status -ne 0) {
             exit $status
           }
@@ -175,15 +175,15 @@ jobs:
           cp "$log_file" "$WSL_WORKSPACE/wsl-integration.log" || true
           exit "$status"
           '@
-          $tmpScript = Join-Path $env:RUNNER_TEMP "wsl-integration.sh"
+          $tmpScript = "${{ github.workspace }}/wsl-integration.sh"
           [System.IO.File]::WriteAllText($tmpScript, ($script -replace "`r", ""), [System.Text.UTF8Encoding]::new($false))
-          $wslScript = (wsl -d $env:WSL_DISTRO -- env WIN_SCRIPT="$tmpScript" bash -lc 'wslpath -a -u "$WIN_SCRIPT"').Trim()
-          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" bash "$wslScript"
+          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" bash "$env:WSL_WORKSPACE/wsl-integration.sh"
           $status = $LASTEXITCODE
           $integrationOutput = wsl -d $env:WSL_DISTRO -- bash -lc 'cat /tmp/tabctl-wsl-integration.log 2>/dev/null'
           if ($LASTEXITCODE -eq 0 -and $integrationOutput) {
             $integrationOutput | Out-File -FilePath "${{ github.workspace }}/wsl-integration.log" -Encoding utf8
           }
+          Remove-Item -Path $tmpScript -ErrorAction SilentlyContinue
           if ($status -ne 0) {
             exit $status
           }
