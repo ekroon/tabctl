@@ -28,7 +28,6 @@ permissions:
 jobs:
   wsl:
     runs-on: windows-latest
-    continue-on-error: true
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -145,9 +144,48 @@ jobs:
           '@
           wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" bash -lc ($script -replace "`r", "")
 
+      - name: Setup from WSL for Windows browser
+        shell: pwsh
+        run: |
+          $script = @'
+          set -euo pipefail
+          cd "$WSL_WORKSPACE"
+          extension_id="$(node - <<'NODE'
+          const crypto = require("node:crypto");
+          const path = require("node:path");
+          const extensionDir = path.resolve("dist/extension");
+          const hash = crypto.createHash("sha256").update(extensionDir).digest("hex").slice(0, 32);
+          let id = "";
+          for (const c of hash) {
+            id += String.fromCharCode("a".charCodeAt(0) + parseInt(c, 16));
+          }
+          console.log(id);
+          NODE
+          )"
+          node dist/cli/tabctl.js setup --browser chrome --extension-id "$extension_id" --json > /tmp/tabctl-wsl-setup.json
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const output = JSON.parse(fs.readFileSync("/tmp/tabctl-wsl-setup.json", "utf8"));
+          if (!output.ok) throw new Error("setup command failed");
+          const data = output.data || {};
+          if (data.runtimeEnv !== "wsl") throw new Error(`expected runtimeEnv=wsl, got ${data.runtimeEnv}`);
+          if (typeof data.wrapperPath !== "string" || !/^[A-Za-z]:\\/.test(data.wrapperPath)) {
+            throw new Error(`expected Windows wrapperPath, got ${data.wrapperPath}`);
+          }
+          if (typeof data.windowsManifestPath !== "string" || !/^[A-Za-z]:\\/.test(data.windowsManifestPath)) {
+            throw new Error(`expected windowsManifestPath, got ${data.windowsManifestPath}`);
+          }
+          if (typeof data.unixWrapperPath !== "string" || !data.unixWrapperPath.startsWith("/")) {
+            throw new Error(`expected unixWrapperPath, got ${data.unixWrapperPath}`);
+          }
+          console.log("WSL setup output validated");
+          NODE
+          cp /tmp/tabctl-wsl-setup.json "$WSL_WORKSPACE/wsl-setup.json" || true
+          '@
+          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" bash -lc ($script -replace "`r", "")
+
       - name: Integration test from WSL against Windows browser
         shell: pwsh
-        continue-on-error: true
         run: |
           $script = @'
           set -euo pipefail
@@ -195,6 +233,9 @@ jobs:
           if (-not (Test-Path "${{ github.workspace }}/wsl-diagnostics.txt")) {
             "WSL diagnostics were not generated." | Out-File -FilePath "${{ github.workspace }}/wsl-diagnostics.txt" -Encoding utf8
           }
+          if (-not (Test-Path "${{ github.workspace }}/wsl-setup.json")) {
+            "{`"ok`":false,`"error`":`"WSL setup output was not generated.`"}" | Out-File -FilePath "${{ github.workspace }}/wsl-setup.json" -Encoding utf8
+          }
           if (-not (Test-Path "${{ github.workspace }}/wsl-integration.log")) {
             "WSL integration log was not generated." | Out-File -FilePath "${{ github.workspace }}/wsl-integration.log" -Encoding utf8
           }
@@ -207,4 +248,5 @@ jobs:
           if-no-files-found: warn
           path: |
             ${{ github.workspace }}/wsl-diagnostics.txt
+            ${{ github.workspace }}/wsl-setup.json
             ${{ github.workspace }}/wsl-integration.log

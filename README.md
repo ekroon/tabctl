@@ -262,9 +262,9 @@ Policy is shared across all profiles.
 ## Development
 
 ### WSL support (experimental)
-- `tabctl` is expected to run inside WSL as a Linux environment.
-- CI coverage is provided by the `WSL Experiment` workflow on `windows-latest` (build + unit tests).
-- Integration experiments target running from WSL bash while attaching to a native Windows browser.
+- `tabctl` runs from WSL and targets the user's native Windows Chrome/Edge by default.
+- WSL setup is designed to require Node in WSL only (no separate Windows Node install).
+- CI coverage is provided by the `WSL Experiment` workflow on `windows-latest`, including WSL-driven integration against native Windows Chrome.
 
 ### TypeScript workflow
 Source lives in `src/` and compiles to `build/`, then syncs to the runtime locations:
