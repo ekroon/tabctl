@@ -101,6 +101,7 @@ jobs:
         run: |
           $script = @'
           set -euxo pipefail
+          diag_file="/tmp/tabctl-wsl-diagnostics.txt"
           {
             echo "distro: ${WSL_DISTRO}"
             echo "uname: $(uname -a)"
@@ -110,7 +111,8 @@ jobs:
             echo "npm: $(npm --version 2>/dev/null || echo missing)"
             echo "go: $(go version 2>/dev/null || echo missing)"
             echo "chrome: $(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || echo missing)"
-          } > "$WSL_WORKSPACE/wsl-diagnostics.txt"
+          } > "$diag_file"
+          cp "$diag_file" "$WSL_WORKSPACE/wsl-diagnostics.txt" || true
           '@
           wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" WSL_DISTRO="$env:WSL_DISTRO" bash -lc ($script -replace "`r", "")
 
@@ -136,10 +138,11 @@ jobs:
           $script = @'
           set -euo pipefail
           cd "$WSL_WORKSPACE"
-          log_file="$WSL_WORKSPACE/wsl-integration.log"
+          log_file="/tmp/tabctl-wsl-integration.log"
           chrome_bin="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
           if [ -z "$chrome_bin" ]; then
-            echo "No Chrome binary found in WSL; skipping integration test." | tee "$log_file"
+            echo "No Chrome binary found in WSL; skipping integration test." > "$log_file"
+            cp "$log_file" "$WSL_WORKSPACE/wsl-integration.log" || true
             exit 0
           fi
           export CHROME_PATH="$chrome_bin"
@@ -147,9 +150,21 @@ jobs:
           npm run test:integration 2>&1 | tee "$log_file"
           status=${PIPESTATUS[0]}
           set -e
+          cp "$log_file" "$WSL_WORKSPACE/wsl-integration.log" || true
           exit "$status"
           '@
           wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" bash -lc ($script -replace "`r", "")
+
+      - name: Ensure artifact files exist
+        if: always()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${{ github.workspace }}/wsl-diagnostics.txt")) {
+            "WSL diagnostics were not generated." | Out-File -FilePath "${{ github.workspace }}/wsl-diagnostics.txt" -Encoding utf8
+          }
+          if (-not (Test-Path "${{ github.workspace }}/wsl-integration.log")) {
+            "WSL integration log was not generated." | Out-File -FilePath "${{ github.workspace }}/wsl-integration.log" -Encoding utf8
+          }
 
       - name: Upload WSL experiment artifacts
         if: always()
