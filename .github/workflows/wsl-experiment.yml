@@ -1,0 +1,137 @@
+name: WSL Experiment
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/wsl-support-ci
+    paths:
+      - ".github/workflows/wsl-experiment.yml"
+      - "src/**"
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig*.json"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/wsl-experiment.yml"
+      - "src/**"
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig*.json"
+
+permissions:
+  contents: read
+
+jobs:
+  wsl:
+    runs-on: windows-latest
+    continue-on-error: true
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect WSL distro
+        shell: pwsh
+        run: |
+          wsl --status
+          $distro = (wsl --list --quiet | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -First 1)
+          if (-not $distro) {
+            throw "No WSL distro found on this runner."
+          }
+          "WSL_DISTRO=$distro" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using WSL distro: $distro"
+
+      - name: Install WSL prerequisites
+        shell: pwsh
+        run: |
+          $script = @'
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates curl gnupg golang-go
+          curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+          if ! command -v google-chrome >/dev/null 2>&1 && ! command -v google-chrome-stable >/dev/null 2>&1 && ! command -v chromium >/dev/null 2>&1 && ! command -v chromium-browser >/dev/null 2>&1; then
+            curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-linux.gpg
+            echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list >/dev/null
+            sudo apt-get update
+            sudo apt-get install -y google-chrome-stable
+          fi
+          node --version
+          npm --version
+          go version
+          (google-chrome --version || google-chrome-stable --version || chromium --version || chromium-browser --version)
+          '@
+          wsl -d $env:WSL_DISTRO -- bash -lc "$script"
+
+      - name: Resolve WSL workspace path
+        shell: pwsh
+        run: |
+          $workspace = (wsl -d $env:WSL_DISTRO -- wslpath '${{ github.workspace }}').Trim()
+          "WSL_WORKSPACE=$workspace" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "WSL workspace path: $workspace"
+
+      - name: Capture WSL diagnostics
+        shell: pwsh
+        run: |
+          $script = @'
+          set -euxo pipefail
+          {
+            echo "distro: ${WSL_DISTRO}"
+            echo "uname: $(uname -a)"
+            echo "os-release:"
+            cat /etc/os-release
+            echo "node: $(node --version 2>/dev/null || echo missing)"
+            echo "npm: $(npm --version 2>/dev/null || echo missing)"
+            echo "go: $(go version 2>/dev/null || echo missing)"
+            echo "chrome: $(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || echo missing)"
+          } > "$WSL_WORKSPACE/wsl-diagnostics.txt"
+          '@
+          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" WSL_DISTRO="$env:WSL_DISTRO" bash -lc "$script"
+
+      - name: Build and unit test in WSL
+        shell: pwsh
+        run: |
+          $script = @'
+          set -euxo pipefail
+          cd "$WSL_WORKSPACE"
+          npm ci
+          npm run build
+          npm run test:unit
+          '@
+          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" bash -lc "$script"
+
+      - name: Integration test in WSL
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $script = @'
+          set -euo pipefail
+          cd "$WSL_WORKSPACE"
+          log_file="$WSL_WORKSPACE/wsl-integration.log"
+          chrome_bin="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$chrome_bin" ]; then
+            echo "No Chrome binary found in WSL; skipping integration test." | tee "$log_file"
+            exit 0
+          fi
+          export CHROME_PATH="$chrome_bin"
+          set +e
+          npm run test:integration 2>&1 | tee "$log_file"
+          status=${PIPESTATUS[0]}
+          set -e
+          exit "$status"
+          '@
+          wsl -d $env:WSL_DISTRO -- env WSL_WORKSPACE="$env:WSL_WORKSPACE" bash -lc "$script"
+
+      - name: Upload WSL experiment artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wsl-experiment-artifacts
+          if-no-files-found: warn
+          path: |
+            ${{ github.workspace }}/wsl-diagnostics.txt
+            ${{ github.workspace }}/wsl-integration.log
