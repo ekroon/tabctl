@@ -139,11 +139,24 @@ run_integration_tests() {
 
   echo "Using Windows browser: $win_chrome" > "$log_file"
   echo "execution=running" > "$marker_file"
+  local ps_runner="/tmp/tabctl-wsl-integration.ps1"
+  cat > "$ps_runner" <<'POWERSHELL'
+param(
+  [Parameter(Mandatory=$true)][string]$Workspace,
+  [Parameter(Mandatory=$true)][string]$ChromePath
+)
+$ErrorActionPreference = "Stop"
+Set-Location -LiteralPath $Workspace
+$env:CHROME_PATH = $ChromePath
+node dist/scripts/integration-test.js
+POWERSHELL
+  local win_ps_runner
+  win_ps_runner="$(wslpath -w "$ps_runner")"
   set +e
-  WIN_WORKSPACE="$win_workspace" WIN_CHROME="$win_chrome" \
-    powershell.exe -NoProfile -Command '$ErrorActionPreference="Stop"; Set-Location $env:WIN_WORKSPACE; $env:CHROME_PATH=$env:WIN_CHROME; node dist/scripts/integration-test.js' 2>&1 | tee -a "$log_file"
+  powershell.exe -NoProfile -File "$win_ps_runner" "$win_workspace" "$win_chrome" 2>&1 | tee -a "$log_file"
   local status="${PIPESTATUS[0]}"
   set -e
+  rm -f "$ps_runner"
   if [ "$status" -eq 0 ]; then
     echo "execution=executed" > "$marker_file"
   else
