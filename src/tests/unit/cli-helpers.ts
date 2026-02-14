@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 export const cliPath = path.resolve(__dirname, "../../cli/tabctl.js");
 export const pkgVersion = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../../package.json"), "utf8")).version;
 export const testConfigHome = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-test-config-"));
+const runCliTimeoutMs = Number(process.env.TABCTL_TEST_CLI_TIMEOUT_MS || "2000");
 
 export async function runCli(
   args: string[],
@@ -40,7 +41,7 @@ export async function runCli(
     const timeout = setTimeout(() => {
       child.kill("SIGKILL");
       reject(new Error("CLI timeout"));
-    }, 2000);
+    }, runCliTimeoutMs);
 
     child.stdout.on("data", (data) => {
       stdout += data.toString();

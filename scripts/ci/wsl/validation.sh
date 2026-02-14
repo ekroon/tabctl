@@ -58,7 +58,7 @@ run_build_and_unit_tests() {
   fi
   npm ci
   npm run build
-  npm run test:unit
+  TABCTL_TEST_CLI_TIMEOUT_MS=5000 npm run test:unit
 }
 
 run_setup_validation() {
