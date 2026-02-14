@@ -11,6 +11,12 @@ if [ -z "${WSL_DISTRO:-}" ]; then
   exit 1
 fi
 
+rm -f /tmp/tabctl-wsl-diagnostics.txt \
+  /tmp/tabctl-wsl-setup.json \
+  /tmp/tabctl-wsl-integration.log \
+  /tmp/tabctl-wsl-execution-marker.txt \
+  /tmp/tabctl-wsl-integration.ps1
+
 copy_artifact() {
   local source_path="$1"
   local target_name="$2"
