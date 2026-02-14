@@ -28,14 +28,28 @@ test("resolveManifestDir supports explicit wsl Windows appdata paths", () => {
     windowsLocalAppData: "C:\\Users\\alice\\AppData\\Local",
     unixLocalAppData: "/mnt/c/Users/alice/AppData/Local",
   };
+  const expectedChrome = path.join(
+    wslPaths.unixLocalAppData,
+    "Google",
+    "Chrome",
+    "User Data",
+    "NativeMessagingHosts",
+  );
+  const expectedEdge = path.join(
+    wslPaths.unixLocalAppData,
+    "Microsoft",
+    "Edge",
+    "User Data",
+    "NativeMessagingHosts",
+  );
 
   assert.equal(
     resolveManifestDir("chrome", "wsl", wslPaths),
-    "/mnt/c/Users/alice/AppData/Local/Google/Chrome/User Data/NativeMessagingHosts",
+    expectedChrome,
   );
   assert.equal(
     resolveManifestDir("edge", "wsl", wslPaths),
-    "/mnt/c/Users/alice/AppData/Local/Microsoft/Edge/User Data/NativeMessagingHosts",
+    expectedEdge,
   );
 });
 
