@@ -11,29 +11,36 @@ if (-not $Workspace) {
 $Workspace = (Resolve-Path -Path $Workspace).Path
 
 function Resolve-WslDistro {
+  function Get-AvailableDistros {
+    return @(wsl --list --quiet |
+      ForEach-Object { ($_ -replace "`0", "").Trim() } |
+      Where-Object { $_ -and $_ -notlike "docker-desktop*" })
+  }
+
   wsl --status | Out-Host
-  $distros = wsl --list --quiet |
-    ForEach-Object { ($_ -replace "`0", "").Trim() } |
-    Where-Object { $_ -and $_ -notlike "docker-desktop*" }
+  $distros = Get-AvailableDistros
   $distro = $distros | Where-Object { $_ -like "Ubuntu*" } | Select-Object -First 1
   if (-not $distro) {
     $distro = $distros | Select-Object -First 1
   }
   if (-not $distro) {
     Write-Host "No WSL distro found; installing Ubuntu..."
-    wsl --install -d Ubuntu --no-launch
-    $distros = wsl --list --quiet |
-      ForEach-Object { ($_ -replace "`0", "").Trim() } |
-      Where-Object { $_ -and $_ -notlike "docker-desktop*" }
-    $distro = $distros | Where-Object { $_ -like "Ubuntu*" } | Select-Object -First 1
-    if (-not $distro) {
-      $distro = $distros | Select-Object -First 1
+    wsl --install -d Ubuntu --no-launch | Out-Host
+    for ($i = 0; $i -lt 12 -and -not $distro; $i++) {
+      $distros = Get-AvailableDistros
+      $distro = $distros | Where-Object { $_ -like "Ubuntu*" } | Select-Object -First 1
+      if (-not $distro) {
+        $distro = $distros | Select-Object -First 1
+      }
+      if (-not $distro) {
+        Start-Sleep -Seconds 5
+      }
     }
   }
   if (-not $distro) {
     throw "No WSL distro available after installation attempt."
   }
-  return $distro
+  return [string]$distro
 }
 
 function Copy-WslFile {
