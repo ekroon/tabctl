@@ -52,3 +52,27 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run test:integration
+
+  wsl:
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Validate WSL setup and integration
+        shell: pwsh
+        run: ./scripts/ci/run-wsl-validation.ps1 -Workspace "${{ github.workspace }}"
+      - name: Upload WSL CI artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wsl-ci-artifacts
+          if-no-files-found: warn
+          path: |
+            ${{ github.workspace }}/wsl-diagnostics.txt
+            ${{ github.workspace }}/wsl-setup.json
+            ${{ github.workspace }}/wsl-integration.log
+            ${{ github.workspace }}/wsl-execution-marker.txt
