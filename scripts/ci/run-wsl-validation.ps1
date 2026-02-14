@@ -68,10 +68,7 @@ Write-Host "WSL workspace path: $wslWorkspace"
 
 $allowSkip = if ($AllowIntegrationSkip.IsPresent) { "1" } else { "0" }
 $wslScriptPath = "$wslWorkspace/scripts/ci/wsl/validation.sh"
-$normalizeScriptsCmd = @'
-find "$WSL_WORKSPACE/scripts/ci/wsl" -type f -name "*.sh" -exec sed -i 's/\r$//' {} +
-'@
-wsl -d $distro -- env WSL_WORKSPACE="$wslWorkspace" bash -lc $normalizeScriptsCmd
+wsl -d $distro -- env SCRIPT_PATH="$wslScriptPath" bash -lc 'sed -i "s/\r$//" "$SCRIPT_PATH"'
 wsl -d $distro -- env WSL_WORKSPACE="$wslWorkspace" WSL_DISTRO="$distro" TABCTL_WSL_ALLOW_SKIP="$allowSkip" bash "$wslScriptPath"
 $status = $LASTEXITCODE
 
