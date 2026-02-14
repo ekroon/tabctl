@@ -98,12 +98,4 @@ if (-not (Test-Path $markerPath)) {
   "execution=unknown" | Out-File -FilePath $markerPath -Encoding utf8
 }
 
-if (Test-Path $markerPath) {
-  $marker = (Get-Content -Path $markerPath -Raw).Trim()
-  if ($status -ne 0 -and $marker -eq "execution=executed") {
-    Write-Host "WSL script reported non-zero exit ($status) but marker indicates successful execution; treating as success."
-    $status = 0
-  }
-}
-
 exit $status
