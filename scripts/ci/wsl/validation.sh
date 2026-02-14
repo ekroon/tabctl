@@ -153,7 +153,7 @@ POWERSHELL
   local win_ps_runner
   win_ps_runner="$(wslpath -w "$ps_runner")"
   set +e
-  powershell.exe -NoProfile -File "$win_ps_runner" "$win_workspace" "$win_chrome" 2>&1 | tee -a "$log_file"
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$win_ps_runner" "$win_workspace" "$win_chrome" 2>&1 | tee -a "$log_file"
   local status="${PIPESTATUS[0]}"
   set -e
   rm -f "$ps_runner"
