@@ -50,7 +50,7 @@ function Copy-WslFile {
     [string]$DestinationPath
   )
 
-  $content = wsl -d $Distro -- bash -lc "cat '$SourcePath' 2>/dev/null"
+  $content = wsl -d $Distro -- env SOURCE_PATH="$SourcePath" bash -lc 'cat "$SOURCE_PATH" 2>/dev/null'
   if ($LASTEXITCODE -eq 0 -and $content) {
     $content | Out-File -FilePath $DestinationPath -Encoding utf8
   }
@@ -68,8 +68,10 @@ Write-Host "WSL workspace path: $wslWorkspace"
 
 $allowSkip = if ($AllowIntegrationSkip.IsPresent) { "1" } else { "0" }
 $wslScriptPath = "$wslWorkspace/scripts/ci/wsl/validation.sh"
-$normalizeScriptsCmd = "find '$wslWorkspace/scripts/ci/wsl' -type f -name '*.sh' -exec sed -i 's/\r$//' {} +"
-wsl -d $distro -- bash -lc $normalizeScriptsCmd
+$normalizeScriptsCmd = @'
+find "$WSL_WORKSPACE/scripts/ci/wsl" -type f -name "*.sh" -exec sed -i 's/\r$//' {} +
+'@
+wsl -d $distro -- env WSL_WORKSPACE="$wslWorkspace" bash -lc $normalizeScriptsCmd
 wsl -d $distro -- env WSL_WORKSPACE="$wslWorkspace" WSL_DISTRO="$distro" TABCTL_WSL_ALLOW_SKIP="$allowSkip" bash "$wslScriptPath"
 $status = $LASTEXITCODE
 
