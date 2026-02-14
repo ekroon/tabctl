@@ -140,7 +140,8 @@ run_integration_tests() {
   echo "Using Windows browser: $win_chrome" > "$log_file"
   echo "execution=running" > "$marker_file"
   set +e
-  powershell.exe -NoProfile -Command "\$ErrorActionPreference='Stop'; Set-Location '$win_workspace'; \$env:CHROME_PATH='$win_chrome'; node dist/scripts/integration-test.js" 2>&1 | tee -a "$log_file"
+  WIN_WORKSPACE="$win_workspace" WIN_CHROME="$win_chrome" \
+    powershell.exe -NoProfile -Command '$ErrorActionPreference="Stop"; Set-Location $env:WIN_WORKSPACE; $env:CHROME_PATH=$env:WIN_CHROME; node dist/scripts/integration-test.js' 2>&1 | tee -a "$log_file"
   local status="${PIPESTATUS[0]}"
   set -e
   if [ "$status" -eq 0 ]; then
