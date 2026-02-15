@@ -63,9 +63,53 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      
+      # Cache Node modules in Windows
+      - name: Cache Windows node modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-24-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-24-
+      
+      # Cache WSL distribution
+      - name: Cache WSL distribution
+        id: cache-wsl
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\WSL-Cache
+          key: ${{ runner.os }}-wsl-ubuntu-${{ hashFiles('scripts/ci/wsl/validation.sh') }}
+          restore-keys: |
+            ${{ runner.os }}-wsl-ubuntu-
+      
+      # Restore WSL from cache if available
+      - name: Restore WSL from cache
+        if: steps.cache-wsl.outputs.cache-hit == 'true'
+        shell: pwsh
+        run: |
+          if (Test-Path "C:\WSL-Cache\ubuntu.tar") {
+            Write-Host "Importing cached WSL distribution..."
+            wsl --import Ubuntu-Cached C:\WSL-Ubuntu C:\WSL-Cache\ubuntu.tar --version 2
+          }
+      
       - name: Validate WSL setup and integration
         shell: pwsh
         run: ./scripts/ci/run-wsl-validation.ps1 -Workspace "${{ github.workspace }}"
+      
+      # Export WSL for caching after first run
+      - name: Cache WSL distribution for next run
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\WSL-Cache | Out-Null
+          $distros = @(wsl --list --quiet | ForEach-Object { ($_ -replace "`0", "").Trim() } | Where-Object { $_ })
+          $distro = $distros | Where-Object { $_ -like "Ubuntu*" } | Select-Object -First 1
+          if ($distro) {
+            Write-Host "Exporting $distro for caching..."
+            wsl --export $distro C:\WSL-Cache\ubuntu.tar
+          }
       - name: Upload WSL CI artifacts
         if: always()
         uses: actions/upload-artifact@v4

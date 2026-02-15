@@ -27,6 +27,13 @@ copy_artifact() {
 
 install_prerequisites() {
   export DEBIAN_FRONTEND=noninteractive
+  
+  # Check if already installed (from cached WSL distro)
+  if command -v node >/dev/null 2>&1 && command -v go >/dev/null 2>&1; then
+    echo "Prerequisites already installed (from cache), skipping apt-get update/install"
+    return 0
+  fi
+  
   sudo apt-get update
   sudo apt-get install -y ca-certificates curl gnupg golang-go
   curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
