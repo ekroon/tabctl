@@ -276,6 +276,10 @@ npm run build
 npm test
 ```
 
+### Rust migration investigation
+
+See [RUST_PORTING.md](RUST_PORTING.md) for a feasibility analysis and phased migration plan for porting the CLI and native host to Rust.
+
 ### Versioning
 The base version lives in `package.json` and is embedded into the CLI, host, and extension at build time.
 
