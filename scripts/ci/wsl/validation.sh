@@ -47,12 +47,13 @@ run_timed_phase() {
     echo "${phase}_seconds=$((ended_at - started_at))" >> "$TIMINGS_FILE"
     echo "${phase}_status=ok" >> "$TIMINGS_FILE"
     return 0
+  else
+    status_code="$?"
+    ended_at="$(date +%s)"
+    echo "${phase}_seconds=$((ended_at - started_at))" >> "$TIMINGS_FILE"
+    echo "${phase}_status=failed" >> "$TIMINGS_FILE"
+    return "$status_code"
   fi
-  status_code="$?"
-  ended_at="$(date +%s)"
-  echo "${phase}_seconds=$((ended_at - started_at))" >> "$TIMINGS_FILE"
-  echo "${phase}_status=failed" >> "$TIMINGS_FILE"
-  return "$status_code"
 }
 
 copy_timing_artifact() {
@@ -149,8 +150,8 @@ capture_diagnostics() {
   win_where_host_status="$?"
   win_tabctl_version="$(timeout 10s cmd.exe /d /s /c "tabctl --version" 2>&1)"
   win_tabctl_version_status="$?"
-  first_tabctl_path="$(printf '%s\n' "$win_where_tabctl" | tr -d '\r' | awk 'NF { print; exit }')"
-  first_host_path="$(printf '%s\n' "$win_where_host" | tr -d '\r' | awk 'NF { print; exit }')"
+  first_tabctl_path="$(printf '%s\n' "$win_where_tabctl" | tr -d '\r' | grep -E '^[A-Za-z]:\\\\' | head -n1 || true)"
+  first_host_path="$(printf '%s\n' "$win_where_host" | tr -d '\r' | grep -E '^[A-Za-z]:\\\\' | head -n1 || true)"
   if [ -n "$first_tabctl_path" ]; then
     win_tabctl_path_version="$(timeout 10s cmd.exe /d /s /c "\"$first_tabctl_path\" --version" 2>&1)"
     win_tabctl_path_version_status="$?"
@@ -201,6 +202,11 @@ run_build_and_unit_tests() {
 run_setup_validation() {
   local setup_output="/tmp/tabctl-wsl-setup.json"
   cd "$WSL_WORKSPACE"
+  if [ "${TABCTL_WSL_SETUP_MODE:-legacy}" = "windows-npm" ]; then
+    local win_workspace
+    win_workspace="$(wslpath -w "$WSL_WORKSPACE")"
+    cmd.exe /d /s /c "cd /d \"$win_workspace\" && npm install -g . --no-fund --no-audit"
+  fi
   local extension_id
   extension_id="$(node <<'NODE'
 const crypto = require("node:crypto");
