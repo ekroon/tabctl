@@ -198,8 +198,15 @@ run_build_and_unit_tests() {
   if [ -f src/tests/unit/fixtures/npx ]; then
     sed -i 's/\r$//' src/tests/unit/fixtures/npx
   fi
+  local win_launcher_version
+  win_launcher_version="$(node -e 'const pkg = require("./package.json"); process.stdout.write((pkg.optionalDependencies && pkg.optionalDependencies["tabctl-win32-x64"]) || "")')"
+  if [ -z "$win_launcher_version" ]; then
+    echo "Missing tabctl-win32-x64 optional dependency version in package.json" >&2
+    return 1
+  fi
+  cmd.exe /d /c npm install -g "tabctl-win32-x64@$win_launcher_version" --no-fund --no-audit
   npm ci
-  TABCTL_WSL_SETUP_MODE=legacy TABCTL_TEST_CLI_TIMEOUT_MS=5000 npm run test:unit
+  TABCTL_WSL_SETUP_MODE=windows-npm TABCTL_TEST_CLI_TIMEOUT_MS=5000 npm run test:unit
 }
 
 run_setup_validation() {

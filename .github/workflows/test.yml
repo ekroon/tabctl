@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       wsl_setup_mode:
-        description: "Optional WSL setup mode override for wsl job (windows-npm|legacy)"
+        description: "Optional WSL setup mode override for wsl job (windows-npm only)"
         required: false
         default: "windows-npm"
         type: string

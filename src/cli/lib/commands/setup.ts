@@ -143,7 +143,7 @@ export function resolveSetupWrapperPath(
     return { wrapperPath: unixWrapperPath };
   }
   const paths = wslWindowsPaths || resolveWslWindowsPaths();
-  const launcher = createWslWindowsLauncher(nodePath, hostPath, profileName, __dirname, paths);
+  const launcher = createWslWindowsLauncher(nodePath, hostPath, profileName, paths);
   return {
     wrapperPath: launcher.wrapperPath,
     unixWrapperPath,
