@@ -42,18 +42,21 @@ run_timed_phase() {
   shift
   local started_at ended_at status_code
   started_at="$(date +%s)"
-  if "$@"; then
-    ended_at="$(date +%s)"
-    echo "${phase}_seconds=$((ended_at - started_at))" >> "$TIMINGS_FILE"
+  set +e
+  (
+    set -euo pipefail
+    "$@"
+  )
+  status_code="$?"
+  set -e
+  ended_at="$(date +%s)"
+  echo "${phase}_seconds=$((ended_at - started_at))" >> "$TIMINGS_FILE"
+  if [ "$status_code" -eq 0 ]; then
     echo "${phase}_status=ok" >> "$TIMINGS_FILE"
-    return 0
   else
-    status_code="$?"
-    ended_at="$(date +%s)"
-    echo "${phase}_seconds=$((ended_at - started_at))" >> "$TIMINGS_FILE"
     echo "${phase}_status=failed" >> "$TIMINGS_FILE"
-    return "$status_code"
   fi
+  return "$status_code"
 }
 
 copy_timing_artifact() {
