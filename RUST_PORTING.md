@@ -103,6 +103,15 @@ Keep in TS:
 4. Reach full host action parity.
 5. Start Rust CLI with parity for read-only commands first, then mutating commands.
 
+## Current execution status in this repository
+
+- Protocol contract fixture added: `config/protocol/host-protocol.v1.json`
+- Rust host MVP crate scaffold added: `rust/tabctl-host-mvp/`
+  - Implements native messaging framing.
+  - Implements local MVP actions: `ping`, `version`, `history`, `undo` (placeholder semantics).
+  - Returns explicit "not implemented" for forwarded extension actions until proxy wiring is added.
+- Unit guard added to keep contract action sets stable: `src/tests/unit/protocol-contract.test.ts`
+
 ## Recommendation
 
 Porting the **native host + CLI** to Rust is practical and high-value.  

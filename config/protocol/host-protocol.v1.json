@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "requestEnvelope": {
+    "type": "object",
+    "required": ["id", "action", "params"],
+    "properties": {
+      "id": { "type": "string" },
+      "action": { "type": "string" },
+      "params": { "type": "object" },
+      "client": {
+        "type": "object",
+        "required": ["component", "version"],
+        "properties": {
+          "component": { "type": "string" },
+          "version": { "type": "string" },
+          "baseVersion": { "type": "string" },
+          "gitSha": { "type": ["string", "null"] },
+          "dirty": { "type": "boolean" }
+        }
+      }
+    }
+  },
+  "responseEnvelope": {
+    "type": "object",
+    "required": ["ok", "component", "version"],
+    "properties": {
+      "ok": { "type": "boolean" },
+      "action": { "type": "string" },
+      "requestId": { "type": ["string", "null"] },
+      "component": { "type": "string" },
+      "version": { "type": "string" },
+      "data": { "type": "object" },
+      "error": {
+        "type": "object",
+        "required": ["message"],
+        "properties": {
+          "message": { "type": "string" },
+          "hint": { "type": "string" }
+        }
+      }
+    }
+  },
+  "actions": {
+    "local": ["history", "undo", "version"],
+    "forwarded": [
+      "ping",
+      "list",
+      "analyze",
+      "inspect",
+      "focus",
+      "refresh",
+      "open",
+      "group-list",
+      "group-update",
+      "group-ungroup",
+      "group-assign",
+      "group-gather",
+      "move-tab",
+      "move-group",
+      "merge-window",
+      "archive",
+      "close",
+      "report",
+      "screenshot",
+      "reload"
+    ]
+  }
+}

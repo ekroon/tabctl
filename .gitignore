@@ -1,6 +1,8 @@
 node_modules/
 /dist/
 /build/
+.cargo/
+**/target/
 .tabctl/
 *.log
 *.sock
