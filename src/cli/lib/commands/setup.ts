@@ -23,6 +23,7 @@ import {
   windowsPathToWsl,
   wslPathToWindows,
   type RuntimeEnvironment,
+  type WslLauncherSource,
   type WslWindowsPaths,
 } from "./setup-wsl";
 
@@ -136,7 +137,7 @@ export function resolveSetupWrapperPath(
   profileDataDir: string,
   runtimeEnv: RuntimeEnvironment,
   wslWindowsPaths?: WslWindowsPaths,
-): { wrapperPath: string; unixWrapperPath?: string; launcherSource?: "local" | "npm"; distro?: string } {
+): { wrapperPath: string; unixWrapperPath?: string; launcherSource?: WslLauncherSource; distro?: string } {
   const unixWrapperPath = writeWrapper(nodePath, hostPath, profileName, profileDataDir);
   if (runtimeEnv !== "wsl") {
     return { wrapperPath: unixWrapperPath };

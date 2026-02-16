@@ -7,6 +7,8 @@ import { HOST_NAME } from "../constants";
 import { errorOut } from "../output";
 
 export type RuntimeEnvironment = "native-win32" | "native-linux" | "native-darwin" | "wsl";
+export type WslLauncherSource = "local" | "npm" | "windows-npm";
+type WslSetupMode = "legacy" | "windows-npm";
 
 export type WslWindowsPaths = {
   windowsLocalAppData: string;
@@ -152,7 +154,60 @@ function downloadWindowsLauncherViaNpm(packageRoot: string, cacheDir: string): s
   }
 }
 
-function resolveWindowsLauncherPathForWsl(packageRoot: string, cacheDir: string): { path: string; source: "local" | "npm" } {
+function resolveWslSetupMode(): WslSetupMode {
+  const mode = (process.env.TABCTL_WSL_SETUP_MODE || "").trim().toLowerCase();
+  if (!mode || mode === "legacy") {
+    return "legacy";
+  }
+  if (mode === "windows-npm") {
+    return "windows-npm";
+  }
+  errorOut(`Unsupported TABCTL_WSL_SETUP_MODE value: ${mode}. Supported values: legacy, windows-npm.`);
+}
+
+function parseWindowsPaths(output: string): string[] {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^[A-Za-z]:\\/.test(line));
+}
+
+function resolveWindowsLauncherFromWindowsNpm(): string {
+  const whereHost = spawnSync("cmd.exe", ["/d", "/s", "/c", "where", "tabctl-host.exe"], { encoding: "utf8" });
+  const npmRoot = spawnSync("cmd.exe", ["/d", "/s", "/c", "npm", "root", "-g"], { encoding: "utf8" });
+
+  const candidates: string[] = [];
+  candidates.push(...parseWindowsPaths(whereHost.stdout || ""));
+  for (const root of parseWindowsPaths(npmRoot.stdout || "")) {
+    candidates.push(path.win32.join(root, "tabctl-win32-x64", "tabctl-host.exe"));
+    candidates.push(path.win32.join(root, "tabctl", "node_modules", "tabctl-win32-x64", "tabctl-host.exe"));
+  }
+
+  const seen = new Set<string>();
+  for (const windowsCandidate of candidates) {
+    if (seen.has(windowsCandidate)) {
+      continue;
+    }
+    seen.add(windowsCandidate);
+    const unixCandidate = windowsPathToWsl(windowsCandidate);
+    if (fs.existsSync(unixCandidate)) {
+      return unixCandidate;
+    }
+  }
+
+  const whereDetail = (whereHost.stderr || whereHost.stdout || "where tabctl-host.exe failed").trim();
+  const npmRootDetail = (npmRoot.stderr || npmRoot.stdout || "npm root -g failed").trim();
+  errorOut(
+    `Failed to resolve tabctl-host.exe from Windows npm installation in WSL mode. ` +
+    `where status=${whereHost.status}, npm root status=${npmRoot.status}. ` +
+    `where output: ${whereDetail}. npm root output: ${npmRootDetail}`,
+  );
+}
+
+function resolveWindowsLauncherPathForWsl(packageRoot: string, cacheDir: string): { path: string; source: WslLauncherSource } {
+  if (resolveWslSetupMode() === "windows-npm") {
+    return { path: resolveWindowsLauncherFromWindowsNpm(), source: "windows-npm" };
+  }
   const local = tryResolveWindowsLauncherFromLocal(packageRoot);
   if (local) {
     return { path: local, source: "local" };
@@ -248,7 +303,7 @@ export function createWslWindowsLauncher(
   profileName: string,
   startDir: string,
   wslWindowsPaths?: WslWindowsPaths,
-): { wrapperPath: string; launcherSource: "local" | "npm"; distro: string } {
+): { wrapperPath: string; launcherSource: WslLauncherSource; distro: string } {
   const paths = wslWindowsPaths || resolveWslWindowsPaths();
   const packageRoot = resolvePackageRoot(startDir);
   const distro = resolveWslDistroName();

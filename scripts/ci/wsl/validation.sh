@@ -32,6 +32,7 @@ copy_artifact() {
 init_timings() {
   {
     echo "distro=${WSL_DISTRO}"
+    echo "setup_mode=${TABCTL_WSL_SETUP_MODE:-legacy}"
     echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$TIMINGS_FILE"
 }
@@ -120,8 +121,49 @@ install_prerequisites() {
 
 capture_diagnostics() {
   local diag_file="/tmp/tabctl-wsl-diagnostics.txt"
+  local win_npm_prefix=""
+  local win_npm_prefix_status=""
+  local win_npm_bin=""
+  local win_npm_bin_status=""
+  local win_where_tabctl=""
+  local win_where_tabctl_status=""
+  local win_where_host=""
+  local win_where_host_status=""
+  local win_tabctl_version=""
+  local win_tabctl_version_status=""
+  local win_tabctl_path_version="not-run"
+  local win_tabctl_path_version_status="n/a"
+  local win_host_path_version="not-run"
+  local win_host_path_version_status="n/a"
+  local first_tabctl_path=""
+  local first_host_path=""
+
+  set +e
+  win_npm_prefix="$(cmd.exe /d /s /c "npm prefix -g" 2>&1)"
+  win_npm_prefix_status="$?"
+  win_npm_bin="$(cmd.exe /d /s /c "npm bin -g" 2>&1)"
+  win_npm_bin_status="$?"
+  win_where_tabctl="$(cmd.exe /d /s /c "where tabctl" 2>&1)"
+  win_where_tabctl_status="$?"
+  win_where_host="$(cmd.exe /d /s /c "where tabctl-host.exe" 2>&1)"
+  win_where_host_status="$?"
+  win_tabctl_version="$(timeout 10s cmd.exe /d /s /c "tabctl --version" 2>&1)"
+  win_tabctl_version_status="$?"
+  first_tabctl_path="$(printf '%s\n' "$win_where_tabctl" | tr -d '\r' | awk 'NF { print; exit }')"
+  first_host_path="$(printf '%s\n' "$win_where_host" | tr -d '\r' | awk 'NF { print; exit }')"
+  if [ -n "$first_tabctl_path" ]; then
+    win_tabctl_path_version="$(timeout 10s cmd.exe /d /s /c "\"$first_tabctl_path\" --version" 2>&1)"
+    win_tabctl_path_version_status="$?"
+  fi
+  if [ -n "$first_host_path" ]; then
+    win_host_path_version="$(timeout 10s cmd.exe /d /s /c "\"$first_host_path\" --version" 2>&1)"
+    win_host_path_version_status="$?"
+  fi
+  set -e
+
   {
     echo "distro: ${WSL_DISTRO}"
+    echo "setup_mode: ${TABCTL_WSL_SETUP_MODE:-legacy}"
     echo "uname: $(uname -a)"
     echo "os-release:"
     cat /etc/os-release
@@ -129,6 +171,20 @@ capture_diagnostics() {
     echo "npm: $(npm --version 2>/dev/null || echo missing)"
     echo "go: $(go version 2>/dev/null || echo missing)"
     echo "chrome: $(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || echo missing)"
+    echo "windows npm prefix -g (status=${win_npm_prefix_status}):"
+    printf '%s\n' "$win_npm_prefix" | tr -d '\r'
+    echo "windows npm bin -g (status=${win_npm_bin_status}):"
+    printf '%s\n' "$win_npm_bin" | tr -d '\r'
+    echo "windows where tabctl (status=${win_where_tabctl_status}):"
+    printf '%s\n' "$win_where_tabctl" | tr -d '\r'
+    echo "windows where tabctl-host.exe (status=${win_where_host_status}):"
+    printf '%s\n' "$win_where_host" | tr -d '\r'
+    echo "windows tabctl --version from WSL (status=${win_tabctl_version_status}):"
+    printf '%s\n' "$win_tabctl_version" | tr -d '\r'
+    echo "windows tabctl path --version from WSL (status=${win_tabctl_path_version_status}):"
+    printf '%s\n' "$win_tabctl_path_version" | tr -d '\r'
+    echo "windows tabctl-host.exe path --version from WSL (status=${win_host_path_version_status}):"
+    printf '%s\n' "$win_host_path_version" | tr -d '\r'
   } > "$diag_file"
   copy_artifact "$diag_file" "wsl-diagnostics.txt"
 }
