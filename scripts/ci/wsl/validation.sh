@@ -196,7 +196,7 @@ run_build_and_unit_tests() {
     sed -i 's/\r$//' src/tests/unit/fixtures/npx
   fi
   npm ci
-  TABCTL_TEST_CLI_TIMEOUT_MS=5000 npm run test:unit
+  TABCTL_WSL_SETUP_MODE=legacy TABCTL_TEST_CLI_TIMEOUT_MS=5000 npm run test:unit
 }
 
 run_setup_validation() {
