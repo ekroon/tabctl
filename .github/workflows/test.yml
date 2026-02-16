@@ -60,13 +60,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - name: Cache WSL npm tarballs
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/.npm-cache-wsl
-          key: wsl-npm-cache-v1-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            wsl-npm-cache-v1-
       - name: Validate WSL setup and integration
         shell: pwsh
         run: ./scripts/ci/run-wsl-validation.ps1 -Workspace "${{ github.workspace }}"

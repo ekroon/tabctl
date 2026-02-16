@@ -50,12 +50,10 @@ capture_diagnostics() {
 
 run_build_and_unit_tests() {
   cd "$WSL_WORKSPACE"
-  local npm_cache_dir="${TABCTL_NPM_CACHE_DIR:-$WSL_WORKSPACE/.npm-cache-wsl}"
-  mkdir -p "$npm_cache_dir"
   if [ -f src/tests/unit/fixtures/npx ]; then
     sed -i 's/\r$//' src/tests/unit/fixtures/npx
   fi
-  npm ci --cache "$npm_cache_dir" --prefer-offline
+  npm ci
   TABCTL_TEST_CLI_TIMEOUT_MS=5000 npm run test:unit
 }
 
