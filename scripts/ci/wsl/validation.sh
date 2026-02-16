@@ -206,9 +206,14 @@ run_setup_validation() {
   local setup_output="/tmp/tabctl-wsl-setup.json"
   cd "$WSL_WORKSPACE"
   if [ "${TABCTL_WSL_SETUP_MODE:-legacy}" = "windows-npm" ]; then
-    local win_workspace
+    local win_workspace win_launcher_version
     win_workspace="$(wslpath -m "$WSL_WORKSPACE")"
-    cmd.exe /d /c npm install -g "$win_workspace" --no-fund --no-audit
+    win_launcher_version="$(node -e 'const pkg = require("./package.json"); process.stdout.write((pkg.optionalDependencies && pkg.optionalDependencies["tabctl-win32-x64"]) || "")')"
+    if [ -n "$win_launcher_version" ]; then
+      cmd.exe /d /c npm install -g "$win_workspace" "tabctl-win32-x64@$win_launcher_version" --no-fund --no-audit
+    else
+      cmd.exe /d /c npm install -g "$win_workspace" --no-fund --no-audit
+    fi
   fi
   local extension_id
   extension_id="$(node <<'NODE'
