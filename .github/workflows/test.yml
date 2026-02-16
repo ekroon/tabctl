@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       wsl_setup_mode:
-        description: "Optional WSL setup mode override for wsl job (legacy|windows-npm)"
+        description: "Optional WSL setup mode override for wsl job (windows-npm|legacy)"
         required: false
-        default: ""
+        default: "windows-npm"
         type: string
   push:
     branches: [main]
@@ -69,7 +69,7 @@ jobs:
       - name: Validate WSL setup and integration
         shell: pwsh
         env:
-          TABCTL_WSL_SETUP_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.wsl_setup_mode || '' }}
+          TABCTL_WSL_SETUP_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.wsl_setup_mode || 'windows-npm' }}
         run: ./scripts/ci/run-wsl-validation.ps1 -Workspace "${{ github.workspace }}"
       - name: Upload WSL CI artifacts
         if: always()

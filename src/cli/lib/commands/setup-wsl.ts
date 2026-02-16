@@ -156,11 +156,11 @@ function downloadWindowsLauncherViaNpm(packageRoot: string, cacheDir: string): s
 
 function resolveWslSetupMode(): WslSetupMode {
   const mode = (process.env.TABCTL_WSL_SETUP_MODE || "").trim().toLowerCase();
-  if (!mode || mode === "legacy") {
-    return "legacy";
-  }
-  if (mode === "windows-npm") {
+  if (!mode || mode === "windows-npm") {
     return "windows-npm";
+  }
+  if (mode === "legacy") {
+    return "legacy";
   }
   errorOut(`Unsupported TABCTL_WSL_SETUP_MODE value: ${mode}. Supported values: legacy, windows-npm.`);
 }

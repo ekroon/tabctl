@@ -32,7 +32,7 @@ copy_artifact() {
 init_timings() {
   {
     echo "distro=${WSL_DISTRO}"
-    echo "setup_mode=${TABCTL_WSL_SETUP_MODE:-legacy}"
+    echo "setup_mode=${TABCTL_WSL_SETUP_MODE:-windows-npm}"
     echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$TIMINGS_FILE"
 }
@@ -167,7 +167,7 @@ capture_diagnostics() {
 
   {
     echo "distro: ${WSL_DISTRO}"
-    echo "setup_mode: ${TABCTL_WSL_SETUP_MODE:-legacy}"
+    echo "setup_mode: ${TABCTL_WSL_SETUP_MODE:-windows-npm}"
     echo "uname: $(uname -a)"
     echo "os-release:"
     cat /etc/os-release
@@ -205,7 +205,7 @@ run_build_and_unit_tests() {
 run_setup_validation() {
   local setup_output="/tmp/tabctl-wsl-setup.json"
   cd "$WSL_WORKSPACE"
-  if [ "${TABCTL_WSL_SETUP_MODE:-legacy}" = "windows-npm" ]; then
+  if [ "${TABCTL_WSL_SETUP_MODE:-windows-npm}" = "windows-npm" ]; then
     local win_workspace win_launcher_version
     win_workspace="$(wslpath -m "$WSL_WORKSPACE")"
     win_launcher_version="$(node -e 'const pkg = require("./package.json"); process.stdout.write((pkg.optionalDependencies && pkg.optionalDependencies["tabctl-win32-x64"]) || "")')"
@@ -230,7 +230,7 @@ NODE
 )"
 
   local setup_mode setup_status
-  setup_mode="${TABCTL_WSL_SETUP_MODE:-legacy}"
+  setup_mode="${TABCTL_WSL_SETUP_MODE:-windows-npm}"
   set +e
   TABCTL_WSL_SETUP_MODE="$setup_mode" node dist/cli/tabctl.js setup --browser chrome --extension-id "$extension_id" --json > "$setup_output"
   setup_status="$?"
