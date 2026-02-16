@@ -224,7 +224,16 @@ console.log(id);
 NODE
 )"
 
-  node dist/cli/tabctl.js setup --browser chrome --extension-id "$extension_id" --json > "$setup_output"
+  local setup_mode setup_status
+  setup_mode="${TABCTL_WSL_SETUP_MODE:-legacy}"
+  set +e
+  TABCTL_WSL_SETUP_MODE="$setup_mode" node dist/cli/tabctl.js setup --browser chrome --extension-id "$extension_id" --json > "$setup_output"
+  setup_status="$?"
+  set -e
+  if [ "$setup_status" -ne 0 ]; then
+    cat "$setup_output" >&2 || true
+    return "$setup_status"
+  fi
   SETUP_OUTPUT_PATH="$setup_output" node <<'NODE'
 const fs = require("node:fs");
 const outputPath = process.env.SETUP_OUTPUT_PATH;
