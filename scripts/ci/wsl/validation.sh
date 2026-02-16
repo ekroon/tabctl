@@ -11,11 +11,15 @@ if [ -z "${WSL_DISTRO:-}" ]; then
   exit 1
 fi
 
+TIMINGS_FILE="/tmp/tabctl-wsl-timings.txt"
+APT_UPDATED=0
+
 rm -f /tmp/tabctl-wsl-diagnostics.txt \
   /tmp/tabctl-wsl-setup.json \
   /tmp/tabctl-wsl-integration.log \
   /tmp/tabctl-wsl-execution-marker.txt \
-  /tmp/tabctl-wsl-integration.ps1
+  /tmp/tabctl-wsl-integration.ps1 \
+  "$TIMINGS_FILE"
 
 copy_artifact() {
   local source_path="$1"
@@ -25,12 +29,93 @@ copy_artifact() {
   fi
 }
 
+init_timings() {
+  {
+    echo "distro=${WSL_DISTRO}"
+    echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$TIMINGS_FILE"
+}
+
+run_timed_phase() {
+  local phase="$1"
+  shift
+  local started_at ended_at status_code
+  started_at="$(date +%s)"
+  if "$@"; then
+    ended_at="$(date +%s)"
+    echo "${phase}_seconds=$((ended_at - started_at))" >> "$TIMINGS_FILE"
+    echo "${phase}_status=ok" >> "$TIMINGS_FILE"
+    return 0
+  fi
+  status_code="$?"
+  ended_at="$(date +%s)"
+  echo "${phase}_seconds=$((ended_at - started_at))" >> "$TIMINGS_FILE"
+  echo "${phase}_status=failed" >> "$TIMINGS_FILE"
+  return "$status_code"
+}
+
+copy_timing_artifact() {
+  if [ -f "$TIMINGS_FILE" ]; then
+    echo "finished_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$TIMINGS_FILE"
+  fi
+  copy_artifact "$TIMINGS_FILE" "wsl-timings.txt"
+}
+
+apt_update_once() {
+  if [ "$APT_UPDATED" -eq 0 ]; then
+    sudo apt-get update
+    APT_UPDATED=1
+  fi
+}
+
+has_supported_go() {
+  if ! command -v go >/dev/null 2>&1; then
+    return 1
+  fi
+  local go_version major minor
+  go_version="$(go version 2>/dev/null | awk '{print $3}')"
+  if [[ "$go_version" =~ ^go([0-9]+)\.([0-9]+) ]]; then
+    major="${BASH_REMATCH[1]}"
+    minor="${BASH_REMATCH[2]}"
+    if [ "$major" -gt 1 ] || { [ "$major" -eq 1 ] && [ "$minor" -ge 21 ]; }; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
 install_prerequisites() {
   export DEBIAN_FRONTEND=noninteractive
-  sudo apt-get update
-  sudo apt-get install -y ca-certificates curl gnupg golang-go
-  curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
-  sudo apt-get install -y nodejs
+  local missing_packages=()
+  local node_major=""
+
+  for package in ca-certificates curl gnupg; do
+    if ! dpkg -s "$package" >/dev/null 2>&1; then
+      missing_packages+=("$package")
+    fi
+  done
+
+  if ! has_supported_go; then
+    missing_packages+=("golang-go")
+  fi
+
+  if [ "${#missing_packages[@]}" -gt 0 ]; then
+    apt_update_once
+    sudo apt-get install -y "${missing_packages[@]}"
+  fi
+
+  if command -v node >/dev/null 2>&1; then
+    node_major="$(node --version | sed -E 's/^v([0-9]+).*/\1/')"
+  fi
+
+  if [ "${node_major:-}" != "24" ]; then
+    if ! command -v curl >/dev/null 2>&1 || ! command -v gpg >/dev/null 2>&1; then
+      apt_update_once
+      sudo apt-get install -y curl gnupg
+    fi
+    curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+    sudo apt-get install -y nodejs
+  fi
 }
 
 capture_diagnostics() {
@@ -163,8 +248,10 @@ POWERSHELL
   return "$status"
 }
 
-install_prerequisites
-capture_diagnostics
-run_build_and_unit_tests
-run_setup_validation
-run_integration_tests
+init_timings
+trap copy_timing_artifact EXIT
+run_timed_phase prerequisites install_prerequisites
+run_timed_phase diagnostics capture_diagnostics
+run_timed_phase build_and_unit run_build_and_unit_tests
+run_timed_phase setup_validation run_setup_validation
+run_timed_phase integration run_integration_tests

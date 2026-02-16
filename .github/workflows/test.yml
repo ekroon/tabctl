@@ -74,3 +74,4 @@ jobs:
             ${{ github.workspace }}/wsl-setup.json
             ${{ github.workspace }}/wsl-integration.log
             ${{ github.workspace }}/wsl-execution-marker.txt
+            ${{ github.workspace }}/wsl-timings.txt

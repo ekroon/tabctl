@@ -79,11 +79,13 @@ $diagPath = Join-Path $Workspace "wsl-diagnostics.txt"
 $setupPath = Join-Path $Workspace "wsl-setup.json"
 $integrationPath = Join-Path $Workspace "wsl-integration.log"
 $markerPath = Join-Path $Workspace "wsl-execution-marker.txt"
+$timingsPath = Join-Path $Workspace "wsl-timings.txt"
 
 Copy-WslFile -Distro $distro -SourcePath "/tmp/tabctl-wsl-diagnostics.txt" -DestinationPath $diagPath
 Copy-WslFile -Distro $distro -SourcePath "/tmp/tabctl-wsl-setup.json" -DestinationPath $setupPath
 Copy-WslFile -Distro $distro -SourcePath "/tmp/tabctl-wsl-integration.log" -DestinationPath $integrationPath
 Copy-WslFile -Distro $distro -SourcePath "/tmp/tabctl-wsl-execution-marker.txt" -DestinationPath $markerPath
+Copy-WslFile -Distro $distro -SourcePath "/tmp/tabctl-wsl-timings.txt" -DestinationPath $timingsPath
 
 if (-not (Test-Path $diagPath)) {
   "WSL diagnostics were not generated." | Out-File -FilePath $diagPath -Encoding utf8
@@ -96,6 +98,9 @@ if (-not (Test-Path $integrationPath)) {
 }
 if (-not (Test-Path $markerPath)) {
   "execution=unknown" | Out-File -FilePath $markerPath -Encoding utf8
+}
+if (-not (Test-Path $timingsPath)) {
+  "WSL timings were not generated." | Out-File -FilePath $timingsPath -Encoding utf8
 }
 
 exit $status
