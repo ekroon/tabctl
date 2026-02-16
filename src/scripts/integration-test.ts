@@ -81,8 +81,14 @@ async function main(): Promise<void> {
       ].join("\r\n"));
 
       let prebuilt: string | undefined;
+      const workspacePrebuilt = path.resolve(process.cwd(), "packages", "win32-x64", "tabctl-host.exe");
+      if (fs.existsSync(workspacePrebuilt)) {
+        prebuilt = workspacePrebuilt;
+      }
       try {
-        prebuilt = require.resolve("tabctl-win32-x64/tabctl-host.exe");
+        if (!prebuilt) {
+          prebuilt = require.resolve("tabctl-win32-x64/tabctl-host.exe");
+        }
       } catch { /* not installed */ }
 
       if (prebuilt) {

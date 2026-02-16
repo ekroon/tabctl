@@ -31,15 +31,6 @@ install_prerequisites() {
   sudo apt-get install -y ca-certificates curl gnupg golang-go
   curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
   sudo apt-get install -y nodejs
-  if ! command -v google-chrome >/dev/null 2>&1 \
-    && ! command -v google-chrome-stable >/dev/null 2>&1 \
-    && ! command -v chromium >/dev/null 2>&1 \
-    && ! command -v chromium-browser >/dev/null 2>&1; then
-    curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-linux.gpg
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux.gpg] https://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list >/dev/null
-    sudo apt-get update
-    sudo apt-get install -y google-chrome-stable
-  fi
 }
 
 capture_diagnostics() {
@@ -63,7 +54,6 @@ run_build_and_unit_tests() {
     sed -i 's/\r$//' src/tests/unit/fixtures/npx
   fi
   npm ci
-  npm run build
   TABCTL_TEST_CLI_TIMEOUT_MS=5000 npm run test:unit
 }
 

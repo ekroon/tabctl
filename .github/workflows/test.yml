@@ -60,9 +60,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
       - name: Validate WSL setup and integration
         shell: pwsh
         run: ./scripts/ci/run-wsl-validation.ps1 -Workspace "${{ github.workspace }}"
