@@ -2,6 +2,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Deserialize)]
 struct Request {
@@ -87,7 +88,7 @@ fn main() -> io::Result<()> {
                 "ping",
                 request_id,
                 json!({
-                    "now": 0,
+                    "now": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0),
                     "component": "host-rust-mvp",
                     "version": env!("CARGO_PKG_VERSION")
                 }),
