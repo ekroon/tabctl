@@ -207,7 +207,7 @@ run_setup_validation() {
   cd "$WSL_WORKSPACE"
   if [ "${TABCTL_WSL_SETUP_MODE:-legacy}" = "windows-npm" ]; then
     local win_workspace
-    win_workspace="$(wslpath -w "$WSL_WORKSPACE")"
+    win_workspace="$(wslpath -m "$WSL_WORKSPACE")"
     cmd.exe /d /s /c "npm install -g \"$win_workspace\" --no-fund --no-audit"
   fi
   local extension_id
