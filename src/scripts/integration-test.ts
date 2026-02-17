@@ -520,9 +520,26 @@ async function main(): Promise<void> {
           return false;
         }
         const recoveredRuntimeId = await loadExtension(failedExtensionDir);
-        await sleep(1000);
-        setupResult = runCli([...setupArgs, "--extension-id", recoveredRuntimeId]);
-        if (!setupResult.ok) {
+        await sleep(1500);
+        let recovered = false;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          setupResult = runCli([...setupArgs, "--extension-id", recoveredRuntimeId]);
+          if (setupResult.ok) {
+            recovered = true;
+            break;
+          }
+          const retryReason = setupResult.data?.verification?.reason;
+          if (retryReason !== "ping-timeout"
+            && retryReason !== "socket-not-found"
+            && retryReason !== "socket-refused"
+            && retryReason !== "ping-error"
+            && retryReason !== "extension-id-mismatch") {
+            log(`    setup retry after mismatch failed: reason=${String(retryReason)} raw=${setupResult.raw.slice(0, 400)}`);
+            return false;
+          }
+          await sleep(1000 * (attempt + 1));
+        }
+        if (!recovered) {
           log(`    setup retry after mismatch failed: ${setupResult.raw.slice(0, 400)}`);
           return false;
         }
