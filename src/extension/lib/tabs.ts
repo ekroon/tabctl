@@ -1,6 +1,5 @@
 // Tab operations — extracted from background.ts (pure structural refactor).
-
-import normalizeUrlLib from "normalize-url";
+import { normalizeUrlForDedupe } from "./url-normalizer";
 
 type WindowSnapshot = import("./groups").WindowSnapshot;
 
@@ -25,28 +24,7 @@ export function getMostRecentFocusedWindowId(windows: WindowSnapshot[]) {
 }
 
 export function normalizeUrl(rawUrl: unknown): string | null {
-  if (!rawUrl || typeof rawUrl !== "string") {
-    return null;
-  }
-  try {
-    return normalizeUrlLib(rawUrl, {
-      stripHash: true,
-      removeQueryParameters: [
-        /^utm_\w+$/i,
-        "fbclid",
-        "gclid",
-        "igshid",
-        "mc_cid",
-        "mc_eid",
-        "ref",
-        "ref_src",
-        "ref_url",
-        "si",
-      ],
-    });
-  } catch {
-    return null;
-  }
+  return normalizeUrlForDedupe(rawUrl);
 }
 
 export function normalizeTabIndex(value: unknown) {
@@ -493,5 +471,4 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
     },
   };
 }
-
 

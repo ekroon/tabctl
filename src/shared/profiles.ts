@@ -7,6 +7,7 @@ export type ProfileEntry = {
   extensionId: string;
   nodePath: string;
   hostPath: string;
+  hostImplementation?: "node" | "rust";
   dataDir: string;
   userDataDir?: string;
 };

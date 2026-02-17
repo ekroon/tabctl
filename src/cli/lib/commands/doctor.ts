@@ -55,45 +55,64 @@ function checkProfile(
   if (fix && !check.ok && check.info) {
     const needsNodeFix = !fs.existsSync(check.info.nodePath);
     const needsHostFix = !fs.existsSync(check.info.hostPath);
+    const hostImplementation = entry.hostImplementation === "rust" || check.info.hostImplementation === "rust"
+      ? "rust"
+      : "node";
 
     if (needsNodeFix || needsHostFix) {
-      const newNodePath = needsNodeFix ? process.execPath : check.info.nodePath;
+      if (hostImplementation === "rust" && !fs.existsSync(entry.hostPath)) {
+        issues.push(
+          `Rust host path not found: ${entry.hostPath} — run: tabctl setup --browser ${entry.browser} --host-impl rust --rust-host-bin <absolute-path>`,
+        );
+      }
+
+      const newNodePath = needsNodeFix
+        ? (hostImplementation === "rust" ? entry.hostPath : process.execPath)
+        : check.info.nodePath;
       let newHostPath = check.info.hostPath;
       if (needsHostFix) {
-        // Use the stable bundled host path
-        try {
-          const config = resolveConfig();
-          newHostPath = resolveInstalledHostPath(config.baseDataDir);
-          if (!fs.existsSync(newHostPath)) {
-            issues.push(`Bundled host not found at ${newHostPath} — run: tabctl setup --browser ${entry.browser}`);
+        if (hostImplementation === "rust") {
+          newHostPath = entry.hostPath;
+        } else {
+          // Use the stable bundled host path
+          try {
+            const config = resolveConfig();
+            newHostPath = resolveInstalledHostPath(config.baseDataDir);
+            if (!fs.existsSync(newHostPath)) {
+              issues.push(`Bundled host not found at ${newHostPath} — run: tabctl setup --browser ${entry.browser}`);
+            }
+          } catch {
+            issues.push("Could not resolve bundled host path");
           }
-        } catch {
-          issues.push("Could not resolve bundled host path");
         }
       }
 
-      try {
-        writeWrapper(
-          newNodePath,
-          newHostPath,
-          check.info.profileName,
-          path.dirname(wrapperPath),
-        );
-        fixed = true;
+      const canWrite = hostImplementation !== "rust" || fs.existsSync(entry.hostPath);
+      if (canWrite) {
+        try {
+          writeWrapper(
+            newNodePath,
+            newHostPath,
+            check.info.profileName,
+            path.dirname(wrapperPath),
+            hostImplementation,
+          );
+          fixed = true;
 
-        // Update issue messages to show they were fixed
-        const fixedIssues: string[] = [];
-        if (needsNodeFix) {
-          fixedIssues.push(`Fixed Node path: ${check.info.nodePath} → ${newNodePath}`);
+          // Update issue messages to show they were fixed
+          const fixedIssues: string[] = [];
+          if (needsNodeFix) {
+            fixedIssues.push(`Fixed Node path: ${check.info.nodePath} → ${newNodePath}`);
+          }
+          if (needsHostFix) {
+            fixedIssues.push(`Fixed host path: ${check.info.hostPath} → ${newHostPath}`);
+          }
+          // Replace original issues with fixed messages
+          issues.length = 0;
+          issues.push(...fixedIssues);
+        } catch (err) {
+          issues.push(`Failed to fix wrapper: ${err instanceof Error ? err.message : String(err)}`);
         }
-        if (needsHostFix) {
-          fixedIssues.push(`Fixed host path: ${check.info.hostPath} → ${newHostPath}`);
-        }
-        // Replace original issues with fixed messages
-        issues.length = 0;
-        issues.push(...fixedIssues);
-      } catch (err) {
-        issues.push(`Failed to fix wrapper: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }

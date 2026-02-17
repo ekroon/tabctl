@@ -179,6 +179,8 @@ export const COMMANDS: Record<string, CommandMeta> = {
     options: [
       { flag: "--browser edge|chrome", desc: "Browser type" },
       { flag: "--extension-id <id>", desc: "Override auto-derived extension ID" },
+      { flag: "--host-impl node|rust", desc: "Native host runtime implementation (default: node)" },
+      { flag: "--rust-host-bin <path>", desc: "Path to Rust host binary (required when --host-impl rust)" },
       { flag: "--node <path>", desc: "Path to Node.js executable" },
       { flag: "--name <name>", desc: "Profile name (default: browser type)" },
       { flag: "--user-data-dir <path>", desc: "Chrome/Edge user data directory for custom profiles" },

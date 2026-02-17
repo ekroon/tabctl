@@ -15,6 +15,7 @@ import { resetConfig } from "../../../shared/config";
 import { syncExtension, syncHost, deriveExtensionId, resolveInstalledExtensionDir } from "../../../shared/extension-sync";
 
 export type RuntimeEnvironment = "native-win32" | "native-linux" | "native-darwin";
+export type HostImplementation = "node" | "rust";
 
 export function resolveBrowser(value: unknown): "edge" | "chrome" | null {
   if (typeof value !== "string") {
@@ -71,7 +72,44 @@ export function resolveNodePath(options: Options): string {
   return value;
 }
 
-function resolveHostPath(dataDir: string): string {
+export function resolveHostImplementation(options: Options): HostImplementation {
+  const raw = typeof options["host-impl"] === "string"
+    ? String(options["host-impl"])
+    : (process.env.TABCTL_HOST_IMPL || "node");
+  const value = raw.trim().toLowerCase();
+  if (!value || value === "node") return "node";
+  if (value === "rust") return "rust";
+  errorOut(`Invalid --host-impl value: ${raw} (use node|rust)`);
+}
+
+export function resolveRustHostPath(options: Options): string {
+  const raw = typeof options["rust-host-bin"] === "string"
+    ? String(options["rust-host-bin"])
+    : (process.env.TABCTL_RUST_HOST_BIN || "");
+  const value = raw.trim();
+  if (!value) {
+    errorOut("Rust host binary not found. Set --rust-host-bin or TABCTL_RUST_HOST_BIN.");
+  }
+  if (!path.isAbsolute(value)) {
+    errorOut(`Rust host path must be absolute: ${value}`);
+  }
+  if (process.platform !== "win32") {
+    try {
+      fs.accessSync(value, fs.constants.X_OK);
+    } catch {
+      errorOut(`Rust host binary not executable: ${value}`);
+    }
+  } else {
+    try {
+      fs.accessSync(value, fs.constants.R_OK);
+    } catch {
+      errorOut(`Rust host binary not found: ${value}`);
+    }
+  }
+  return value;
+}
+
+function resolveNodeHostPath(dataDir: string): string {
   // Sync host bundle to stable path so wrapper survives npm upgrades
   try {
     const result = syncHost(dataDir, { force: true });
@@ -123,11 +161,18 @@ export function resolveSetupWrapperPath(
   hostPath: string,
   profileName: string,
   profileDataDir: string,
+  hostImplementation: HostImplementation = "node",
 ): { wrapperPath: string } {
-  return { wrapperPath: writeWrapper(nodePath, hostPath, profileName, profileDataDir) };
+  return { wrapperPath: writeWrapper(nodePath, hostPath, profileName, profileDataDir, hostImplementation) };
 }
 
-export function writeWrapper(nodePath: string, hostPath: string, profileName: string | null, wrapperDir: string): string {
+export function writeWrapper(
+  nodePath: string,
+  hostPath: string,
+  profileName: string | null,
+  wrapperDir: string,
+  hostImplementation: HostImplementation = "node",
+): string {
   fs.mkdirSync(wrapperDir, { recursive: true });
   if (process.platform !== "win32") {
     try { fs.chmodSync(wrapperDir, 0o700); } catch { /* ignore */ }
@@ -148,9 +193,14 @@ export function writeWrapper(nodePath: string, hostPath: string, profileName: st
       const exeDst = path.join(wrapperDir, "tabctl-host.exe");
       fs.copyFileSync(exeSrc, exeDst);
 
-      const cfgLines = [nodePath, hostPath];
+      const cfgLines = hostImplementation === "rust"
+        ? [hostPath, hostPath]
+        : [nodePath, hostPath];
       if (profileName) {
         cfgLines.push(`TABCTL_PROFILE=${profileName}`);
+      }
+      if (hostImplementation === "rust") {
+        cfgLines.push("TABCTL_HOST_IMPL=rust");
       }
       cfgLines.push("");
       fs.writeFileSync(path.join(wrapperDir, "host-launcher.cfg"), cfgLines.join("\r\n"), "utf8");
@@ -164,7 +214,12 @@ export function writeWrapper(nodePath: string, hostPath: string, profileName: st
     if (profileName) {
       lines.push(`set TABCTL_PROFILE=${profileName}`);
     }
-    lines.push(`"${nodePath}" "${hostPath}" %*`);
+    if (hostImplementation === "rust") {
+      lines.push("set TABCTL_HOST_IMPL=rust");
+      lines.push(`"${hostPath}" %*`);
+    } else {
+      lines.push(`"${nodePath}" "${hostPath}" %*`);
+    }
     lines.push("");
     fs.writeFileSync(wrapperPath, lines.join("\r\n"), "utf8");
     return wrapperPath;
@@ -180,7 +235,12 @@ export function writeWrapper(nodePath: string, hostPath: string, profileName: st
   if (profileName) {
     lines.push(`export TABCTL_PROFILE="${profileName}"`);
   }
-  lines.push(`exec \"${escapedNode}\" \"${escapedHost}\"`);
+  if (hostImplementation === "rust") {
+    lines.push('export TABCTL_HOST_IMPL="rust"');
+    lines.push(`exec \"${escapedHost}\"`);
+  } else {
+    lines.push(`exec \"${escapedNode}\" \"${escapedHost}\"`);
+  }
   lines.push("");
   const wrapper = lines.join("\n");
   fs.writeFileSync(wrapperPath, wrapper, "utf8");
@@ -194,12 +254,15 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
     errorOut("Missing or invalid --browser (edge|chrome)");
   }
 
-  const nodePath = resolveNodePath(options);
+  const hostImplementation = resolveHostImplementation(options);
   const runtimeEnv = detectRuntimeEnvironment();
 
   // Sync extension + host to stable paths (before extensionId so interactive mode can show it)
   const config = resolveConfig();
-  const hostPath = resolveHostPath(config.baseDataDir);
+  const hostPath = hostImplementation === "rust"
+    ? resolveRustHostPath(options)
+    : resolveNodeHostPath(config.baseDataDir);
+  const nodePath = hostImplementation === "rust" ? hostPath : resolveNodePath(options);
   let extensionSync;
   try {
     extensionSync = syncExtension(config.baseDataDir, { force: true });
@@ -243,6 +306,7 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
     hostPath,
     profileName,
     profileDataDir,
+    hostImplementation,
   );
   const wrapperPath = wrapperInfo.wrapperPath;
 
@@ -274,6 +338,7 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
     extensionId,
     nodePath,
     hostPath,
+    hostImplementation,
     dataDir: profileDataDir,
   };
   if (userDataDir) {
@@ -296,6 +361,7 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
       hostPath,
       nodePath,
       wrapperPath,
+      hostImplementation,
       runtimeEnv,
       dataDir: profileDataDir,
       ...(userDataDir ? { userDataDir } : {}),

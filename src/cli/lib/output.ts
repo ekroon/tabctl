@@ -127,15 +127,21 @@ function repairActiveWrapper(baseDataDir: string): void {
   const path = require("node:path") as typeof import("node:path");
   const needsNodeFix = !fs.existsSync(check.info.nodePath);
   const needsHostFix = !fs.existsSync(check.info.hostPath);
+  const hostImplementation = active.profile.hostImplementation === "rust" || check.info.hostImplementation === "rust"
+    ? "rust"
+    : "node";
 
   if (!needsNodeFix && !needsHostFix) return;
+  if (hostImplementation === "rust" && !fs.existsSync(active.profile.hostPath)) return;
 
-  const newNodePath = needsNodeFix ? process.execPath : check.info.nodePath;
+  const newNodePath = needsNodeFix
+    ? (hostImplementation === "rust" ? active.profile.hostPath : process.execPath)
+    : check.info.nodePath;
   const newHostPath = needsHostFix
-    ? resolveInstalledHostPath(baseDataDir)
+    ? (hostImplementation === "rust" ? active.profile.hostPath : resolveInstalledHostPath(baseDataDir))
     : check.info.hostPath;
 
-  writeWrapper(newNodePath, newHostPath, check.info.profileName, path.dirname(wrapperPath));
+  writeWrapper(newNodePath, newHostPath, check.info.profileName, path.dirname(wrapperPath), hostImplementation);
 
   if (needsNodeFix) {
     process.stderr.write(`[tabctl] fixed wrapper Node path: ${check.info.nodePath} → ${newNodePath}\n`);

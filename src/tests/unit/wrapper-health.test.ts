@@ -24,6 +24,22 @@ function writeShWrapper(dir: string, nodePath: string, hostPath: string, profile
   return wrapperPath;
 }
 
+function writeRustShWrapper(dir: string, hostPath: string, profileName: string | null): string {
+  const wrapperPath = path.join(dir, "tabctl-host.sh");
+  const lines = [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+  ];
+  if (profileName) {
+    lines.push(`export TABCTL_PROFILE="${profileName}"`);
+  }
+  lines.push('export TABCTL_HOST_IMPL="rust"');
+  lines.push(`exec "${hostPath}"`);
+  lines.push("");
+  fs.writeFileSync(wrapperPath, lines.join("\n"), { mode: 0o700 });
+  return wrapperPath;
+}
+
 function writeCmdWrapper(dir: string, nodePath: string, hostPath: string, profileName: string | null): string {
   const wrapperPath = path.join(dir, "tabctl-host.cmd");
   const lines = ["@echo off"];
@@ -72,6 +88,21 @@ test("parseWrapper parses Unix wrapper without profile", () => {
     assert.equal(info.nodePath, "/usr/bin/node");
     assert.equal(info.hostPath, "/opt/tabctl/host.js");
     assert.equal(info.profileName, null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseWrapper parses Unix rust wrapper", () => {
+  const dir = makeTmpDir();
+  try {
+    const wrapperPath = writeRustShWrapper(dir, "/opt/tabctl/tabctl-host-mvp", "edge");
+    const info = parseWrapper(wrapperPath);
+    assert.ok(info);
+    assert.equal(info.nodePath, "/opt/tabctl/tabctl-host-mvp");
+    assert.equal(info.hostPath, "/opt/tabctl/tabctl-host-mvp");
+    assert.equal(info.profileName, "edge");
+    assert.equal(info.hostImplementation, "rust");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

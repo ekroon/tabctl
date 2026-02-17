@@ -12,6 +12,7 @@ export function runProfileList(options: Options, prettyOutput: boolean): void {
       profiles: profiles.map(({ name, profile, isDefault }) => ({
         name,
         browser: profile.browser,
+        hostImplementation: profile.hostImplementation || "node",
         dataDir: profile.dataDir,
         isDefault,
       })),
@@ -43,6 +44,7 @@ export function runProfileShow(options: Options, prettyOutput: boolean): void {
     data: {
       name: active.name,
       browser: active.profile.browser,
+      hostImplementation: active.profile.hostImplementation || "node",
       extensionId: active.profile.extensionId,
       dataDir: active.profile.dataDir,
       ...(active.profile.userDataDir ? { userDataDir: active.profile.userDataDir } : {}),

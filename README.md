@@ -276,6 +276,22 @@ npm run build
 npm test
 ```
 
+### Rust migration investigation
+
+See [RUST_PORTING.md](RUST_PORTING.md) for a feasibility analysis and phased migration plan for porting the CLI and native host to Rust.
+An experimental host MVP lives in `rust/tabctl-host-mvp/`.
+An incremental Rust CLI path now lives in `rust/tabctl-rust-cli-readonly/`: it handles `version`, `ping`, and `history` directly, and safely passthroughs core mutating commands (`close`, `archive`, `group-*`, `move-*`, `reload`) through the Node CLI for parity.
+When a Rust CLI binary is configured (or bundled), tabctl now prefers this Rust path by default. Roll back to Node-only execution with `TABCTL_CLI_IMPL=node`.
+
+Build and try the Rust read-only CLI path:
+
+```bash
+npm run build:rust-cli-readonly
+TABCTL_RUST_CLI_BIN="$PWD/rust/tabctl-rust-cli-readonly/target/release/tabctl-rust-cli-readonly" node ./dist/cli/tabctl.js version
+# rollback switch:
+TABCTL_CLI_IMPL=node node ./dist/cli/tabctl.js version
+```
+
 ### Versioning
 The base version lives in `package.json` and is embedded into the CLI, host, and extension at build time.
 

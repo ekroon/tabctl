@@ -1,0 +1,9 @@
+[package]
+name = "tabctl-rust-cli-readonly"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Experimental Rust CLI path for tabctl read-only commands"
+
+[dependencies]
+serde_json = "1.0.145"

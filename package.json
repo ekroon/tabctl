@@ -28,9 +28,13 @@
   ],
   "scripts": {
     "build": "node scripts/gen-version.js && tsc -p tsconfig.json && node scripts/copy-artifacts.js && node scripts/build-launcher.js && node scripts/bundle-extension.js",
+    "build:rust-cli-readonly": "cargo build --manifest-path rust/tabctl-rust-cli-readonly/Cargo.toml --release",
+    "build:rust-artifacts": "cargo build --manifest-path rust/tabctl-rust-cli-readonly/Cargo.toml --release --locked && cargo build --manifest-path rust/tabctl-host-mvp/Cargo.toml --release --locked",
     "bump:major": "node scripts/bump-version.js major",
     "bump:minor": "node scripts/bump-version.js minor",
     "bump:patch": "node scripts/bump-version.js patch",
+    "check:rust": "cargo check --manifest-path rust/tabctl-rust-cli-readonly/Cargo.toml --locked && cargo check --manifest-path rust/tabctl-host-mvp/Cargo.toml --locked && cargo test --manifest-path rust/tabctl-host-mvp/Cargo.toml --locked && cargo test --manifest-path rust/tabctl-rust-cli-readonly/Cargo.toml --locked",
+    "package:rust-artifacts": "npm run build:rust-artifacts && node scripts/copy-artifacts.js",
     "test": "npm run build && node --test --test-timeout=5000 dist/tests/unit/*.js && node dist/scripts/integration-test.js",
     "test:unit": "npm run build && node --test --test-timeout=5000 dist/tests/unit/*.js",
     "test:integration": "node dist/scripts/integration-test.js",

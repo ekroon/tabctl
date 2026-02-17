@@ -326,6 +326,8 @@ Install the native host manifest and register a profile (macOS only).
 Options:
 - `--browser edge|chrome` (required)
 - `--extension-id <id>` (optional; auto-derived from installed extension path, or `TABCTL_EXTENSION_ID`)
+- `--host-impl node|rust` (optional; default: `node`)
+- `--rust-host-bin <path>` (required when `--host-impl rust` or `TABCTL_HOST_IMPL=rust`)
 - `--node <path>` (optional; or `TABCTL_NODE`)
 - `--name <name>` (optional; defaults to browser name)
 - `--dev` (coming soon; dev/CI mode via CDP)
@@ -470,8 +472,12 @@ Notes:
 | Variable | Description |
 |----------|-------------|
 | `TABCTL_CONFIG_DIR` | Override config directory (default: `$XDG_CONFIG_HOME/tabctl`) |
+| `TABCTL_CLI_IMPL` | CLI runtime selection (`auto`/unset = prefer Rust when available, `node` = rollback to Node) |
+| `TABCTL_RUST_CLI_BIN` | Absolute path to Rust CLI binary override |
 | `TABCTL_EXTENSION_ID` | Extension ID for `setup` command |
+| `TABCTL_HOST_IMPL` | Default host runtime for `setup` (`node` or `rust`) |
 | `TABCTL_NODE` | Node binary path for `setup` command |
+| `TABCTL_RUST_HOST_BIN` | Rust host binary path for `setup --host-impl rust` |
 | `TABCTL_PROFILE` | Override active profile (same as `--profile` flag) |
 | `TABCTL_VERSION_MODE` | `release` or `dev` for version output |
 

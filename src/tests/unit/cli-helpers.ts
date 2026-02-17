@@ -17,6 +17,11 @@ export async function runCli(
   npxOverride?: string,
 ) {
   const env = { ...process.env };
+  const hasCliImplOverride = Boolean(extraEnv && Object.prototype.hasOwnProperty.call(extraEnv, "TABCTL_CLI_IMPL"));
+  const hasRustCliBinOverride = Boolean(extraEnv && Object.prototype.hasOwnProperty.call(extraEnv, "TABCTL_RUST_CLI_BIN"));
+  if (!hasCliImplOverride && !hasRustCliBinOverride) {
+    env.TABCTL_CLI_IMPL = "node";
+  }
   if (socketPath) {
     env.TABCTL_SOCKET = socketPath;
   }
@@ -69,6 +74,11 @@ export async function runCliWithStdin(
   extraEnv?: Record<string, string>,
 ) {
   const env = { ...process.env };
+  const hasCliImplOverride = Boolean(extraEnv && Object.prototype.hasOwnProperty.call(extraEnv, "TABCTL_CLI_IMPL"));
+  const hasRustCliBinOverride = Boolean(extraEnv && Object.prototype.hasOwnProperty.call(extraEnv, "TABCTL_RUST_CLI_BIN"));
+  if (!hasCliImplOverride && !hasRustCliBinOverride) {
+    env.TABCTL_CLI_IMPL = "node";
+  }
   if (extraEnv) {
     Object.assign(env, extraEnv);
   }

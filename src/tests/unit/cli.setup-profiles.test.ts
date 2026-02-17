@@ -146,6 +146,48 @@ test("setup writes native host manifest for chrome", async () => {
   assert.equal(profiles.profiles.chrome.browser, "chrome");
 });
 
+test("setup supports rust host implementation selector", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-rust-host-"));
+  const extensionId = "dddddddddddddddddddddddddddddddd";
+  const rustHostBin = process.execPath;
+  const result = await runCli([
+    "setup",
+    "--browser",
+    "edge",
+    "--extension-id",
+    extensionId,
+    "--host-impl",
+    "rust",
+    "--rust-host-bin",
+    rustHostBin,
+  ], undefined, { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state"), XDG_CONFIG_HOME: path.join(homeDir, ".config") });
+
+  assert.equal(result.status, 0);
+  const output = parseOutput(result) as { ok: boolean; action?: string; data: Record<string, unknown> };
+  assert.equal(output.ok, true);
+  assert.equal(output.action, "setup");
+  assert.equal(output.data.hostImplementation, "rust");
+
+  const wrapperPath = output.data.wrapperPath as string;
+  assert.ok(fs.existsSync(wrapperPath));
+
+  if (wrapperPath.endsWith(".exe")) {
+    const cfgPath = path.join(path.dirname(wrapperPath), "host-launcher.cfg");
+    const cfg = fs.readFileSync(cfgPath, "utf8");
+    assert.ok(cfg.includes(rustHostBin));
+    assert.ok(cfg.includes("TABCTL_HOST_IMPL=rust"));
+  } else {
+    const wrapper = fs.readFileSync(wrapperPath, "utf8");
+    assert.ok(wrapper.includes("TABCTL_HOST_IMPL"));
+    assert.ok(wrapper.includes(rustHostBin));
+  }
+
+  const profilesPath = path.join(homeDir, ".config", "tabctl", "profiles.json");
+  const profiles = JSON.parse(fs.readFileSync(profilesPath, "utf8"));
+  assert.equal(profiles.profiles.edge.hostImplementation, "rust");
+  assert.equal(profiles.profiles.edge.hostPath, rustHostBin);
+});
+
 test("setup --user-data-dir writes manifest to custom path", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-udd-"));
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-udd-chrome-"));

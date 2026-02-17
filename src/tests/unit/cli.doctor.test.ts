@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { runCli, parseOutput } from "./cli-helpers";
-import { resolveWrapperPath, resolveWrapperTextPath } from "../../shared/wrapper-health";
+import { parseWrapper, resolveWrapperPath, resolveWrapperTextPath } from "../../shared/wrapper-health";
 
 function makeTmpHome(): { homeDir: string; stateHome: string; configHome: string; env: Record<string, string> } {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-doctor-"));
@@ -120,6 +120,36 @@ test("doctor --fix repairs broken host path", async () => {
   // Verify wrapper now has correct host path
   const newContent = fs.readFileSync(textPath, "utf-8");
   assert.ok(newContent.includes(hostBundlePath), "wrapper should contain stable host path");
+});
+
+test("doctor --fix preserves rust host implementation", async () => {
+  const { env, stateHome } = makeTmpHome();
+  const setup = await runCli([
+    "setup",
+    "--browser", "edge",
+    "--extension-id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "--host-impl", "rust",
+    "--rust-host-bin", process.execPath,
+    "--json",
+  ], undefined, env);
+  assert.equal(setup.status, 0, `setup failed: ${setup.stderr}`);
+
+  const profileDir = path.join(stateHome, "tabctl", "profiles", "edge");
+  const wrapperPath = resolveWrapperPath(profileDir);
+  const textPath = resolveWrapperTextPath(wrapperPath);
+  const content = fs.readFileSync(textPath, "utf-8");
+  fs.writeFileSync(textPath, content.replaceAll(process.execPath, "/nonexistent/rust-host-bin"), "utf8");
+
+  const fixed = await runCli(["doctor", "--fix", "--json"], undefined, env);
+  const fixedOutput = parseOutput(fixed);
+  assert.equal(fixedOutput.data.profiles.edge.fixed, true);
+  assert.equal(fixedOutput.data.profiles.edge.ok, true);
+
+  const repaired = fs.readFileSync(textPath, "utf-8");
+  assert.ok(repaired.includes(process.execPath), "wrapper should contain rust host path");
+  assert.ok(repaired.includes("TABCTL_HOST_IMPL=rust") || repaired.includes('TABCTL_HOST_IMPL="rust"'));
+  const info = parseWrapper(wrapperPath);
+  assert.equal(info?.hostImplementation, "rust");
 });
 
 test("doctor with multiple profiles reports each", async () => {

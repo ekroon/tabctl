@@ -61,7 +61,23 @@ async function main(): Promise<void> {
     log(`Chrome: ${chromePath}`);
 
     // 1b. Build the host wrapper.
-    const hostPath = path.resolve(__dirname, "..", "host", "host.js");
+    const hostImplementation = String(process.env.TABCTL_HOST_IMPL || "node").trim().toLowerCase() === "rust"
+      ? "rust"
+      : "node";
+    const rustHostPath = String(process.env.TABCTL_RUST_HOST_BIN || "").trim();
+    const hostPath = hostImplementation === "rust"
+      ? rustHostPath
+      : path.resolve(__dirname, "..", "host", "host.js");
+    if (hostImplementation === "rust" && !hostPath) {
+      throw new Error("Rust host selected but TABCTL_RUST_HOST_BIN is not set");
+    }
+    if (!path.isAbsolute(hostPath)) {
+      throw new Error(`Host path must be absolute: ${hostPath}`);
+    }
+    if (!fs.existsSync(hostPath)) {
+      throw new Error(`Host path not found: ${hostPath}`);
+    }
+    log(`Host implementation: ${hostImplementation}`);
     let wrapperPath: string;
 
     if (process.platform === "win32") {
@@ -72,13 +88,16 @@ async function main(): Promise<void> {
       const cfgPath = path.join(dataDir, "host-launcher.cfg");
 
       // Write config file: node path, host path, env vars
-      fs.writeFileSync(cfgPath, [
-        process.execPath,
-        hostPath,
-        `XDG_CONFIG_HOME=${configHome}`,
-        `XDG_STATE_HOME=${stateHome}`,
-        "",
-      ].join("\r\n"));
+      const cfgLines = hostImplementation === "rust"
+        ? [hostPath, hostPath]
+        : [process.execPath, hostPath];
+      cfgLines.push(`XDG_CONFIG_HOME=${configHome}`);
+      cfgLines.push(`XDG_STATE_HOME=${stateHome}`);
+      if (hostImplementation === "rust") {
+        cfgLines.push("TABCTL_HOST_IMPL=rust");
+      }
+      cfgLines.push("");
+      fs.writeFileSync(cfgPath, cfgLines.join("\r\n"));
 
       let prebuilt: string | undefined;
       const workspacePrebuilt = path.resolve(process.cwd(), "packages", "win32-x64", "tabctl-host.exe");
@@ -111,14 +130,20 @@ async function main(): Promise<void> {
       wrapperPath = exePath;
     } else {
       wrapperPath = path.join(dataDir, "tabctl-host.sh");
-      const wrapper = [
+      const wrapperLines = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
         `export XDG_CONFIG_HOME="${configHome}"`,
         `export XDG_STATE_HOME="${stateHome}"`,
-        `exec "${process.execPath}" "${hostPath}"`,
-        "",
-      ].join("\n");
+      ];
+      if (hostImplementation === "rust") {
+        wrapperLines.push('export TABCTL_HOST_IMPL="rust"');
+        wrapperLines.push(`exec "${hostPath}"`);
+      } else {
+        wrapperLines.push(`exec "${process.execPath}" "${hostPath}"`);
+      }
+      wrapperLines.push("");
+      const wrapper = wrapperLines.join("\n");
       fs.writeFileSync(wrapperPath, wrapper, { mode: 0o700 });
     }
 
@@ -692,33 +717,45 @@ async function main(): Promise<void> {
         doctorWrapperPath = path.join(doctorProfileDir, "tabctl-host.exe");
         fs.copyFileSync(exeSrc, doctorWrapperPath);
         doctorTextPath = path.join(doctorProfileDir, "host-launcher.cfg");
-        fs.writeFileSync(doctorTextPath, [
-          process.execPath,
-          hostPath,
-          "TABCTL_PROFILE=integration",
-          "",
-        ].join("\r\n"), "utf8");
+        const cfgLines = hostImplementation === "rust"
+          ? [hostPath, hostPath]
+          : [process.execPath, hostPath];
+        cfgLines.push("TABCTL_PROFILE=integration");
+        if (hostImplementation === "rust") {
+          cfgLines.push("TABCTL_HOST_IMPL=rust");
+        }
+        cfgLines.push("");
+        fs.writeFileSync(doctorTextPath, cfgLines.join("\r\n"), "utf8");
       } else {
         // Fallback: .cmd wrapper (dev/testing without Go launcher)
         doctorWrapperPath = path.join(doctorProfileDir, "tabctl-host.cmd");
         doctorTextPath = doctorWrapperPath;
-        fs.writeFileSync(doctorWrapperPath, [
-          "@echo off",
-          `set TABCTL_PROFILE=integration`,
-          `"${process.execPath}" "${hostPath}" %*`,
-          "",
-        ].join("\r\n"), "utf8");
+        const lines = ["@echo off", "set TABCTL_PROFILE=integration"];
+        if (hostImplementation === "rust") {
+          lines.push("set TABCTL_HOST_IMPL=rust");
+          lines.push(`"${hostPath}" %*`);
+        } else {
+          lines.push(`"${process.execPath}" "${hostPath}" %*`);
+        }
+        lines.push("");
+        fs.writeFileSync(doctorWrapperPath, lines.join("\r\n"), "utf8");
       }
     } else {
       doctorWrapperPath = path.join(doctorProfileDir, "tabctl-host.sh");
       doctorTextPath = doctorWrapperPath;
-      fs.writeFileSync(doctorWrapperPath, [
+      const lines = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
         `export TABCTL_PROFILE="integration"`,
-        `exec "${process.execPath}" "${hostPath}"`,
-        "",
-      ].join("\n"), { mode: 0o700 });
+      ];
+      if (hostImplementation === "rust") {
+        lines.push('export TABCTL_HOST_IMPL="rust"');
+        lines.push(`exec "${hostPath}"`);
+      } else {
+        lines.push(`exec "${process.execPath}" "${hostPath}"`);
+      }
+      lines.push("");
+      fs.writeFileSync(doctorWrapperPath, lines.join("\n"), { mode: 0o700 });
     }
 
     // Write profiles.json so doctor can discover the profile
@@ -731,6 +768,7 @@ async function main(): Promise<void> {
           extensionId,
           nodePath: process.execPath,
           hostPath,
+          hostImplementation,
           dataDir: doctorProfileDir,
         },
       },

@@ -13,6 +13,7 @@ export type WrapperInfo = {
   nodePath: string;
   hostPath: string;
   profileName: string | null;
+  hostImplementation: "node" | "rust";
 };
 
 export type WrapperCheck = {
@@ -24,16 +25,31 @@ export type WrapperCheck = {
 
 // Unix: exec "nodePath" "hostPath"
 const SH_EXEC_RE = /^exec\s+"([^"]+)"\s+"([^"]+)"$/m;
+// Unix rust mode: exec "hostPath"
+const SH_EXEC_SINGLE_RE = /^exec\s+"([^"]+)"(?:\s+"\$@")?$/m;
 // Unix: export TABCTL_PROFILE="name"
 const SH_PROFILE_RE = /^export\s+TABCTL_PROFILE="([^"]+)"$/m;
+// Unix: export TABCTL_HOST_IMPL="rust|node"
+const SH_HOST_IMPL_RE = /^export\s+TABCTL_HOST_IMPL="([^"]+)"$/m;
 
 // Windows .cmd: "nodePath" "hostPath" %*
 const CMD_EXEC_RE = /^"([^"]+)"\s+"([^"]+)"\s+%\*$/m;
+// Windows .cmd rust mode: "hostPath" %*
+const CMD_EXEC_SINGLE_RE = /^"([^"]+)"\s+%\*$/m;
 // Windows .cmd: set TABCTL_PROFILE=name
 const CMD_PROFILE_RE = /^set\s+TABCTL_PROFILE=(.+)$/m;
+// Windows .cmd: set TABCTL_HOST_IMPL=rust|node
+const CMD_HOST_IMPL_RE = /^set\s+TABCTL_HOST_IMPL=(.+)$/m;
 
-// Windows .cfg (Go launcher): line 1 = node, line 2 = host, optional TABCTL_PROFILE=name
+// Windows .cfg (Go launcher): line 1 = node/runtime, line 2 = host/arg, optional TABCTL_PROFILE=name
 const CFG_PROFILE_RE = /^TABCTL_PROFILE=(.+)$/m;
+// Windows .cfg: TABCTL_HOST_IMPL=rust|node
+const CFG_HOST_IMPL_RE = /^TABCTL_HOST_IMPL=(.+)$/m;
+
+function normalizeHostImplementation(value: string | undefined): "node" | "rust" {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "rust" ? "rust" : "node";
+}
 
 /**
  * Parse a wrapper script to extract Node path, host path, and profile name.
@@ -49,10 +65,12 @@ export function parseWrapper(wrapperPath: string): WrapperInfo | null {
       const lines = content.split(/\r?\n/).filter(l => l.trim());
       if (lines.length < 2) return null;
       const profileMatch = content.match(CFG_PROFILE_RE);
+      const hostImplMatch = content.match(CFG_HOST_IMPL_RE);
       return {
         nodePath: lines[0].trim(),
         hostPath: lines[1].trim(),
         profileName: profileMatch ? profileMatch[1].trim() : null,
+        hostImplementation: normalizeHostImplementation(hostImplMatch ? hostImplMatch[1] : undefined),
       };
     }
 
@@ -69,24 +87,50 @@ export function parseWrapper(wrapperPath: string): WrapperInfo | null {
 
     // .cmd: Windows batch
     if (ext === ".cmd") {
+      const hostImplMatch = content.match(CMD_HOST_IMPL_RE);
+      const hostImplementation = normalizeHostImplementation(hostImplMatch ? hostImplMatch[1] : undefined);
       const execMatch = content.match(CMD_EXEC_RE);
-      if (!execMatch) return null;
+      if (!execMatch) {
+        const singleExecMatch = content.match(CMD_EXEC_SINGLE_RE);
+        if (!(singleExecMatch && hostImplementation === "rust")) return null;
+        const profileMatch = content.match(CMD_PROFILE_RE);
+        return {
+          nodePath: singleExecMatch[1],
+          hostPath: singleExecMatch[1],
+          profileName: profileMatch ? profileMatch[1].trim() : null,
+          hostImplementation,
+        };
+      }
       const profileMatch = content.match(CMD_PROFILE_RE);
       return {
         nodePath: execMatch[1],
         hostPath: execMatch[2],
         profileName: profileMatch ? profileMatch[1].trim() : null,
+        hostImplementation,
       };
     }
 
     // .sh or extensionless: Unix shell
+    const hostImplMatch = content.match(SH_HOST_IMPL_RE);
+    const hostImplementation = normalizeHostImplementation(hostImplMatch ? hostImplMatch[1] : undefined);
     const execMatch = content.match(SH_EXEC_RE);
-    if (!execMatch) return null;
+    if (!execMatch) {
+      const singleExecMatch = content.match(SH_EXEC_SINGLE_RE);
+      if (!(singleExecMatch && hostImplementation === "rust")) return null;
+      const profileMatch = content.match(SH_PROFILE_RE);
+      return {
+        nodePath: singleExecMatch[1],
+        hostPath: singleExecMatch[1],
+        profileName: profileMatch ? profileMatch[1] : null,
+        hostImplementation,
+      };
+    }
     const profileMatch = content.match(SH_PROFILE_RE);
     return {
       nodePath: execMatch[1],
       hostPath: execMatch[2],
       profileName: profileMatch ? profileMatch[1] : null,
+      hostImplementation,
     };
   } catch {
     return null;
@@ -108,10 +152,12 @@ export function checkWrapper(wrapperPath: string): WrapperCheck {
     return { ok: false, wrapperPath, info: null, issues: [`Could not parse wrapper: ${wrapperPath}`] };
   }
 
+  const seenPaths = new Set<string>();
   if (!fs.existsSync(info.nodePath)) {
     issues.push(`Node path not found: ${info.nodePath}`);
+    seenPaths.add(info.nodePath);
   }
-  if (!fs.existsSync(info.hostPath)) {
+  if (!fs.existsSync(info.hostPath) && !seenPaths.has(info.hostPath)) {
     issues.push(`Host path not found: ${info.hostPath}`);
   }
 
