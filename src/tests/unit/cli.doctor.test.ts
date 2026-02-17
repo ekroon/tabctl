@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { runCli, parseOutput } from "./cli-helpers";
+import { startMockSocket, stopMockSocket } from "./socket";
 import { resolveWrapperPath, resolveWrapperTextPath } from "../../shared/wrapper-health";
 
 function makeTmpHome(): { homeDir: string; stateHome: string; configHome: string; env: Record<string, string> } {
@@ -19,13 +20,30 @@ function makeTmpHome(): { homeDir: string; stateHome: string; configHome: string
 }
 
 async function setupProfile(env: Record<string, string>, browser: string, extensionId?: string): Promise<Record<string, unknown>> {
-  const result = await runCli([
+  let effectiveEnv = env;
+  let mock: Awaited<ReturnType<typeof startMockSocket>> | null = null;
+  if (process.platform === "win32") {
+    mock = await startMockSocket((request) => ({
+      ok: true,
+      action: request.action,
+      requestId: request.id,
+      data: { now: Date.now() },
+    }));
+    effectiveEnv = { ...env, TABCTL_SOCKET: mock.socketPath };
+  }
+  const args = [
     "setup",
     "--browser", browser,
-    "--extension-id", extensionId || "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "--node", process.execPath,
     "--json",
-  ], undefined, env);
+  ];
+  if (extensionId) {
+    args.splice(3, 0, "--extension-id", extensionId);
+  }
+  const result = await runCli(args, undefined, effectiveEnv);
+  if (mock) {
+    await stopMockSocket(mock.server, mock.socketPath, mock.sockets);
+  }
   assert.equal(result.status, 0, `setup failed: ${result.stderr}`);
   return parseOutput(result);
 }
@@ -46,6 +64,30 @@ test("doctor reports healthy profile", async () => {
   assert.equal(output.data.summary.total, 1);
   assert.equal(output.data.summary.healthy, 1);
   assert.equal(output.data.summary.broken, 0);
+});
+
+test("doctor reports derived extension ID diagnostics", async () => {
+  const { env } = makeTmpHome();
+  await setupProfile(env, "edge");
+
+  const result = await runCli(["doctor", "--json"], undefined, env);
+  assert.equal(result.status, 0, `doctor failed: ${result.stderr}`);
+
+  const output = parseOutput(result);
+  assert.equal(output.ok, true);
+  assert.equal(output.data.extensionId.available, true);
+  assert.equal((output.data.extensionId.derivedId as string).length, 32);
+  assert.deepEqual(output.data.extensionId.mismatchedProfiles, []);
+});
+
+test("doctor detects extension ID drift across profiles", async () => {
+  const { env } = makeTmpHome();
+  await setupProfile(env, "edge", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+  const result = await runCli(["doctor", "--json"], undefined, env);
+  const output = parseOutput(result);
+  assert.equal(output.data.extensionId.available, true);
+  assert.ok(output.data.extensionId.mismatchedProfiles.includes("edge"));
 });
 
 test("doctor detects broken Node path", async () => {

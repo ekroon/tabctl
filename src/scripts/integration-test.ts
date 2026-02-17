@@ -493,6 +493,49 @@ async function main(): Promise<void> {
       }
     }
 
+    await runTestFn("windows setup extension-id parity", async () => {
+      if (process.platform !== "win32") {
+        return true;
+      }
+      const profileName = `setup-parity-${Date.now()}`;
+      const setupResult = runCli([
+        "setup",
+        "--browser", "chrome",
+        "--name", profileName,
+        "--node", process.execPath,
+        "--json",
+      ]);
+      if (!setupResult.ok) {
+        log(`    setup failed: ${setupResult.raw.slice(0, 400)}`);
+        return false;
+      }
+
+      const setupId = setupResult.data?.extensionId;
+      if (setupId !== extensionId) {
+        log(`    derived extensionId mismatch: setup=${setupId}, cdp=${extensionId}`);
+        return false;
+      }
+
+      const manifestPathFromSetup = setupResult.data?.manifestPath as string | undefined;
+      if (!manifestPathFromSetup || !fs.existsSync(manifestPathFromSetup)) {
+        log(`    setup manifest missing: ${manifestPathFromSetup}`);
+        return false;
+      }
+      const manifest = JSON.parse(fs.readFileSync(manifestPathFromSetup, "utf8")) as { allowed_origins?: string[] };
+      const expectedOrigin = `chrome-extension://${extensionId}/`;
+      if (!manifest.allowed_origins?.includes(expectedOrigin)) {
+        log(`    manifest allowed_origins missing expected origin: ${expectedOrigin}`);
+        return false;
+      }
+
+      const verification = setupResult.data?.verification;
+      if (!verification?.attempted || !verification?.ok) {
+        log(`    expected successful setup verification, got ${JSON.stringify(verification)}`);
+        return false;
+      }
+      return true;
+    });
+
     log("");
     log("--- Group reuse / dedup / gather tests ---");
 

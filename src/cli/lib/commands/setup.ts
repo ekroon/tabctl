@@ -7,14 +7,35 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { HOST_NAME, HOST_DESCRIPTION, EXTENSION_ID_PATTERN, resolveConfig } from "../constants";
+import {
+  HOST_NAME,
+  HOST_DESCRIPTION,
+  EXTENSION_ID_PATTERN,
+  VERSION,
+  BASE_VERSION,
+  GIT_SHA,
+  DIRTY,
+  resolveConfig,
+} from "../constants";
 import { printJson, errorOut } from "../output";
 import type { Options } from "../types";
 import { addProfile, validateProfileName } from "../../../shared/profiles";
 import { resetConfig } from "../../../shared/config";
-import { syncExtension, syncHost, deriveExtensionId, resolveInstalledExtensionDir } from "../../../shared/extension-sync";
+import { syncExtension, syncHost, deriveExtensionId, resolveInstalledExtensionDir, canonicalizeExtensionPath } from "../../../shared/extension-sync";
+import { sendRequest, createRequestId } from "../client";
 
 export type RuntimeEnvironment = "native-win32" | "native-linux" | "native-darwin";
+
+type SetupVerification = {
+  attempted: boolean;
+  ok: boolean;
+  reason: string | null;
+  detail: string | null;
+  socketPath: string | null;
+  manualSteps: string[];
+};
+
+const SETUP_VERIFY_TIMEOUT_MS = 4000;
 
 export function resolveBrowser(value: unknown): "edge" | "chrome" | null {
   if (typeof value !== "string") {
@@ -79,6 +100,120 @@ function resolveHostPath(dataDir: string): string {
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     errorOut(`Failed to resolve native host. Make sure the CLI is built (run: npm run build). Details: ${detail}`);
+  }
+}
+
+function buildManualWindowsSteps(
+  browser: "edge" | "chrome",
+  profileName: string,
+  extensionDir: string | null,
+  extensionId: string,
+  manifestPath: string,
+): string[] {
+  const extensionsUrl = browser === "edge" ? "edge://extensions" : "chrome://extensions";
+  const browserName = browser === "edge" ? "Edge" : "Chrome";
+  const setupCommand = `tabctl setup --browser ${browser} --extension-id <id>`;
+  return [
+    `Open ${extensionsUrl} in ${browserName} and enable Developer mode.`,
+    extensionDir
+      ? `Load unpacked extension from: ${extensionDir}`
+      : "Load unpacked extension from the path printed by tabctl setup.",
+    `Confirm extension ID in ${extensionsUrl} (current expected: ${extensionId}).`,
+    `If ID differs, rerun setup with explicit ID: ${setupCommand}`,
+    `Verify native host manifest exists at: ${manifestPath}`,
+    `Verify connection: tabctl --profile ${profileName} ping`,
+  ];
+}
+
+async function verifyWindowsSetupConnectivity(
+  profileName: string,
+  browser: "edge" | "chrome",
+  extensionDir: string | null,
+  extensionId: string,
+  manifestPath: string,
+): Promise<SetupVerification> {
+  if (process.platform !== "win32") {
+    return {
+      attempted: false,
+      ok: true,
+      reason: null,
+      detail: null,
+      socketPath: null,
+      manualSteps: [],
+    };
+  }
+
+  let socketPath: string | null = null;
+  try {
+    socketPath = resolveConfig(profileName).socketPath;
+  } catch {
+    // Keep null and rely on generic message below.
+  }
+  const manualSteps = buildManualWindowsSteps(browser, profileName, extensionDir, extensionId, manifestPath);
+
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const response = await Promise.race<Record<string, unknown>>([
+      sendRequest({
+        id: createRequestId(),
+        action: "ping",
+        params: {},
+        client: {
+          component: "cli",
+          version: VERSION,
+          baseVersion: BASE_VERSION,
+          gitSha: GIT_SHA,
+          dirty: DIRTY,
+        },
+      }),
+      new Promise<Record<string, unknown>>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new Error(`timed out after ${SETUP_VERIFY_TIMEOUT_MS}ms`));
+        }, SETUP_VERIFY_TIMEOUT_MS);
+      }),
+    ]);
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+    if (response.ok !== true) {
+      const responseError = response.error as { message?: string } | undefined;
+      return {
+        attempted: true,
+        ok: false,
+        reason: "ping-not-ok",
+        detail: responseError?.message || "ping returned non-ok response",
+        socketPath,
+        manualSteps,
+      };
+    }
+    return {
+      attempted: true,
+      ok: true,
+      reason: null,
+      detail: null,
+      socketPath,
+      manualSteps: [],
+    };
+  } catch (err) {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+    const detail = err instanceof Error ? err.message : String(err);
+    const reason = detail.includes("timed out")
+      ? "ping-timeout"
+      : detail.includes("ENOENT")
+        ? "socket-not-found"
+        : detail.includes("ECONNREFUSED")
+          ? "socket-refused"
+          : "ping-error";
+    return {
+      attempted: true,
+      ok: false,
+      reason,
+      detail,
+      socketPath,
+      manualSteps,
+    };
   }
 }
 
@@ -188,11 +323,12 @@ export function writeWrapper(nodePath: string, hostPath: string, profileName: st
   return wrapperPath;
 }
 
-export function runSetup(options: Options, prettyOutput: boolean): void {
+export async function runSetup(options: Options, prettyOutput: boolean): Promise<void> {
   const browser = resolveBrowser(options.browser);
   if (!browser) {
     errorOut("Missing or invalid --browser (edge|chrome)");
   }
+  const extensionsUrl = browser === "edge" ? "edge://extensions" : "chrome://extensions";
 
   const nodePath = resolveNodePath(options);
   const runtimeEnv = detectRuntimeEnvironment();
@@ -206,6 +342,9 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
   } catch {
     extensionSync = null;
   }
+  const hasProvidedExtensionId = typeof options["extension-id"] === "string"
+    ? options["extension-id"].trim().length > 0
+    : (process.env.TABCTL_EXTENSION_ID || "").trim().length > 0;
 
   // Resolve extension ID: explicit flag, derived from install path, or interactive prompt
   let extensionId = resolveExtensionId(options, false);
@@ -214,12 +353,31 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
     // Prefer the just-synced path; fall back to resolving independently
     const installedDir = extensionSync?.extensionDir ?? resolveInstalledExtensionDir(config.baseDataDir);
     if (fs.existsSync(path.join(installedDir, "manifest.json"))) {
+      const derivedFromPath = canonicalizeExtensionPath(installedDir);
       extensionId = deriveExtensionId(installedDir);
-      process.stderr.write(`Extension ID derived from: ${installedDir}\n`);
+      process.stderr.write(`Extension ID derived from: ${derivedFromPath}\n`);
+      process.stderr.write(`Derived extension ID: ${extensionId}\n`);
     }
   }
   if (!extensionId) {
     errorOut("Could not derive extension ID (extension not synced). Use --extension-id <id> or set TABCTL_EXTENSION_ID.");
+  }
+  if (process.platform === "win32" && hasProvidedExtensionId) {
+    const installedDir = extensionSync?.extensionDir ?? resolveInstalledExtensionDir(config.baseDataDir);
+    if (fs.existsSync(path.join(installedDir, "manifest.json"))) {
+      const derivedFromPath = canonicalizeExtensionPath(installedDir);
+      const derivedExtensionId = deriveExtensionId(installedDir);
+      if (derivedExtensionId !== extensionId) {
+        process.stderr.write([
+          "[tabctl] Provided extension ID differs from installed extension path derivation.",
+          `  Provided: ${extensionId}`,
+          `  Derived : ${derivedExtensionId}`,
+          `  Path    : ${derivedFromPath}`,
+          `  If native messaging is forbidden/disconnected, use the ID shown in ${extensionsUrl} or rerun setup without --extension-id.`,
+          "",
+        ].join("\n"));
+      }
+    }
   }
 
   // Profile name: --name flag or browser type
@@ -284,25 +442,59 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
   // Ensure printJson footer reflects the newly-created profile
   resetConfig();
   process.env.TABCTL_PROFILE = profileName;
+  const extensionDir = extensionSync?.extensionDir || null;
+  const verification = await verifyWindowsSetupConnectivity(
+    profileName,
+    browser,
+    extensionDir,
+    extensionId,
+    manifestPath,
+  );
+
+  const setupData = {
+    profileName,
+    browser,
+    extensionId,
+    manifestPath,
+    hostPath,
+    nodePath,
+    wrapperPath,
+    runtimeEnv,
+    dataDir: profileDataDir,
+    ...(userDataDir ? { userDataDir } : {}),
+    isDefault: registry.default === profileName,
+    extensionDir,
+    extensionSynced: extensionSync?.synced || false,
+    verification,
+  };
+
+  if (!verification.ok) {
+    const browserName = browser === "edge" ? "Edge" : "Chrome";
+    printJson({
+      ok: false,
+      action: "setup",
+      error: {
+        message: "Windows setup verification failed",
+      },
+      data: setupData,
+    }, prettyOutput);
+    process.stderr.write([
+      "",
+      `[tabctl] Windows setup verification failed for ${browserName} profile "${profileName}".`,
+      verification.socketPath ? `Socket: ${verification.socketPath}` : null,
+      verification.detail ? `Reason: ${verification.detail}` : null,
+      "Manual installation steps:",
+      ...verification.manualSteps.map((step, index) => `  ${index + 1}. ${step}`),
+      "",
+    ].filter(Boolean).join("\n"));
+    process.exit(1);
+    return;
+  }
 
   printJson({
     ok: true,
     action: "setup",
-    data: {
-      profileName,
-      browser,
-      extensionId,
-      manifestPath,
-      hostPath,
-      nodePath,
-      wrapperPath,
-      runtimeEnv,
-      dataDir: profileDataDir,
-      ...(userDataDir ? { userDataDir } : {}),
-      isDefault: registry.default === profileName,
-      extensionDir: extensionSync?.extensionDir || null,
-      extensionSynced: extensionSync?.synced || false,
-    },
+    data: setupData,
   }, prettyOutput);
 
   if (registry.default !== profileName) {
@@ -314,9 +506,7 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
       "",
     ].join("\n"));
   }
-  const extensionsUrl = browser === "edge" ? "edge://extensions" : "chrome://extensions";
   const browserName = browser === "edge" ? "Edge" : "Chrome";
-  const extensionDir = extensionSync?.extensionDir || null;
   const extensionPathDisplay = extensionDir;
   const loadSteps = extensionDir
     ? [

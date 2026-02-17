@@ -8,6 +8,7 @@ import {
   resolveInstalledExtensionDir,
   syncExtension,
   checkExtensionSync,
+  canonicalizeExtensionPath,
   deriveExtensionId,
   readHostVersion,
   resolveInstalledHostPath,
@@ -115,6 +116,24 @@ test("checkExtensionSync detects matching versions", () => {
 });
 
 // --- deriveExtensionId ---
+
+test("canonicalizeExtensionPath resolves and normalizes existing paths", () => {
+  const dir = makeTmpDir();
+  try {
+    const variant = path.join(dir, ".", "nested", "..") + path.sep;
+    const canonical = canonicalizeExtensionPath(variant);
+    const expected = fs.realpathSync(dir);
+    assert.equal(canonical, expected);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("canonicalizeExtensionPath falls back to resolved path for missing paths", () => {
+  const missing = path.join(os.tmpdir(), "tabctl-missing-path", "..", "tabctl-missing-path", "extension");
+  const canonical = canonicalizeExtensionPath(missing);
+  assert.equal(canonical, path.normalize(path.resolve(missing)));
+});
 
 test("deriveExtensionId matches Chromium algorithm", () => {
   // Known test vector: SHA256 of path, first 32 hex chars, 0-f → a-p

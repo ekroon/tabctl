@@ -11,7 +11,13 @@ import path from "node:path";
 import { resolveConfig } from "../../../shared/config";
 import { loadProfiles, type ProfileEntry } from "../../../shared/profiles";
 import { checkWrapper, resolveWrapperPath } from "../../../shared/wrapper-health";
-import { checkExtensionSync, resolveInstalledHostPath } from "../../../shared/extension-sync";
+import {
+  checkExtensionSync,
+  resolveInstalledHostPath,
+  resolveInstalledExtensionDir,
+  deriveExtensionId,
+  canonicalizeExtensionPath,
+} from "../../../shared/extension-sync";
 import { writeWrapper } from "./setup";
 import { printJson, errorOut } from "../output";
 import type { Options } from "../types";
@@ -33,6 +39,12 @@ type DoctorResult = {
     synced: boolean;
     bundledVersion: string | null;
     installedVersion: string | null;
+  };
+  extensionId: {
+    available: boolean;
+    derivedFromPath: string | null;
+    derivedId: string | null;
+    mismatchedProfiles: string[];
   };
   summary: {
     total: number;
@@ -142,6 +154,26 @@ export function runDoctor(options: Options, prettyOutput: boolean): void {
       installedVersion: null,
     };
   }
+  let extensionIdCheck: DoctorResult["extensionId"] = {
+    available: false,
+    derivedFromPath: null,
+    derivedId: null,
+    mismatchedProfiles: [],
+  };
+  try {
+    const installedDir = resolveInstalledExtensionDir(config.baseDataDir);
+    if (fs.existsSync(path.join(installedDir, "manifest.json"))) {
+      const derivedId = deriveExtensionId(installedDir);
+      extensionIdCheck = {
+        available: true,
+        derivedFromPath: canonicalizeExtensionPath(installedDir),
+        derivedId,
+        mismatchedProfiles: profileNames.filter((name) => registry.profiles[name].extensionId !== derivedId),
+      };
+    }
+  } catch {
+    // Best-effort diagnostic only
+  }
 
   // Summary
   const total = profileNames.length;
@@ -157,6 +189,7 @@ export function runDoctor(options: Options, prettyOutput: boolean): void {
     data: {
       profiles,
       extension: extensionCheck,
+      extensionId: extensionIdCheck,
       summary: { total, healthy, broken, fixed },
     },
   }, prettyOutput);
@@ -173,5 +206,16 @@ export function runDoctor(options: Options, prettyOutput: boolean): void {
   }
   if (fixed > 0) {
     process.stderr.write(`\nFixed ${fixed} profile(s). Verify: tabctl ping\n\n`);
+  }
+  if (process.platform === "win32" && extensionIdCheck.mismatchedProfiles.length > 0) {
+    process.stderr.write([
+      "",
+      "[tabctl] Extension ID mismatch detected for profile(s):",
+      `  ${extensionIdCheck.mismatchedProfiles.join(", ")}`,
+      `  Derived from path: ${extensionIdCheck.derivedFromPath}`,
+      `  Derived ID: ${extensionIdCheck.derivedId}`,
+      "If native messaging is forbidden/disconnected, rerun setup for the profile or pass --extension-id with the value shown in chrome://extensions/edge://extensions.",
+      "",
+    ].join("\n"));
   }
 }

@@ -7,12 +7,33 @@ import { GIT_SHA, DEV_BUILD } from "./version";
 export const EXTENSION_DIR_NAME = "extension";
 export const HOST_BUNDLE_NAME = "host.bundle.js";
 
+function trimTrailingSeparators(value: string): string {
+  const parsed = path.parse(value);
+  if (value === parsed.root) {
+    return value;
+  }
+  return value.replace(/[\\/]+$/, "");
+}
+
+export function canonicalizeExtensionPath(extensionDir: string): string {
+  const resolved = trimTrailingSeparators(path.normalize(path.resolve(extensionDir)));
+  try {
+    const realpath = typeof fs.realpathSync.native === "function"
+      ? fs.realpathSync.native(resolved)
+      : fs.realpathSync(resolved);
+    return trimTrailingSeparators(path.normalize(realpath));
+  } catch {
+    return resolved;
+  }
+}
+
 /**
  * Derive the Chrome/Edge extension ID for an unpacked extension path.
  * Chromium computes: SHA256(absolute_path) → first 32 hex chars → map 0-f to a-p.
  */
 export function deriveExtensionId(extensionDir: string): string {
-  const hash = crypto.createHash("sha256").update(extensionDir).digest("hex").slice(0, 32);
+  const canonicalPath = canonicalizeExtensionPath(extensionDir);
+  const hash = crypto.createHash("sha256").update(canonicalPath).digest("hex").slice(0, 32);
   return hash.split("").map(c => String.fromCharCode("a".charCodeAt(0) + parseInt(c, 16))).join("");
 }
 
