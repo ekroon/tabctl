@@ -520,7 +520,22 @@ async function main(): Promise<void> {
           return false;
         }
         const recoveredRuntimeId = await loadExtension(failedExtensionDir);
-        await sleep(1500);
+        let runtimeReady = false;
+        for (let attempt = 0; attempt < 10; attempt++) {
+          const pingResult = runCli(["ping", "--json"]);
+          const pingRuntimeId = typeof pingResult.data?.runtimeId === "string"
+            ? pingResult.data.runtimeId
+            : null;
+          if (pingResult.ok && pingRuntimeId === recoveredRuntimeId) {
+            runtimeReady = true;
+            break;
+          }
+          await sleep(500 + (attempt * 250));
+        }
+        if (!runtimeReady) {
+          log(`    setup mismatch recovery runtime did not converge to ${recoveredRuntimeId}`);
+          return false;
+        }
         let recovered = false;
         for (let attempt = 0; attempt < 3; attempt++) {
           setupResult = runCli([...setupArgs, "--extension-id", recoveredRuntimeId]);
