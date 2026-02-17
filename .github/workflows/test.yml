@@ -7,6 +7,8 @@ on:
         required: false
         default: "windows-npm"
         type: string
+  schedule:
+    - cron: "0 6 * * *"
   push:
     branches: [main]
   pull_request:
@@ -14,6 +16,7 @@ on:
 
 jobs:
   test:
+    if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
       matrix:
@@ -37,6 +40,7 @@ jobs:
       - run: npm test
 
   integration:
+    if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
       matrix:
@@ -61,7 +65,7 @@ jobs:
       - run: npm run test:integration
 
   wsl:
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
