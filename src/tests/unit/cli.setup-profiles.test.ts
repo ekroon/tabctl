@@ -50,7 +50,7 @@ test("setup writes native host manifest", async () => {
   const hostPath = path.join(homeDir, ".local", "state", "tabctl", "host.bundle.js");
   if (wrapperPath.endsWith(".exe")) {
     // .exe uses a .cfg file, not embedded paths
-    const cfgPath = path.join(profileDir, "host-launcher.cfg");
+    const cfgPath = path.join(path.dirname(wrapperPath), "host-launcher.cfg");
     assert.ok(fs.existsSync(cfgPath), "cfg file should exist for .exe wrapper");
     const cfg = fs.readFileSync(cfgPath, "utf8");
     assert.ok(cfg.includes(nodePath));
@@ -119,7 +119,7 @@ test("setup writes native host manifest for chrome", async () => {
 
   const hostPath = path.join(homeDir, ".local", "state", "tabctl", "host.bundle.js");
   if (wrapperPath.endsWith(".exe")) {
-    const cfgPath = path.join(profileDir, "host-launcher.cfg");
+    const cfgPath = path.join(path.dirname(wrapperPath), "host-launcher.cfg");
     assert.ok(fs.existsSync(cfgPath), "cfg file should exist for .exe wrapper");
     const cfg = fs.readFileSync(cfgPath, "utf8");
     assert.ok(cfg.includes(nodePath));

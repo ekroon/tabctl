@@ -14,6 +14,8 @@ import { addProfile, validateProfileName } from "../../../shared/profiles";
 import { resetConfig } from "../../../shared/config";
 import { syncExtension, syncHost, deriveExtensionId, resolveInstalledExtensionDir } from "../../../shared/extension-sync";
 
+export type RuntimeEnvironment = "native-win32" | "native-linux" | "native-darwin";
+
 export function resolveBrowser(value: unknown): "edge" | "chrome" | null {
   if (typeof value !== "string") {
     return null;
@@ -80,12 +82,21 @@ function resolveHostPath(dataDir: string): string {
   }
 }
 
-export function resolveManifestDir(browser: "edge" | "chrome"): string {
+export function detectRuntimeEnvironment(): RuntimeEnvironment {
+  if (process.platform === "win32") return "native-win32";
+  if (process.platform === "darwin") return "native-darwin";
+  return "native-linux";
+}
+
+export function resolveManifestDir(
+  browser: "edge" | "chrome",
+  runtimeEnv: RuntimeEnvironment = detectRuntimeEnvironment(),
+): string {
   const home = os.homedir();
   if (!home) {
     errorOut("Home directory not found.");
   }
-  if (process.platform === "win32") {
+  if (runtimeEnv === "native-win32") {
     // Windows: registry-based is preferred, but file-based works with --user-data-dir.
     // For system-wide, we point to the per-user NativeMessagingHosts under LOCALAPPDATA.
     const base = process.env.LOCALAPPDATA || path.join(home, "AppData", "Local");
@@ -94,7 +105,7 @@ export function resolveManifestDir(browser: "edge" | "chrome"): string {
     }
     return path.join(base, "Google", "Chrome", "User Data", "NativeMessagingHosts");
   }
-  if (process.platform === "linux") {
+  if (runtimeEnv === "native-linux") {
     if (browser === "edge") {
       return path.join(home, ".config", "microsoft-edge", "NativeMessagingHosts");
     }
@@ -105,6 +116,15 @@ export function resolveManifestDir(browser: "edge" | "chrome"): string {
     return path.join(home, "Library", "Application Support", "Microsoft Edge", "NativeMessagingHosts");
   }
   return path.join(home, "Library", "Application Support", "Google", "Chrome", "NativeMessagingHosts");
+}
+
+export function resolveSetupWrapperPath(
+  nodePath: string,
+  hostPath: string,
+  profileName: string,
+  profileDataDir: string,
+): { wrapperPath: string } {
+  return { wrapperPath: writeWrapper(nodePath, hostPath, profileName, profileDataDir) };
 }
 
 export function writeWrapper(nodePath: string, hostPath: string, profileName: string | null, wrapperDir: string): string {
@@ -175,6 +195,7 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
   }
 
   const nodePath = resolveNodePath(options);
+  const runtimeEnv = detectRuntimeEnvironment();
 
   // Sync extension + host to stable paths (before extensionId so interactive mode can show it)
   const config = resolveConfig();
@@ -217,16 +238,24 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
   fs.mkdirSync(profileDataDir, { recursive: true });
 
   // Write profile-specific wrapper
-  const wrapperPath = writeWrapper(nodePath, hostPath, profileName, profileDataDir);
+  const wrapperInfo = resolveSetupWrapperPath(
+    nodePath,
+    hostPath,
+    profileName,
+    profileDataDir,
+  );
+  const wrapperPath = wrapperInfo.wrapperPath;
 
   // Resolve manifest directory: custom user-data-dir or system-wide
   const rawUserDataDir = typeof options["user-data-dir"] === "string"
     ? options["user-data-dir"].trim()
     : "";
-  const userDataDir = rawUserDataDir ? path.resolve(rawUserDataDir) : "";
+  const userDataDir = rawUserDataDir
+    ? path.resolve(rawUserDataDir)
+    : "";
   const manifestDir = userDataDir
     ? path.join(userDataDir, "NativeMessagingHosts")
-    : resolveManifestDir(browser);
+    : resolveManifestDir(browser, runtimeEnv);
   fs.mkdirSync(manifestDir, { recursive: true });
 
   const manifestPath = path.join(manifestDir, `${HOST_NAME}.json`);
@@ -267,6 +296,7 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
       hostPath,
       nodePath,
       wrapperPath,
+      runtimeEnv,
       dataDir: profileDataDir,
       ...(userDataDir ? { userDataDir } : {}),
       isDefault: registry.default === profileName,
@@ -287,10 +317,11 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
   const extensionsUrl = browser === "edge" ? "edge://extensions" : "chrome://extensions";
   const browserName = browser === "edge" ? "Edge" : "Chrome";
   const extensionDir = extensionSync?.extensionDir || null;
+  const extensionPathDisplay = extensionDir;
   const loadSteps = extensionDir
     ? [
         `Load the extension: ${extensionsUrl} → Developer mode → Load unpacked`,
-        `  Path: ${extensionDir}`,
+        `  Path: ${extensionPathDisplay}`,
         process.platform === "darwin" ? "  Tip: press Cmd+Shift+G in the file dialog to paste the path" : null,
       ].filter(Boolean).join("\n")
     : `Load the extension: ${extensionsUrl} → Developer mode → Load unpacked`;

@@ -59,7 +59,9 @@ func main() {
 			continue
 		}
 		if eq := strings.IndexByte(line, '='); eq > 0 {
-			os.Setenv(line[:eq], line[eq+1:])
+			key := strings.TrimSpace(line[:eq])
+			value := strings.TrimSpace(line[eq+1:])
+			os.Setenv(key, value)
 		}
 	}
 	f.Close()
