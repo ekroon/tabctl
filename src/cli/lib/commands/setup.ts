@@ -31,6 +31,8 @@ type SetupVerification = {
   ok: boolean;
   reason: string | null;
   detail: string | null;
+  expectedExtensionId: string | null;
+  runtimeExtensionId: string | null;
   socketPath: string | null;
   manualSteps: string[];
 };
@@ -138,6 +140,8 @@ async function verifyWindowsSetupConnectivity(
       ok: true,
       reason: null,
       detail: null,
+      expectedExtensionId: null,
+      runtimeExtensionId: null,
       socketPath: null,
       manualSteps: [],
     };
@@ -182,6 +186,24 @@ async function verifyWindowsSetupConnectivity(
         ok: false,
         reason: "ping-not-ok",
         detail: responseError?.message || "ping returned non-ok response",
+        expectedExtensionId: extensionId,
+        runtimeExtensionId: null,
+        socketPath,
+        manualSteps,
+      };
+    }
+    const responseData = response.data as Record<string, unknown> | undefined;
+    const runtimeExtensionId = typeof responseData?.runtimeId === "string"
+      ? responseData.runtimeId.trim().toLowerCase()
+      : null;
+    if (runtimeExtensionId && runtimeExtensionId !== extensionId) {
+      return {
+        attempted: true,
+        ok: false,
+        reason: "extension-id-mismatch",
+        detail: `expected ${extensionId} but extension reported ${runtimeExtensionId}`,
+        expectedExtensionId: extensionId,
+        runtimeExtensionId,
         socketPath,
         manualSteps,
       };
@@ -191,6 +213,8 @@ async function verifyWindowsSetupConnectivity(
       ok: true,
       reason: null,
       detail: null,
+      expectedExtensionId: extensionId,
+      runtimeExtensionId,
       socketPath,
       manualSteps: [],
     };
@@ -211,6 +235,8 @@ async function verifyWindowsSetupConnectivity(
       ok: false,
       reason,
       detail,
+      expectedExtensionId: extensionId,
+      runtimeExtensionId: null,
       socketPath,
       manualSteps,
     };
@@ -483,6 +509,8 @@ export async function runSetup(options: Options, prettyOutput: boolean): Promise
       `[tabctl] Windows setup verification failed for ${browserName} profile "${profileName}".`,
       verification.socketPath ? `Socket: ${verification.socketPath}` : null,
       verification.detail ? `Reason: ${verification.detail}` : null,
+      verification.expectedExtensionId ? `Expected extension ID: ${verification.expectedExtensionId}` : null,
+      verification.runtimeExtensionId ? `Runtime extension ID: ${verification.runtimeExtensionId}` : null,
       "Manual installation steps:",
       ...verification.manualSteps.map((step, index) => `  ${index + 1}. ${step}`),
       "",

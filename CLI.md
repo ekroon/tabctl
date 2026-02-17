@@ -332,7 +332,7 @@ Options:
 
 Each run creates or updates a profile in `profiles.json`. The first profile registered becomes the default.
 
-On Windows, setup verifies host connectivity by default after writing setup artifacts. If verification fails, setup exits non-zero and prints manual recovery steps (load extension, confirm extension ID, rerun setup, and verify with `tabctl ping`).
+On Windows, setup verifies host connectivity by default after writing setup artifacts and compares the browser-reported runtime extension ID with the expected ID. If verification fails, setup exits non-zero and prints manual recovery steps (load extension, confirm extension ID, rerun setup, and verify with `tabctl ping`).
 
 Run once per browser:
 ```bash

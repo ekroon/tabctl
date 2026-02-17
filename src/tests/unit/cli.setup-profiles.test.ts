@@ -781,3 +781,39 @@ test("setup fails with manual guidance when Windows verification fails", { skip:
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
+
+test("setup fails when Windows runtime extension ID mismatches expected ID", { skip: process.platform !== "win32" && "windows only" }, async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-verify-id-mismatch-"));
+  const expectedExtensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const runtimeExtensionId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const mock = await startMockSocket((request) => ({
+    ok: true,
+    action: request.action,
+    requestId: request.id,
+    data: { now: Date.now(), runtimeId: runtimeExtensionId },
+  }));
+  try {
+    const result = await runCli([
+      "setup", "--browser", "chrome",
+      "--extension-id", expectedExtensionId,
+      "--node", process.execPath,
+    ], undefined, {
+      HOME: homeDir,
+      XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
+      XDG_CONFIG_HOME: path.join(homeDir, ".config"),
+      TABCTL_SOCKET: mock.socketPath,
+    });
+
+    assert.notEqual(result.status, 0, "expected non-zero setup status on runtime extension ID mismatch");
+    const output = parseOutput(result);
+    assert.equal(output.ok, false);
+    assert.equal(output.data?.verification?.reason, "extension-id-mismatch");
+    assert.equal(output.data?.verification?.expectedExtensionId, expectedExtensionId);
+    assert.equal(output.data?.verification?.runtimeExtensionId, runtimeExtensionId);
+    assert.ok(result.stderr.includes("Expected extension ID"), "expected expected-id diagnostics");
+    assert.ok(result.stderr.includes("Runtime extension ID"), "expected runtime-id diagnostics");
+  } finally {
+    await stopMockSocket(mock.server, mock.socketPath, mock.sockets);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});

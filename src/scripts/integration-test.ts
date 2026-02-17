@@ -535,9 +535,22 @@ async function main(): Promise<void> {
         return false;
       }
 
-      const verification = setupResult.data?.verification;
+      const verification = setupResult.data?.verification as {
+        attempted?: boolean;
+        ok?: boolean;
+        expectedExtensionId?: string | null;
+        runtimeExtensionId?: string | null;
+      } | undefined;
       if (!verification?.attempted || !verification?.ok) {
         log(`    expected successful setup verification, got ${JSON.stringify(verification)}`);
+        return false;
+      }
+      if (verification.expectedExtensionId !== setupId) {
+        log(`    setup verification expectedExtensionId mismatch: expected=${setupId}, got=${verification.expectedExtensionId}`);
+        return false;
+      }
+      if (verification.runtimeExtensionId !== setupId) {
+        log(`    setup verification runtimeExtensionId mismatch: expected=${setupId}, got=${verification.runtimeExtensionId}`);
         return false;
       }
       return true;
