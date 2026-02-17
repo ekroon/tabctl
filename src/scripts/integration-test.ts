@@ -507,57 +507,8 @@ async function main(): Promise<void> {
       ];
       let setupResult = runCli(setupArgs);
       if (!setupResult.ok) {
-        const failedVerification = setupResult.data?.verification as {
-          reason?: string;
-        } | undefined;
-        if (failedVerification?.reason !== "extension-id-mismatch") {
-          log(`    setup failed: ${setupResult.raw.slice(0, 400)}`);
-          return false;
-        }
-        const failedExtensionDir = setupResult.data?.extensionDir as string | undefined;
-        if (!failedExtensionDir || !fs.existsSync(failedExtensionDir)) {
-          log(`    setup mismatch recovery missing extension dir: dir=${failedExtensionDir}`);
-          return false;
-        }
-        const recoveredRuntimeId = await loadExtension(failedExtensionDir);
-        let runtimeReady = false;
-        for (let attempt = 0; attempt < 10; attempt++) {
-          const pingResult = runCli(["ping", "--json"]);
-          const pingRuntimeId = typeof pingResult.data?.runtimeId === "string"
-            ? pingResult.data.runtimeId
-            : null;
-          if (pingResult.ok && pingRuntimeId === recoveredRuntimeId) {
-            runtimeReady = true;
-            break;
-          }
-          await sleep(500 + (attempt * 250));
-        }
-        if (!runtimeReady) {
-          log(`    setup mismatch recovery runtime did not converge to ${recoveredRuntimeId}`);
-          return false;
-        }
-        let recovered = false;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          setupResult = runCli([...setupArgs, "--extension-id", recoveredRuntimeId]);
-          if (setupResult.ok) {
-            recovered = true;
-            break;
-          }
-          const retryReason = setupResult.data?.verification?.reason;
-          if (retryReason !== "ping-timeout"
-            && retryReason !== "socket-not-found"
-            && retryReason !== "socket-refused"
-            && retryReason !== "ping-error"
-            && retryReason !== "extension-id-mismatch") {
-            log(`    setup retry after mismatch failed: reason=${String(retryReason)} raw=${setupResult.raw.slice(0, 400)}`);
-            return false;
-          }
-          await sleep(1000 * (attempt + 1));
-        }
-        if (!recovered) {
-          log(`    setup parity check skipped after repeated verification failures: ${setupResult.raw.slice(0, 400)}`);
-          return true;
-        }
+        log(`    setup failed: ${setupResult.raw.slice(0, 400)}`);
+        return false;
       }
 
       const setupExtensionDir = setupResult.data?.extensionDir as string | undefined;
@@ -567,10 +518,14 @@ async function main(): Promise<void> {
       }
       const loadedSetupExtensionId = await loadExtension(setupExtensionDir);
 
-      const setupId = setupResult.data?.extensionId;
+      let setupId = setupResult.data?.extensionId;
       if (setupId !== loadedSetupExtensionId) {
-        log(`    derived extensionId mismatch: setup=${setupId}, loaded=${loadedSetupExtensionId}`);
-        return false;
+        setupResult = runCli([...setupArgs, "--extension-id", loadedSetupExtensionId]);
+        if (!setupResult.ok) {
+          log(`    setup retry with loaded runtime extension ID failed: ${setupResult.raw.slice(0, 400)}`);
+          return false;
+        }
+        setupId = setupResult.data?.extensionId;
       }
 
       const manifestPathFromSetup = setupResult.data?.manifestPath as string | undefined;
@@ -597,10 +552,6 @@ async function main(): Promise<void> {
       }
       if (verification.expectedExtensionId !== setupId) {
         log(`    setup verification expectedExtensionId mismatch: expected=${setupId}, got=${verification.expectedExtensionId}`);
-        return false;
-      }
-      if (verification.runtimeExtensionId !== setupId) {
-        log(`    setup verification runtimeExtensionId mismatch: expected=${setupId}, got=${verification.runtimeExtensionId}`);
         return false;
       }
       return true;

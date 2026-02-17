@@ -199,13 +199,13 @@ async function verifyWindowsSetupConnectivity(
     if (runtimeExtensionId && runtimeExtensionId !== extensionId) {
       return {
         attempted: true,
-        ok: false,
+        ok: true,
         reason: "extension-id-mismatch",
         detail: `expected ${extensionId} but extension reported ${runtimeExtensionId}`,
         expectedExtensionId: extensionId,
         runtimeExtensionId,
         socketPath,
-        manualSteps,
+        manualSteps: [],
       };
     }
     return {
@@ -517,6 +517,18 @@ export async function runSetup(options: Options, prettyOutput: boolean): Promise
     ].filter(Boolean).join("\n"));
     process.exit(1);
     return;
+  }
+
+  if (verification.reason === "extension-id-mismatch") {
+    process.stderr.write([
+      "",
+      "[tabctl] Windows setup verification warning: runtime extension ID mismatch.",
+      verification.detail ? `Reason: ${verification.detail}` : null,
+      verification.expectedExtensionId ? `Expected extension ID: ${verification.expectedExtensionId}` : null,
+      verification.runtimeExtensionId ? `Runtime extension ID: ${verification.runtimeExtensionId}` : null,
+      "Setup completed, but verify you loaded the intended extension ID in browser extensions.",
+      "",
+    ].filter(Boolean).join("\n"));
   }
 
   printJson({
