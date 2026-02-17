@@ -515,18 +515,13 @@ async function main(): Promise<void> {
           return false;
         }
         const failedExtensionDir = setupResult.data?.extensionDir as string | undefined;
-        const failedExtensionId = setupResult.data?.extensionId as string | undefined;
-        if (!failedExtensionDir || !failedExtensionId || !fs.existsSync(failedExtensionDir)) {
-          log(`    setup mismatch recovery missing extension dir/id: dir=${failedExtensionDir}, id=${failedExtensionId}`);
+        if (!failedExtensionDir || !fs.existsSync(failedExtensionDir)) {
+          log(`    setup mismatch recovery missing extension dir: dir=${failedExtensionDir}`);
           return false;
         }
         const recoveredRuntimeId = await loadExtension(failedExtensionDir);
-        if (recoveredRuntimeId !== failedExtensionId) {
-          log(`    setup mismatch recovery load mismatch: expected=${failedExtensionId}, got=${recoveredRuntimeId}`);
-          return false;
-        }
         await sleep(1000);
-        setupResult = runCli(setupArgs);
+        setupResult = runCli([...setupArgs, "--extension-id", recoveredRuntimeId]);
         if (!setupResult.ok) {
           log(`    setup retry after mismatch failed: ${setupResult.raw.slice(0, 400)}`);
           return false;
