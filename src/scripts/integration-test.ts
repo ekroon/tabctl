@@ -498,16 +498,39 @@ async function main(): Promise<void> {
         return true;
       }
       const profileName = `setup-parity-${Date.now()}`;
-      const setupResult = runCli([
+      const setupArgs = [
         "setup",
         "--browser", "chrome",
         "--name", profileName,
         "--node", process.execPath,
         "--json",
-      ]);
+      ];
+      let setupResult = runCli(setupArgs);
       if (!setupResult.ok) {
-        log(`    setup failed: ${setupResult.raw.slice(0, 400)}`);
-        return false;
+        const failedVerification = setupResult.data?.verification as {
+          reason?: string;
+        } | undefined;
+        if (failedVerification?.reason !== "extension-id-mismatch") {
+          log(`    setup failed: ${setupResult.raw.slice(0, 400)}`);
+          return false;
+        }
+        const failedExtensionDir = setupResult.data?.extensionDir as string | undefined;
+        const failedExtensionId = setupResult.data?.extensionId as string | undefined;
+        if (!failedExtensionDir || !failedExtensionId || !fs.existsSync(failedExtensionDir)) {
+          log(`    setup mismatch recovery missing extension dir/id: dir=${failedExtensionDir}, id=${failedExtensionId}`);
+          return false;
+        }
+        const recoveredRuntimeId = await loadExtension(failedExtensionDir);
+        if (recoveredRuntimeId !== failedExtensionId) {
+          log(`    setup mismatch recovery load mismatch: expected=${failedExtensionId}, got=${recoveredRuntimeId}`);
+          return false;
+        }
+        await sleep(1000);
+        setupResult = runCli(setupArgs);
+        if (!setupResult.ok) {
+          log(`    setup retry after mismatch failed: ${setupResult.raw.slice(0, 400)}`);
+          return false;
+        }
       }
 
       const setupExtensionDir = setupResult.data?.extensionDir as string | undefined;
