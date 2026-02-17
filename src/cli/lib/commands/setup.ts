@@ -13,19 +13,8 @@ import type { Options } from "../types";
 import { addProfile, validateProfileName } from "../../../shared/profiles";
 import { resetConfig } from "../../../shared/config";
 import { syncExtension, syncHost, deriveExtensionId, resolveInstalledExtensionDir } from "../../../shared/extension-sync";
-import {
-  createWslWindowsLauncher,
-  detectRuntimeEnvironment,
-  isWslEnvironment,
-  registerWslWindowsNativeHost,
-  resolveWslManifestDir,
-  resolveWslWindowsPaths,
-  windowsPathToWsl,
-  wslPathToWindows,
-  type RuntimeEnvironment,
-  type WslLauncherSource,
-  type WslWindowsPaths,
-} from "./setup-wsl";
+
+export type RuntimeEnvironment = "native-win32" | "native-linux" | "native-darwin";
 
 export function resolveBrowser(value: unknown): "edge" | "chrome" | null {
   if (typeof value !== "string") {
@@ -93,13 +82,15 @@ function resolveHostPath(dataDir: string): string {
   }
 }
 
-export { detectRuntimeEnvironment, isWslEnvironment };
-export type { RuntimeEnvironment, WslWindowsPaths };
+export function detectRuntimeEnvironment(): RuntimeEnvironment {
+  if (process.platform === "win32") return "native-win32";
+  if (process.platform === "darwin") return "native-darwin";
+  return "native-linux";
+}
 
 export function resolveManifestDir(
   browser: "edge" | "chrome",
   runtimeEnv: RuntimeEnvironment = detectRuntimeEnvironment(),
-  wslWindowsPaths?: WslWindowsPaths,
 ): string {
   const home = os.homedir();
   if (!home) {
@@ -113,9 +104,6 @@ export function resolveManifestDir(
       return path.join(base, "Microsoft", "Edge", "User Data", "NativeMessagingHosts");
     }
     return path.join(base, "Google", "Chrome", "User Data", "NativeMessagingHosts");
-  }
-  if (runtimeEnv === "wsl") {
-    return resolveWslManifestDir(browser, wslWindowsPaths);
   }
   if (runtimeEnv === "native-linux") {
     if (browser === "edge") {
@@ -135,21 +123,8 @@ export function resolveSetupWrapperPath(
   hostPath: string,
   profileName: string,
   profileDataDir: string,
-  runtimeEnv: RuntimeEnvironment,
-  wslWindowsPaths?: WslWindowsPaths,
-): { wrapperPath: string; unixWrapperPath?: string; launcherSource?: WslLauncherSource; distro?: string } {
-  const unixWrapperPath = writeWrapper(nodePath, hostPath, profileName, profileDataDir);
-  if (runtimeEnv !== "wsl") {
-    return { wrapperPath: unixWrapperPath };
-  }
-  const paths = wslWindowsPaths || resolveWslWindowsPaths();
-  const launcher = createWslWindowsLauncher(nodePath, hostPath, profileName, paths);
-  return {
-    wrapperPath: launcher.wrapperPath,
-    unixWrapperPath,
-    launcherSource: launcher.launcherSource,
-    distro: launcher.distro,
-  };
+): { wrapperPath: string } {
+  return { wrapperPath: writeWrapper(nodePath, hostPath, profileName, profileDataDir) };
 }
 
 export function writeWrapper(nodePath: string, hostPath: string, profileName: string | null, wrapperDir: string): string {
@@ -221,7 +196,6 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
 
   const nodePath = resolveNodePath(options);
   const runtimeEnv = detectRuntimeEnvironment();
-  const wslWindowsPaths = runtimeEnv === "wsl" ? resolveWslWindowsPaths() : undefined;
 
   // Sync extension + host to stable paths (before extensionId so interactive mode can show it)
   const config = resolveConfig();
@@ -269,8 +243,6 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
     hostPath,
     profileName,
     profileDataDir,
-    runtimeEnv,
-    wslWindowsPaths,
   );
   const wrapperPath = wrapperInfo.wrapperPath;
 
@@ -279,13 +251,11 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
     ? options["user-data-dir"].trim()
     : "";
   const userDataDir = rawUserDataDir
-    ? (runtimeEnv === "wsl" && /^[A-Za-z]:\\/.test(rawUserDataDir)
-      ? windowsPathToWsl(rawUserDataDir)
-      : path.resolve(rawUserDataDir))
+    ? path.resolve(rawUserDataDir)
     : "";
   const manifestDir = userDataDir
     ? path.join(userDataDir, "NativeMessagingHosts")
-    : resolveManifestDir(browser, runtimeEnv, wslWindowsPaths);
+    : resolveManifestDir(browser, runtimeEnv);
   fs.mkdirSync(manifestDir, { recursive: true });
 
   const manifestPath = path.join(manifestDir, `${HOST_NAME}.json`);
@@ -297,12 +267,6 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
     allowed_origins: [`chrome-extension://${extensionId}/`],
   };
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
-
-  let windowsManifestPath: string | null = null;
-  if (runtimeEnv === "wsl") {
-    windowsManifestPath = wslPathToWindows(manifestPath);
-    registerWslWindowsNativeHost(browser, windowsManifestPath);
-  }
 
   // Register profile
   const profileEntry: Parameters<typeof addProfile>[1] = {
@@ -333,10 +297,6 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
       nodePath,
       wrapperPath,
       runtimeEnv,
-      ...(wrapperInfo.unixWrapperPath ? { unixWrapperPath: wrapperInfo.unixWrapperPath } : {}),
-      ...(wrapperInfo.launcherSource ? { launcherSource: wrapperInfo.launcherSource } : {}),
-      ...(wrapperInfo.distro ? { wslDistro: wrapperInfo.distro } : {}),
-      ...(windowsManifestPath ? { windowsManifestPath } : {}),
       dataDir: profileDataDir,
       ...(userDataDir ? { userDataDir } : {}),
       isDefault: registry.default === profileName,
@@ -357,9 +317,7 @@ export function runSetup(options: Options, prettyOutput: boolean): void {
   const extensionsUrl = browser === "edge" ? "edge://extensions" : "chrome://extensions";
   const browserName = browser === "edge" ? "Edge" : "Chrome";
   const extensionDir = extensionSync?.extensionDir || null;
-  const extensionPathDisplay = extensionDir && runtimeEnv === "wsl"
-    ? wslPathToWindows(extensionDir)
-    : extensionDir;
+  const extensionPathDisplay = extensionDir;
   const loadSteps = extensionDir
     ? [
         `Load the extension: ${extensionsUrl} → Developer mode → Load unpacked`,

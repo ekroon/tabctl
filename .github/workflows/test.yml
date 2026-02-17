@@ -1,12 +1,6 @@
 name: Tests
 on:
   workflow_dispatch:
-    inputs:
-      wsl_setup_mode:
-        description: "Optional WSL setup mode override for wsl job (windows-npm only)"
-        required: false
-        default: "windows-npm"
-        type: string
   schedule:
     - cron: "0 6 * * *"
   push:
@@ -72,8 +66,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate WSL setup and integration
         shell: pwsh
-        env:
-          TABCTL_WSL_SETUP_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.wsl_setup_mode || 'windows-npm' }}
         run: ./scripts/ci/run-wsl-validation.ps1 -Workspace "${{ github.workspace }}"
       - name: Upload WSL CI artifacts
         if: always()

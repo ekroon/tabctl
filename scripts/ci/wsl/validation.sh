@@ -32,7 +32,7 @@ copy_artifact() {
 init_timings() {
   {
     echo "distro=${WSL_DISTRO}"
-    echo "setup_mode=${TABCTL_WSL_SETUP_MODE:-windows-npm}"
+    echo "setup_target=windows-cli"
     echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$TIMINGS_FILE"
 }
@@ -167,7 +167,7 @@ capture_diagnostics() {
 
   {
     echo "distro: ${WSL_DISTRO}"
-    echo "setup_mode: ${TABCTL_WSL_SETUP_MODE:-windows-npm}"
+    echo "setup_target: windows-cli"
     echo "uname: $(uname -a)"
     echo "os-release:"
     cat /etc/os-release
@@ -206,21 +206,19 @@ run_build_and_unit_tests() {
   fi
   cmd.exe /d /c npm install -g "tabctl-win32-x64@$win_launcher_version" --no-fund --no-audit
   npm ci
-  TABCTL_WSL_SETUP_MODE=windows-npm TABCTL_TEST_CLI_TIMEOUT_MS=5000 npm run test:unit
+  TABCTL_TEST_CLI_TIMEOUT_MS=5000 npm run test:unit
 }
 
 run_setup_validation() {
   local setup_output="/tmp/tabctl-wsl-setup.json"
   cd "$WSL_WORKSPACE"
-  if [ "${TABCTL_WSL_SETUP_MODE:-windows-npm}" = "windows-npm" ]; then
-    local win_workspace win_launcher_version
-    win_workspace="$(wslpath -m "$WSL_WORKSPACE")"
-    win_launcher_version="$(node -e 'const pkg = require("./package.json"); process.stdout.write((pkg.optionalDependencies && pkg.optionalDependencies["tabctl-win32-x64"]) || "")')"
-    if [ -n "$win_launcher_version" ]; then
-      cmd.exe /d /c npm install -g "$win_workspace" "tabctl-win32-x64@$win_launcher_version" --no-fund --no-audit
-    else
-      cmd.exe /d /c npm install -g "$win_workspace" --no-fund --no-audit
-    fi
+  local win_workspace win_launcher_version
+  win_workspace="$(wslpath -m "$WSL_WORKSPACE")"
+  win_launcher_version="$(node -e 'const pkg = require("./package.json"); process.stdout.write((pkg.optionalDependencies && pkg.optionalDependencies["tabctl-win32-x64"]) || "")')"
+  if [ -n "$win_launcher_version" ]; then
+    cmd.exe /d /c npm install -g "$win_workspace" "tabctl-win32-x64@$win_launcher_version" --no-fund --no-audit
+  else
+    cmd.exe /d /c npm install -g "$win_workspace" --no-fund --no-audit
   fi
   local extension_id
   extension_id="$(node <<'NODE'
@@ -236,12 +234,30 @@ console.log(id);
 NODE
 )"
 
-  local setup_mode setup_status
-  setup_mode="${TABCTL_WSL_SETUP_MODE:-windows-npm}"
+  local ps_runner win_ps_runner win_setup_output setup_status
+  ps_runner="/tmp/tabctl-wsl-setup.ps1"
+  win_ps_runner="$(wslpath -w "$ps_runner")"
+  win_setup_output="$(wslpath -w "$setup_output")"
+  cat > "$ps_runner" <<'POWERSHELL'
+param(
+  [Parameter(Mandatory=$true)][string]$Workspace,
+  [Parameter(Mandatory=$true)][string]$ExtensionId,
+  [Parameter(Mandatory=$true)][string]$OutputPath
+)
+$ErrorActionPreference = "Stop"
+Set-Location -LiteralPath $Workspace
+$json = & tabctl setup --browser chrome --extension-id $ExtensionId --json
+$exitCode = $LASTEXITCODE
+$json | Out-File -LiteralPath $OutputPath -Encoding utf8
+if ($exitCode -ne 0) {
+  exit $exitCode
+}
+POWERSHELL
   set +e
-  TABCTL_WSL_SETUP_MODE="$setup_mode" node dist/cli/tabctl.js setup --browser chrome --extension-id "$extension_id" --json > "$setup_output"
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$win_ps_runner" "$win_workspace" "$extension_id" "$win_setup_output"
   setup_status="$?"
   set -e
+  rm -f "$ps_runner"
   if [ "$setup_status" -ne 0 ]; then
     cat "$setup_output" >&2 || true
     return "$setup_status"
@@ -249,18 +265,21 @@ NODE
   SETUP_OUTPUT_PATH="$setup_output" node <<'NODE'
 const fs = require("node:fs");
 const outputPath = process.env.SETUP_OUTPUT_PATH;
-const output = JSON.parse(fs.readFileSync(outputPath, "utf8"));
+const output = JSON.parse(fs.readFileSync(outputPath, "utf8").replace(/^\uFEFF/, ""));
 if (!output.ok) throw new Error("setup command failed");
 const data = output.data || {};
-if (data.runtimeEnv !== "wsl") throw new Error(`expected runtimeEnv=wsl, got ${data.runtimeEnv}`);
+if (data.runtimeEnv !== "native-win32") throw new Error(`expected runtimeEnv=native-win32, got ${data.runtimeEnv}`);
 if (typeof data.wrapperPath !== "string" || !/^[A-Za-z]:\\/.test(data.wrapperPath)) {
   throw new Error(`expected Windows wrapperPath, got ${data.wrapperPath}`);
 }
-if (typeof data.windowsManifestPath !== "string" || !/^[A-Za-z]:\\/.test(data.windowsManifestPath)) {
-  throw new Error(`expected windowsManifestPath, got ${data.windowsManifestPath}`);
+if (typeof data.manifestPath !== "string" || !/^[A-Za-z]:\\/.test(data.manifestPath)) {
+  throw new Error(`expected Windows manifestPath, got ${data.manifestPath}`);
 }
-if (typeof data.unixWrapperPath !== "string" || !data.unixWrapperPath.startsWith("/")) {
-  throw new Error(`expected unixWrapperPath, got ${data.unixWrapperPath}`);
+if ("unixWrapperPath" in data) {
+  throw new Error("did not expect unixWrapperPath in setup output");
+}
+if ("windowsManifestPath" in data) {
+  throw new Error("did not expect windowsManifestPath in setup output");
 }
 console.log("WSL setup output validated");
 NODE

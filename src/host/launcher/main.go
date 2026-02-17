@@ -53,10 +53,6 @@ func main() {
 	}
 	hostPath := strings.TrimSpace(scanner.Text())
 
-	launchMode := ""
-	wslDistro := ""
-	var wslEnv []string
-
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -65,36 +61,13 @@ func main() {
 		if eq := strings.IndexByte(line, '='); eq > 0 {
 			key := strings.TrimSpace(line[:eq])
 			value := strings.TrimSpace(line[eq+1:])
-			switch key {
-			case "LAUNCH_MODE":
-				launchMode = strings.ToLower(value)
-			case "WSL_DISTRO":
-				wslDistro = value
-			default:
-				os.Setenv(key, value)
-				wslEnv = append(wslEnv, key+"="+value)
-			}
+			os.Setenv(key, value)
 		}
 	}
 	f.Close()
 
 	// Proxy stdin/stdout via pipes to preserve binary mode.
-	var cmd *exec.Cmd
-	if launchMode == "wsl" {
-		args := []string{}
-		if wslDistro != "" {
-			args = append(args, "-d", wslDistro)
-		}
-		args = append(args, "--")
-		if len(wslEnv) > 0 {
-			args = append(args, "env")
-			args = append(args, wslEnv...)
-		}
-		args = append(args, nodePath, hostPath)
-		cmd = exec.Command("wsl.exe", args...)
-	} else {
-		cmd = exec.Command(nodePath, hostPath)
-	}
+	cmd := exec.Command(nodePath, hostPath)
 	cmd.Stderr = os.Stderr
 
 	nodeIn, err := cmd.StdinPipe()

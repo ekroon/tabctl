@@ -1,7 +1,6 @@
 param(
   [string]$Workspace = $env:GITHUB_WORKSPACE,
-  [switch]$AllowIntegrationSkip,
-  [string]$WslSetupMode = $env:TABCTL_WSL_SETUP_MODE
+  [switch]$AllowIntegrationSkip
 )
 
 $ErrorActionPreference = "Stop"
@@ -68,13 +67,12 @@ if (-not $wslWorkspace) {
 Write-Host "WSL workspace path: $wslWorkspace"
 
 $allowSkip = if ($AllowIntegrationSkip.IsPresent) { "1" } else { "0" }
-$setupMode = if ($WslSetupMode) { $WslSetupMode.Trim() } else { "" }
 $windowsScriptPath = Join-Path $Workspace "scripts/ci/wsl/validation.sh"
 $scriptText = [System.IO.File]::ReadAllText($windowsScriptPath)
 $scriptText = $scriptText -replace "`r`n", "`n"
 [System.IO.File]::WriteAllText($windowsScriptPath, $scriptText, [System.Text.UTF8Encoding]::new($false))
 $wslScriptPath = "$wslWorkspace/scripts/ci/wsl/validation.sh"
-wsl -d $distro -- env WSL_WORKSPACE="$wslWorkspace" WSL_DISTRO="$distro" TABCTL_WSL_ALLOW_SKIP="$allowSkip" TABCTL_WSL_SETUP_MODE="$setupMode" bash "$wslScriptPath"
+wsl -d $distro -- env WSL_WORKSPACE="$wslWorkspace" WSL_DISTRO="$distro" TABCTL_WSL_ALLOW_SKIP="$allowSkip" bash "$wslScriptPath"
 $status = $LASTEXITCODE
 
 $diagPath = Join-Path $Workspace "wsl-diagnostics.txt"

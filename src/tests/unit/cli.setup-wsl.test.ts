@@ -3,9 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { detectRuntimeEnvironment, isWslEnvironment, resolveManifestDir, resolveSetupWrapperPath, type WslWindowsPaths } from "../../cli/lib/commands/setup";
+import { detectRuntimeEnvironment, resolveManifestDir, resolveSetupWrapperPath } from "../../cli/lib/commands/setup";
 
-test("detectRuntimeEnvironment treats linux with WSL markers as wsl", () => {
+test("detectRuntimeEnvironment treats linux with WSL markers as native-linux", () => {
   if (process.platform !== "linux") return;
 
   const prevInterop = process.env.WSL_INTEROP;
@@ -13,8 +13,7 @@ test("detectRuntimeEnvironment treats linux with WSL markers as wsl", () => {
   process.env.WSL_INTEROP = "/tmp/wsl-interop";
   process.env.WSL_DISTRO_NAME = "Ubuntu";
   try {
-    assert.equal(isWslEnvironment(), true);
-    assert.equal(detectRuntimeEnvironment(), "wsl");
+    assert.equal(detectRuntimeEnvironment(), "native-linux");
   } finally {
     if (prevInterop === undefined) delete process.env.WSL_INTEROP;
     else process.env.WSL_INTEROP = prevInterop;
@@ -23,32 +22,17 @@ test("detectRuntimeEnvironment treats linux with WSL markers as wsl", () => {
   }
 });
 
-test("resolveManifestDir supports explicit wsl Windows appdata paths", () => {
-  const wslPaths: WslWindowsPaths = {
-    windowsLocalAppData: "C:\\Users\\alice\\AppData\\Local",
-    unixLocalAppData: "/mnt/c/Users/alice/AppData/Local",
-  };
-  const expectedChrome = path.join(
-    wslPaths.unixLocalAppData,
-    "Google",
-    "Chrome",
-    "User Data",
-    "NativeMessagingHosts",
-  );
-  const expectedEdge = path.join(
-    wslPaths.unixLocalAppData,
-    "Microsoft",
-    "Edge",
-    "User Data",
-    "NativeMessagingHosts",
-  );
+test("resolveManifestDir resolves native Linux paths", () => {
+  const home = os.homedir();
+  const expectedChrome = path.join(home, ".config", "google-chrome", "NativeMessagingHosts");
+  const expectedEdge = path.join(home, ".config", "microsoft-edge", "NativeMessagingHosts");
 
   assert.equal(
-    resolveManifestDir("chrome", "wsl", wslPaths),
+    resolveManifestDir("chrome", "native-linux"),
     expectedChrome,
   );
   assert.equal(
-    resolveManifestDir("edge", "wsl", wslPaths),
+    resolveManifestDir("edge", "native-linux"),
     expectedEdge,
   );
 });
@@ -63,11 +47,9 @@ test("resolveSetupWrapperPath keeps unix wrapper for native linux runtime", () =
       path.join(tmpDir, "host.bundle.js"),
       "edge",
       tmpDir,
-      "native-linux",
     );
 
     assert.ok(result.wrapperPath.endsWith(".sh"));
-    assert.equal(result.unixWrapperPath, undefined);
     assert.ok(fs.existsSync(result.wrapperPath));
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });

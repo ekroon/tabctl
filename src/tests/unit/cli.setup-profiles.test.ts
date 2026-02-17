@@ -5,16 +5,6 @@ import path from "node:path";
 import test from "node:test";
 import { runCli, runCliWithStdin, parseOutput } from "./cli-helpers";
 
-function isLikelyWsl(): boolean {
-  return process.platform === "linux" && Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
-}
-
-function windowsPathToWslPath(value: string): string {
-  const match = value.match(/^([A-Za-z]):\\(.*)$/);
-  if (!match) return value;
-  return `/mnt/${match[1].toLowerCase()}/${match[2].replace(/\\/g, "/")}`;
-}
-
 test("setup writes native host manifest", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-"));
   const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -36,23 +26,16 @@ test("setup writes native host manifest", async () => {
   assert.equal(output.data.profileName, "edge");
 
   const isWin = process.platform === "win32";
-  const isWsl = isLikelyWsl();
   const wrapperPath = output.data.wrapperPath as string;
-  const wrapperFsPath = isWsl ? windowsPathToWslPath(wrapperPath) : wrapperPath;
   const profileDir = path.join(homeDir, ".local", "state", "tabctl", "profiles", "edge");
-  if (!isWsl) {
-    assert.ok(wrapperPath.startsWith(profileDir), "wrapper should be under profile dir");
-  } else {
-    assert.equal(typeof output.data.unixWrapperPath, "string");
-    assert.ok((output.data.unixWrapperPath as string).startsWith(profileDir), "unix wrapper should be under profile dir");
-  }
-  if (isWin || isWsl) {
+  assert.ok(wrapperPath.startsWith(profileDir), "wrapper should be under profile dir");
+  if (isWin) {
     // .exe when platform package is available, .cmd fallback otherwise
     assert.ok(wrapperPath.endsWith(".exe") || wrapperPath.endsWith(".cmd"), "Windows wrapper should be .exe or .cmd");
   } else {
     assert.ok(wrapperPath.endsWith(".sh"), "Unix wrapper should be .sh");
   }
-  assert.ok(fs.existsSync(wrapperFsPath));
+  assert.ok(fs.existsSync(wrapperPath));
 
   // Manifest path depends on platform; just verify the file exists
   const manifestPath = output.data.manifestPath as string;
@@ -67,17 +50,14 @@ test("setup writes native host manifest", async () => {
   const hostPath = path.join(homeDir, ".local", "state", "tabctl", "host.bundle.js");
   if (wrapperPath.endsWith(".exe")) {
     // .exe uses a .cfg file, not embedded paths
-    const cfgPath = path.join(path.dirname(wrapperFsPath), "host-launcher.cfg");
+    const cfgPath = path.join(path.dirname(wrapperPath), "host-launcher.cfg");
     assert.ok(fs.existsSync(cfgPath), "cfg file should exist for .exe wrapper");
     const cfg = fs.readFileSync(cfgPath, "utf8");
     assert.ok(cfg.includes(nodePath));
     assert.ok(cfg.includes(hostPath));
-    if (isWsl) {
-      assert.ok(cfg.includes("LAUNCH_MODE=wsl"));
-    }
     assert.ok(cfg.includes("TABCTL_PROFILE=edge"));
   } else {
-    const wrapper = fs.readFileSync(wrapperFsPath, "utf8");
+    const wrapper = fs.readFileSync(wrapperPath, "utf8");
     assert.ok(wrapper.includes(nodePath));
     assert.ok(wrapper.includes(hostPath));
     if (isWin) {
@@ -117,22 +97,15 @@ test("setup writes native host manifest for chrome", async () => {
   assert.equal(output.data.profileName, "chrome");
 
   const isWin = process.platform === "win32";
-  const isWsl = isLikelyWsl();
   const wrapperPath = output.data.wrapperPath as string;
-  const wrapperFsPath = isWsl ? windowsPathToWslPath(wrapperPath) : wrapperPath;
   const profileDir = path.join(homeDir, ".local", "state", "tabctl", "profiles", "chrome");
-  if (!isWsl) {
-    assert.ok(wrapperPath.startsWith(profileDir), "wrapper should be under profile dir");
-  } else {
-    assert.equal(typeof output.data.unixWrapperPath, "string");
-    assert.ok((output.data.unixWrapperPath as string).startsWith(profileDir), "unix wrapper should be under profile dir");
-  }
-  if (isWin || isWsl) {
+  assert.ok(wrapperPath.startsWith(profileDir), "wrapper should be under profile dir");
+  if (isWin) {
     assert.ok(wrapperPath.endsWith(".exe") || wrapperPath.endsWith(".cmd"), "Windows wrapper should be .exe or .cmd");
   } else {
     assert.ok(wrapperPath.endsWith(".sh"), "Unix wrapper should be .sh");
   }
-  assert.ok(fs.existsSync(wrapperFsPath));
+  assert.ok(fs.existsSync(wrapperPath));
 
   // Manifest path depends on platform; just verify the file exists
   const manifestPath = output.data.manifestPath as string;
@@ -146,17 +119,14 @@ test("setup writes native host manifest for chrome", async () => {
 
   const hostPath = path.join(homeDir, ".local", "state", "tabctl", "host.bundle.js");
   if (wrapperPath.endsWith(".exe")) {
-    const cfgPath = path.join(path.dirname(wrapperFsPath), "host-launcher.cfg");
+    const cfgPath = path.join(path.dirname(wrapperPath), "host-launcher.cfg");
     assert.ok(fs.existsSync(cfgPath), "cfg file should exist for .exe wrapper");
     const cfg = fs.readFileSync(cfgPath, "utf8");
     assert.ok(cfg.includes(nodePath));
     assert.ok(cfg.includes(hostPath));
-    if (isWsl) {
-      assert.ok(cfg.includes("LAUNCH_MODE=wsl"));
-    }
     assert.ok(cfg.includes("TABCTL_PROFILE=chrome"));
   } else {
-    const wrapper = fs.readFileSync(wrapperFsPath, "utf8");
+    const wrapper = fs.readFileSync(wrapperPath, "utf8");
     assert.ok(wrapper.includes(nodePath));
     assert.ok(wrapper.includes(hostPath));
     if (isWin) {
