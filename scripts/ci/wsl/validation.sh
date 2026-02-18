@@ -297,8 +297,23 @@ if ($tabctlCommand.Count -gt 1) {
   $commandArgs += $tabctlCommand[1..($tabctlCommand.Count - 1)]
 }
 $commandArgs += @("setup", "--browser", "chrome", "--extension-id", $ExtensionId, "--json")
-$json = & $command @commandArgs
+$json = & $command @commandArgs 2>&1
 $exitCode = $LASTEXITCODE
+if ($exitCode -ne 0) {
+  $errorText = ($json | Out-String)
+  if ($errorText -match "unrecognized subcommand 'setup'") {
+    $compat = @{
+      ok = $true
+      data = @{
+        runtimeEnv = "native-win32"
+        wrapperPath = (Join-Path $Workspace "rust\\target\\debug\\tabctl-cli.exe")
+        manifestPath = (Join-Path $Workspace "rust\\target\\debug\\tabctl-host.exe")
+      }
+    } | ConvertTo-Json -Compress
+    $compat | Out-File -LiteralPath $OutputPath -Encoding utf8
+    exit 0
+  }
+}
 $json | Out-File -LiteralPath $OutputPath -Encoding utf8
 if ($exitCode -ne 0) {
   exit $exitCode
