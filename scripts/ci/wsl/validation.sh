@@ -20,6 +20,7 @@ rm -f /tmp/tabctl-wsl-diagnostics.txt \
   /tmp/tabctl-wsl-execution-marker.txt \
   /tmp/tabctl-wsl-integration.ps1 \
   /tmp/tabctl-wsl-invocation.ps1 \
+  /tmp/tabctl-wsl-build.ps1 \
   "$TIMINGS_FILE"
 
 copy_artifact() {
@@ -195,9 +196,31 @@ capture_diagnostics() {
 }
 
 run_build_and_unit_tests() {
-  local win_workspace
+  local ps_runner win_ps_runner win_workspace ps_status
+  ps_runner="/tmp/tabctl-wsl-build.ps1"
+  win_ps_runner="$(wslpath -w "$ps_runner")"
   win_workspace="$(wslpath -w "$WSL_WORKSPACE")"
-  cmd.exe /d /s /c "cd /d \"$win_workspace\" && npm ci && npm run build"
+  cat > "$ps_runner" <<'POWERSHELL'
+param(
+  [Parameter(Mandatory=$true)][string]$Workspace
+)
+$ErrorActionPreference = "Stop"
+Set-Location -LiteralPath $Workspace
+& npm ci
+if ($LASTEXITCODE -ne 0) {
+  exit $LASTEXITCODE
+}
+& npm run build
+if ($LASTEXITCODE -ne 0) {
+  exit $LASTEXITCODE
+}
+POWERSHELL
+  set +e
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$win_ps_runner" "$win_workspace"
+  ps_status="$?"
+  set -e
+  rm -f "$ps_runner"
+  return "$ps_status"
 }
 
 run_setup_validation() {
