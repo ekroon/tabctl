@@ -157,12 +157,13 @@ fn build_cli() -> Command {
 }
 
 fn run_extension_fetch(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
-    let payload = fetch_extension_asset(
+    let source = resolve_extension_release_source(
         sub.get_one::<String>("version").map(|v| v.as_str()),
         sub.get_one::<String>("repo").map(|v| v.as_str()),
         sub.get_one::<String>("asset").map(|v| v.as_str()),
         sub.get_one::<String>("out").map(PathBuf::from),
     )?;
+    let payload = download_extension_asset(&source)?;
     if matches.get_flag("json") {
         if !matches.get_flag("no-pretty") {
             println!(
@@ -181,12 +182,12 @@ fn run_extension_fetch(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), Str
     Ok(())
 }
 
-fn fetch_extension_asset(
+fn resolve_extension_release_source(
     version_input: Option<&str>,
     repo_input: Option<&str>,
     asset_input: Option<&str>,
     output_path_input: Option<PathBuf>,
-) -> Result<Value, String> {
+) -> Result<ExtensionReleaseSource, String> {
     let version_input = version_input.unwrap_or(env!("CARGO_PKG_VERSION"));
     let tag = if version_input.starts_with('v') {
         version_input.to_string()
@@ -204,29 +205,38 @@ fn fetch_extension_asset(
             .join(version)
             .join(asset)
     };
-    if let Some(parent) = output_path.parent() {
+    let url = format!("https://github.com/{repo}/releases/download/{tag}/{asset}");
+    Ok(ExtensionReleaseSource {
+        repo: repo.to_string(),
+        tag,
+        asset: asset.to_string(),
+        path: output_path,
+        url,
+    })
+}
+
+fn download_extension_asset(source: &ExtensionReleaseSource) -> Result<Value, String> {
+    if let Some(parent) = source.path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create output directory: {e}"))?;
     }
-    let url = format!("https://github.com/{repo}/releases/download/{tag}/{asset}");
     let status = ProcessCommand::new("curl")
         .arg("--fail")
         .arg("--location")
         .arg("--silent")
         .arg("--show-error")
         .arg("--output")
-        .arg(&output_path)
-        .arg(&url)
+        .arg(&source.path)
+        .arg(&source.url)
         .status()
         .map_err(|e| format!("Failed to execute curl: {e}"))?;
     if !status.success() {
-        return Err(format!("Failed to download extension asset from {url}"));
+        return Err(format!(
+            "Failed to download extension asset from {}",
+            source.url
+        ));
     }
-    Ok(json!({
-        "url": url,
-        "path": output_path.display().to_string(),
-        "version": version
-    }))
+    Ok(source.to_json())
 }
 
 fn command_setup() -> Command {
@@ -242,6 +252,26 @@ fn command_setup() -> Command {
                 .long("skip-extension-download")
                 .action(ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new("release-repo")
+                .long("release-repo")
+                .value_name("owner/repo"),
+        )
+        .arg(
+            Arg::new("release-tag")
+                .long("release-tag")
+                .value_name("tag|version"),
+        )
+        .arg(
+            Arg::new("release-version")
+                .long("release-version")
+                .value_name("version"),
+        )
+        .arg(
+            Arg::new("release-asset")
+                .long("release-asset")
+                .value_name("name"),
+        )
 }
 
 fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
@@ -252,11 +282,35 @@ fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
     if browser != "edge" && browser != "chrome" {
         return Err("Missing or invalid --browser (edge|chrome)".to_string());
     }
-    let extension_asset = if sub.get_flag("skip-extension-download") {
-        json!({ "downloaded": false, "reason": "skipped" })
+    let release_source = resolve_setup_release_source(sub)?;
+    let mut setup_warnings = Vec::new();
+    let extension_asset = if should_skip_extension_download(sub) {
+        json!({
+            "downloaded": false,
+            "reason": "skipped",
+            "source": release_source.to_json()
+        })
     } else {
-        let payload = fetch_extension_asset(None, None, None, None)?;
-        json!({ "downloaded": true, "asset": payload })
+        match download_extension_asset(&release_source) {
+            Ok(payload) => json!({ "downloaded": true, "asset": payload }),
+            Err(error_message) => {
+                let warning = json!({
+                    "code": "extension_download_failed",
+                    "message": error_message,
+                    "url": release_source.url.clone(),
+                });
+                setup_warnings.push(warning.clone());
+                json!({
+                    "downloaded": false,
+                    "reason": "download-failed",
+                    "source": release_source.to_json(),
+                    "fallback": {
+                        "path": release_source.path.display().to_string()
+                    },
+                    "warning": warning
+                })
+            }
+        }
     };
     let data_dir = resolve_data_dir(None)?;
     let runtime_env = if cfg!(windows) {
@@ -276,7 +330,8 @@ fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
             "dataDir": data_dir,
             "wrapperPath": data_dir,
             "manifestPath": data_dir,
-            "extensionReleaseAsset": extension_asset
+            "extensionReleaseAsset": extension_asset,
+            "warnings": setup_warnings
         }
     });
     if matches.get_flag("json") {
@@ -298,6 +353,60 @@ fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct ExtensionReleaseSource {
+    repo: String,
+    tag: String,
+    asset: String,
+    path: PathBuf,
+    url: String,
+}
+
+impl ExtensionReleaseSource {
+    fn to_json(&self) -> Value {
+        json!({
+            "repo": self.repo,
+            "tag": self.tag,
+            "asset": self.asset,
+            "url": self.url,
+            "path": self.path.display().to_string(),
+            "version": self.tag.trim_start_matches('v'),
+        })
+    }
+}
+
+fn resolve_setup_release_source(sub: &ArgMatches) -> Result<ExtensionReleaseSource, String> {
+    let tag_override = sub
+        .get_one::<String>("release-tag")
+        .cloned()
+        .or_else(|| sub.get_one::<String>("release-version").cloned())
+        .or_else(|| std::env::var("TABCTL_RELEASE_TAG").ok());
+    resolve_extension_release_source(
+        tag_override.as_deref(),
+        resolve_setup_release_override(sub, "release-repo", "TABCTL_RELEASE_REPO").as_deref(),
+        resolve_setup_release_override(sub, "release-asset", "TABCTL_RELEASE_ASSET").as_deref(),
+        None,
+    )
+}
+
+fn resolve_setup_release_override(
+    sub: &ArgMatches,
+    cli_key: &str,
+    env_key: &str,
+) -> Option<String> {
+    sub.get_one::<String>(cli_key)
+        .cloned()
+        .or_else(|| std::env::var(env_key).ok())
+}
+
+fn should_skip_extension_download(sub: &ArgMatches) -> bool {
+    sub.get_flag("skip-extension-download")
+        || std::env::var("TABCTL_SETUP_FETCH_EXTENSION")
+            .ok()
+            .as_deref()
+            == Some("0")
 }
 
 fn command_with_scope(name: &'static str) -> Command {
@@ -972,18 +1081,14 @@ fn render_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_os = "linux")]
     use std::ffi::OsString;
-    #[cfg(target_os = "linux")]
     use std::sync::{Mutex, OnceLock};
 
-    #[cfg(target_os = "linux")]
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
-    #[cfg(target_os = "linux")]
     fn with_env_vars<F>(vars: &[(&str, Option<&str>)], run: F)
     where
         F: FnOnce(),
@@ -1120,6 +1225,156 @@ mod tests {
             Some("edge")
         );
         assert!(sub.get_flag("skip-extension-download"));
+    }
+
+    #[test]
+    fn parses_setup_release_override_flags() {
+        with_env_vars(
+            &[
+                ("TABCTL_RELEASE_REPO", None),
+                ("TABCTL_RELEASE_TAG", None),
+                ("TABCTL_RELEASE_ASSET", None),
+            ],
+            || {
+                let matches = build_cli()
+                    .try_get_matches_from([
+                        "tabctl",
+                        "setup",
+                        "--browser",
+                        "edge",
+                        "--release-repo",
+                        "octo/tabctl",
+                        "--release-version",
+                        "v1.2.3",
+                        "--release-asset",
+                        "custom.zip",
+                    ])
+                    .expect("parse command");
+                let (_, sub) = matches.subcommand().expect("subcommand");
+                let source =
+                    resolve_setup_release_source(sub).expect("resolve setup release source");
+                assert_eq!(source.repo, "octo/tabctl");
+                assert_eq!(source.tag, "v1.2.3");
+                assert_eq!(source.asset, "custom.zip");
+            },
+        );
+    }
+
+    #[test]
+    fn setup_release_overrides_use_env_defaults() {
+        with_env_vars(
+            &[
+                ("TABCTL_RELEASE_REPO", Some("env/tabctl")),
+                ("TABCTL_RELEASE_TAG", Some("2.0.0")),
+                ("TABCTL_RELEASE_ASSET", Some("env-extension.zip")),
+            ],
+            || {
+                let matches = build_cli()
+                    .try_get_matches_from(["tabctl", "setup", "--browser", "edge"])
+                    .expect("parse command");
+                let (_, sub) = matches.subcommand().expect("subcommand");
+                let source =
+                    resolve_setup_release_source(sub).expect("resolve setup release source");
+                assert_eq!(source.repo, "env/tabctl");
+                assert_eq!(source.tag, "v2.0.0");
+                assert_eq!(source.asset, "env-extension.zip");
+            },
+        );
+    }
+
+    #[test]
+    fn setup_release_cli_overrides_env() {
+        with_env_vars(
+            &[
+                ("TABCTL_RELEASE_REPO", Some("env/tabctl")),
+                ("TABCTL_RELEASE_TAG", Some("2.0.0")),
+                ("TABCTL_RELEASE_ASSET", Some("env-extension.zip")),
+            ],
+            || {
+                let matches = build_cli()
+                    .try_get_matches_from([
+                        "tabctl",
+                        "setup",
+                        "--browser",
+                        "edge",
+                        "--release-repo",
+                        "cli/tabctl",
+                        "--release-tag",
+                        "3.0.1",
+                        "--release-asset",
+                        "cli-extension.zip",
+                    ])
+                    .expect("parse command");
+                let (_, sub) = matches.subcommand().expect("subcommand");
+                let source =
+                    resolve_setup_release_source(sub).expect("resolve setup release source");
+                assert_eq!(source.repo, "cli/tabctl");
+                assert_eq!(source.tag, "v3.0.1");
+                assert_eq!(source.asset, "cli-extension.zip");
+            },
+        );
+    }
+
+    #[test]
+    fn setup_release_version_flag_overrides_env_tag() {
+        with_env_vars(&[("TABCTL_RELEASE_TAG", Some("2.0.0"))], || {
+            let matches = build_cli()
+                .try_get_matches_from([
+                    "tabctl",
+                    "setup",
+                    "--browser",
+                    "edge",
+                    "--release-version",
+                    "4.1.0",
+                ])
+                .expect("parse command");
+            let (_, sub) = matches.subcommand().expect("subcommand");
+            let source = resolve_setup_release_source(sub).expect("resolve setup release source");
+            assert_eq!(source.tag, "v4.1.0");
+        });
+    }
+
+    #[test]
+    fn setup_release_tag_takes_priority_over_release_version() {
+        with_env_vars(&[("TABCTL_RELEASE_TAG", None)], || {
+            let matches = build_cli()
+                .try_get_matches_from([
+                    "tabctl",
+                    "setup",
+                    "--browser",
+                    "edge",
+                    "--release-tag",
+                    "v5.0.0",
+                    "--release-version",
+                    "4.9.9",
+                ])
+                .expect("parse command");
+            let (_, sub) = matches.subcommand().expect("subcommand");
+            let source = resolve_setup_release_source(sub).expect("resolve setup release source");
+            assert_eq!(source.tag, "v5.0.0");
+        });
+    }
+
+    #[test]
+    fn setup_skip_extension_download_uses_env_toggle() {
+        with_env_vars(&[("TABCTL_SETUP_FETCH_EXTENSION", Some("0"))], || {
+            let matches = build_cli()
+                .try_get_matches_from(["tabctl", "setup", "--browser", "edge"])
+                .expect("parse command");
+            let (_, sub) = matches.subcommand().expect("subcommand");
+            assert!(should_skip_extension_download(sub));
+        });
+    }
+
+    #[test]
+    fn setup_skip_extension_download_only_uses_zero_env_toggle() {
+        with_env_vars(&[("TABCTL_SETUP_FETCH_EXTENSION", Some("1"))], || {
+            let matches = build_cli()
+                .try_get_matches_from(["tabctl", "setup", "--browser", "edge"])
+                .expect("parse command");
+            let (_, sub) = matches.subcommand().expect("subcommand");
+            assert!(!should_skip_extension_download(sub));
+        });
     }
 
     #[cfg(target_os = "linux")]

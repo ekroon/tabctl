@@ -89,6 +89,11 @@ This will:
 4. Auto-derive the extension ID from the installed path
 5. Download the version-pinned release extension asset (`tabctl-extension.zip` + `.sha256`) into the tabctl data directory for offline/manual recovery
 
+Optional setup release overrides:
+- Flags: `--release-repo`, `--release-tag` (or `--release-version`), `--release-asset`, `--skip-extension-download`
+- Env vars: `TABCTL_RELEASE_REPO`, `TABCTL_RELEASE_TAG`, `TABCTL_RELEASE_ASSET`, `TABCTL_SETUP_FETCH_EXTENSION=0`
+- Precedence: flags override env vars, then built-in defaults; if download fails, setup continues and includes warning details in setup output.
+
 > **Edge?** Use `--browser edge` and load from `edge://extensions` instead.
 >
 > **Windows:** setup verifies connectivity after writing setup artifacts and checks the runtime extension ID reported by the browser. Connectivity failures and runtime extension ID mismatches exit non-zero and print manual recovery steps (including expected vs runtime IDs).

@@ -333,9 +333,15 @@ Options:
 - `--extension-id <id>` (optional; auto-derived from installed extension path, or `TABCTL_EXTENSION_ID`)
 - `--node <path>` (optional; or `TABCTL_NODE`)
 - `--name <name>` (optional; defaults to browser name)
+- `--release-repo <owner/repo>` (optional; or `TABCTL_RELEASE_REPO`)
+- `--release-tag <tag>` / `--release-version <version>` (optional; or `TABCTL_RELEASE_TAG`)
+- `--release-asset <name>` (optional; or `TABCTL_RELEASE_ASSET`)
+- `--skip-extension-download` (optional; or `TABCTL_SETUP_FETCH_EXTENSION=0`)
 - `--dev` (coming soon; dev/CI mode via CDP)
 
 Each run creates or updates a profile in `profiles.json`. The first profile registered becomes the default.
+Release override precedence: CLI flags take precedence over environment variables, then built-in defaults.
+If extension release download fails, setup continues and reports `extension_download_failed` in `data.warnings` with fallback path details.
 
 On Windows, setup verifies host connectivity by default after writing setup artifacts and compares the browser-reported runtime extension ID with the expected ID. Connectivity failures and runtime extension ID mismatches exit non-zero with manual recovery steps (including expected vs runtime IDs).
 
@@ -508,8 +514,12 @@ Notes:
 | `TABCTL_EXTENSION_ID` | Extension ID for `setup` command |
 | `TABCTL_NODE` | Node binary path for `setup` command |
 | `TABCTL_PROFILE` | Override active profile (same as `--profile` flag) |
+| `TABCTL_RELEASE_ASSET` | Override setup release asset filename |
+| `TABCTL_RELEASE_REPO` | Override setup release repository (`owner/repo`) |
+| `TABCTL_RELEASE_TAG` | Override setup release tag/version |
 | `TABCTL_SOCKET` | Override socket endpoint (`unix://`, `pipe://`, `tcp://`) |
 | `TABCTL_STATE_DIR` | Override state directory fallback (`$XDG_STATE_HOME/tabctl`) |
+| `TABCTL_SETUP_FETCH_EXTENSION` | Set to `0` to skip setup extension release download |
 | `TABCTL_TCP_PORT` | Force localhost TCP endpoint (WSL/Linux clients) |
 | `TABCTL_VERSION_MODE` | `release` or `dev` for version output |
 
