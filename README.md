@@ -90,7 +90,7 @@ This will:
 
 > **Edge?** Use `--browser edge` and load from `edge://extensions` instead.
 >
-> **Windows:** setup verifies connectivity after writing setup artifacts and checks that the runtime extension ID reported by the browser matches the expected ID. If verification fails, setup exits non-zero and prints manual recovery steps (load extension, confirm extension ID, rerun setup with explicit ID if needed, then `tabctl ping`).
+> **Windows:** setup verifies connectivity after writing setup artifacts and checks the runtime extension ID reported by the browser. Connectivity failures still exit non-zero with manual recovery steps; runtime extension ID mismatches now complete setup with a warning that prints both IDs.
 
 If you need to override the auto-derived ID (e.g. for a custom extension path):
 

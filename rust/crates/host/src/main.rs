@@ -1222,4 +1222,47 @@ mod tests {
             .and_then(|e| e.hint.as_deref())
             .is_some());
     }
+
+    #[test]
+    fn ping_response_preserves_runtime_extension_id() {
+        let mut state = HostState::new(temp_undo_path());
+        let effects = state.handle_cli_request(
+            5,
+            RequestEnvelope {
+                id: Some("req-ping".to_string()),
+                action: "ping".to_string(),
+                params: Value::Object(Map::new()),
+            },
+        );
+        let HostEffect::SendNative(native_req) = &effects[0] else {
+            panic!("expected ping forward");
+        };
+
+        let native_resp = NativeMessage {
+            id: native_req.id.clone(),
+            action: None,
+            ok: Some(true),
+            progress: None,
+            params: None,
+            data: Some(Value::Object(Map::from_iter([(
+                "runtimeId".to_string(),
+                Value::String("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string()),
+            )]))),
+            error: None,
+        };
+        let effects = state.handle_native_message(native_resp);
+        let HostEffect::Respond { payload, .. } = &effects[0] else {
+            panic!("expected ping response");
+        };
+        let data = payload
+            .data
+            .as_ref()
+            .and_then(|v| v.as_object())
+            .expect("response data");
+        assert_eq!(
+            data.get("runtimeId").and_then(|v| v.as_str()),
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        );
+        assert!(payload.ok);
+    }
 }
