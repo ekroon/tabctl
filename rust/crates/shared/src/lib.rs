@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::Path;
 
 pub fn workspace_marker() -> &'static str {
     "tabctl-rust-workspace"
@@ -114,6 +115,97 @@ pub struct NativeMessage {
     pub error: Option<ProtocolError>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SocketEndpoint {
+    Unix { path: String },
+    Pipe { path: String },
+    Tcp { host: String, port: u16 },
+}
+
+impl SocketEndpoint {
+    pub fn parse(input: &str) -> Result<Self, String> {
+        let value = input.trim();
+        if value.is_empty() {
+            return Err("Socket endpoint cannot be empty".to_string());
+        }
+        if let Some(rest) = value.strip_prefix("unix://") {
+            let path = if rest.starts_with('/') {
+                rest.to_string()
+            } else {
+                format!("/{rest}")
+            };
+            return if path == "/" {
+                Err("Unix socket endpoint requires a path".to_string())
+            } else {
+                Ok(Self::Unix { path })
+            };
+        }
+        if let Some(rest) = value.strip_prefix("pipe://") {
+            let normalized = if let Some(trimmed) = rest.strip_prefix('/') {
+                trimmed
+            } else {
+                rest
+            };
+            return if normalized.is_empty() {
+                Err("Pipe endpoint requires a path".to_string())
+            } else {
+                Ok(Self::Pipe {
+                    path: format!(r"\\.\pipe\{normalized}"),
+                })
+            };
+        }
+        if value.starts_with(r"\\.\pipe\") {
+            return Ok(Self::Pipe {
+                path: value.to_string(),
+            });
+        }
+        if let Some(rest) = value.strip_prefix("tcp://") {
+            return parse_tcp(rest);
+        }
+        if value.contains("://") {
+            return Err(format!("Unsupported socket endpoint scheme in \"{value}\""));
+        }
+        if Path::new(value).is_absolute() {
+            return Ok(Self::Unix {
+                path: value.to_string(),
+            });
+        }
+        Err(format!("Unsupported socket endpoint format: \"{value}\""))
+    }
+
+    pub fn as_uri(&self) -> String {
+        match self {
+            Self::Unix { path } => format!("unix://{path}"),
+            Self::Pipe { path } => {
+                let suffix = path.trim_start_matches(r"\\.\pipe\");
+                format!("pipe://{suffix}")
+            }
+            Self::Tcp { host, port } => format!("tcp://{host}:{port}"),
+        }
+    }
+}
+
+fn parse_tcp(value: &str) -> Result<SocketEndpoint, String> {
+    let Some((host, port)) = value.rsplit_once(':') else {
+        return Err("TCP endpoint must include host and port".to_string());
+    };
+    let host = host.trim();
+    if host.is_empty() {
+        return Err("TCP endpoint requires a host".to_string());
+    }
+    let port = port
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| "TCP endpoint has invalid port".to_string())?;
+    if port == 0 {
+        return Err("TCP endpoint port must be greater than zero".to_string());
+    }
+    Ok(SocketEndpoint::Tcp {
+        host: host.to_string(),
+        port,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,5 +306,70 @@ mod tests {
             message.error.as_ref().and_then(|e| e.hint.as_deref()),
             Some("Use --confirm")
         );
+    }
+
+    #[test]
+    fn parses_unix_endpoint_from_absolute_path() {
+        let endpoint = SocketEndpoint::parse("/tmp/tabctl.sock").expect("parse unix path");
+        assert_eq!(
+            endpoint,
+            SocketEndpoint::Unix {
+                path: "/tmp/tabctl.sock".to_string()
+            }
+        );
+        assert_eq!(endpoint.as_uri(), "unix:///tmp/tabctl.sock");
+    }
+
+    #[test]
+    fn parses_pipe_endpoint_forms() {
+        let endpoint = SocketEndpoint::parse(r"\\.\pipe\tabctl-test").expect("parse raw pipe");
+        assert_eq!(
+            endpoint,
+            SocketEndpoint::Pipe {
+                path: r"\\.\pipe\tabctl-test".to_string()
+            }
+        );
+        let endpoint = SocketEndpoint::parse("pipe://tabctl-test").expect("parse pipe uri");
+        assert_eq!(endpoint.as_uri(), "pipe://tabctl-test");
+    }
+
+    #[test]
+    fn parses_tcp_endpoint_form() {
+        let endpoint = SocketEndpoint::parse("tcp://127.0.0.1:8008").expect("parse tcp");
+        assert_eq!(
+            endpoint,
+            SocketEndpoint::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: 8008
+            }
+        );
+    }
+
+    #[test]
+    fn normalizes_unix_and_pipe_uri_paths() {
+        let unix = SocketEndpoint::parse("unix://tmp/tabctl.sock").expect("parse unix uri");
+        assert_eq!(
+            unix,
+            SocketEndpoint::Unix {
+                path: "/tmp/tabctl.sock".to_string()
+            }
+        );
+        let pipe = SocketEndpoint::parse("pipe:///tabctl-test").expect("parse pipe uri");
+        assert_eq!(
+            pipe,
+            SocketEndpoint::Pipe {
+                path: r"\\.\pipe\tabctl-test".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_endpoint_forms() {
+        assert!(SocketEndpoint::parse("tcp://127.0.0.1").is_err());
+        assert!(SocketEndpoint::parse("tcp://127.0.0.1:0").is_err());
+        assert!(SocketEndpoint::parse("pipe://").is_err());
+        assert!(SocketEndpoint::parse("unix://").is_err());
+        assert!(SocketEndpoint::parse("udp://127.0.0.1:8008").is_err());
+        assert!(SocketEndpoint::parse("relative.sock").is_err());
     }
 }

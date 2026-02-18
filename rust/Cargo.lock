@@ -330,6 +330,7 @@ dependencies = [
  "clap",
  "dirs",
  "serde_json",
+ "sha2",
  "tabctl-shared",
 ]
 
@@ -340,6 +341,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tabctl-shared",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

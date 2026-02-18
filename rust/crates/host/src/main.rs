@@ -1,7 +1,11 @@
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+#[cfg(windows)]
+use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
+#[cfg(windows)]
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,20 +13,43 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tabctl_shared::{
-    ClientInfo, NativeMessage, ProtocolError, RequestEnvelope, ResponseEnvelope, TabctlConfig,
-    VersionInfo,
+    ClientInfo, NativeMessage, ProtocolError, RequestEnvelope, ResponseEnvelope, SocketEndpoint,
+    TabctlConfig, VersionInfo,
 };
 
 #[cfg(windows)]
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixListener;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
+use std::os::windows::io::{FromRawHandle, RawHandle};
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE,
+};
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_FIRST_PIPE_INSTANCE;
+#[cfg(windows)]
+use windows_sys::Win32::System::Pipes::{
+    ConnectNamedPipe, CreateNamedPipeW, PIPE_ACCESS_DUPLEX, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
+    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+};
 
 const REQUEST_TIMEOUT_MS: u64 = 30_000;
 const MAX_RESPONSE_BYTES: usize = 20 * 1024 * 1024;
 const MAX_NATIVE_MESSAGE_BYTES: usize = 10 * 1024 * 1024;
 const HISTORY_LIMIT_DEFAULT: usize = 20;
 const RETENTION_DAYS: u64 = 30;
+#[cfg(windows)]
+const TCP_PORT_FILENAME: &str = "tcp-port";
+#[cfg(windows)]
+const TCP_PORT_BASE: u16 = 38_000;
+#[cfg(windows)]
+const TCP_PORT_SPAN: u16 = 1_000;
+#[cfg(windows)]
+const TCP_PORT_ATTEMPTS: u16 = 128;
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -704,11 +731,10 @@ impl HostState {
     }
 }
 
-#[cfg(unix)]
-type Clients = Arc<Mutex<HashMap<u64, Arc<Mutex<UnixStream>>>>>;
+type ClientWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+type Clients = Arc<Mutex<HashMap<u64, ClientWriter>>>;
 
-#[cfg(unix)]
-fn send_response(stream: &Arc<Mutex<UnixStream>>, payload: &ResponseEnvelope) {
+fn send_response(stream: &ClientWriter, payload: &ResponseEnvelope) {
     let Ok(serialized) = serde_json::to_string(payload) else {
         return;
     };
@@ -735,7 +761,6 @@ fn send_response(stream: &Arc<Mutex<UnixStream>>, payload: &ResponseEnvelope) {
     }
 }
 
-#[cfg(unix)]
 fn dispatch_effect(effect: HostEffect, clients: &Clients, native_out: &Arc<Mutex<io::Stdout>>) {
     match effect {
         HostEffect::SendNative(message) => {
@@ -757,7 +782,6 @@ fn dispatch_effect(effect: HostEffect, clients: &Clients, native_out: &Arc<Mutex
     }
 }
 
-#[cfg(unix)]
 fn start_native_reader(
     state: Arc<Mutex<HostState>>,
     clients: Clients,
@@ -789,24 +813,14 @@ fn start_native_reader(
     });
 }
 
-#[cfg(unix)]
 fn handle_client(
     client_id: u64,
-    stream: Arc<Mutex<UnixStream>>,
+    reader: Box<dyn Read + Send>,
     state: Arc<Mutex<HostState>>,
     clients: Clients,
     native_out: Arc<Mutex<io::Stdout>>,
 ) {
-    let reader_stream = match stream.lock() {
-        Ok(guard) => guard.try_clone().ok(),
-        Err(_) => None,
-    };
-    let Some(reader_stream) = reader_stream else {
-        let _ = clients.lock().map(|mut map| map.remove(&client_id));
-        return;
-    };
-
-    let mut reader = BufReader::new(reader_stream);
+    let mut reader = BufReader::new(reader);
     let mut line = String::new();
 
     loop {
@@ -859,7 +873,23 @@ fn handle_client(
 #[cfg(unix)]
 fn run_unix() -> io::Result<()> {
     let config = resolve_config();
-    let socket_path = PathBuf::from(&config.socket_path);
+    let endpoint = SocketEndpoint::parse(&config.socket_path)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let socket_path = match endpoint {
+        SocketEndpoint::Unix { path } => PathBuf::from(path),
+        SocketEndpoint::Pipe { .. } => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Named pipe endpoint is unsupported by the Unix host runtime",
+            ));
+        }
+        SocketEndpoint::Tcp { .. } => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "TCP endpoint is unsupported by the Unix host runtime",
+            ));
+        }
+    };
     let socket_dir = PathBuf::from(&config.data_dir);
     fs::create_dir_all(&socket_dir)?;
 
@@ -882,9 +912,16 @@ fn run_unix() -> io::Result<()> {
         match incoming {
             Ok(stream) => {
                 let client_id = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-                let stream = Arc::new(Mutex::new(stream));
+                let writer_stream = match stream.try_clone() {
+                    Ok(clone) => clone,
+                    Err(err) => {
+                        log_line(&format!("socket clone error: {err}"));
+                        continue;
+                    }
+                };
+                let writer: ClientWriter = Arc::new(Mutex::new(Box::new(writer_stream)));
                 if let Ok(mut map) = clients.lock() {
-                    map.insert(client_id, stream.clone());
+                    map.insert(client_id, writer);
                 }
                 let state_clone = state.clone();
                 let clients_clone = clients.clone();
@@ -892,7 +929,7 @@ fn run_unix() -> io::Result<()> {
                 thread::spawn(move || {
                     handle_client(
                         client_id,
-                        stream,
+                        Box::new(stream),
                         state_clone,
                         clients_clone,
                         native_out_clone,
@@ -909,17 +946,220 @@ fn run_unix() -> io::Result<()> {
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-#[cfg(not(unix))]
-fn run_unix() -> io::Result<()> {
+#[cfg(windows)]
+fn to_wide(value: &str) -> Vec<u16> {
+    std::ffi::OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+#[cfg(windows)]
+fn connect_named_pipe_instance(path: &str) -> io::Result<File> {
+    let mut open_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE;
+    loop {
+        let wide = to_wide(path);
+        let handle = unsafe {
+            CreateNamedPipeW(
+                wide.as_ptr(),
+                open_mode,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                PIPE_UNLIMITED_INSTANCES,
+                64 * 1024,
+                64 * 1024,
+                0,
+                std::ptr::null(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        let connected = unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
+        if connected == 0 {
+            let err = io::Error::last_os_error();
+            if err.raw_os_error() != Some(ERROR_PIPE_CONNECTED as i32) {
+                unsafe {
+                    CloseHandle(handle);
+                }
+                if open_mode & FILE_FLAG_FIRST_PIPE_INSTANCE != 0 {
+                    open_mode = PIPE_ACCESS_DUPLEX;
+                    continue;
+                }
+                return Err(err);
+            }
+        }
+        return Ok(unsafe { File::from_raw_handle(handle as RawHandle) });
+    }
+}
+
+#[cfg(windows)]
+fn deterministic_tcp_start_port(data_dir: &Path) -> u16 {
+    let mut hasher = Sha256::new();
+    hasher.update(data_dir.to_string_lossy().as_bytes());
+    let digest = hasher.finalize();
+    let seed = u16::from_be_bytes([digest[6], digest[7]]);
+    TCP_PORT_BASE + (seed % TCP_PORT_SPAN)
+}
+
+#[cfg(windows)]
+fn bind_tcp_listener(data_dir: &Path) -> io::Result<(TcpListener, u16)> {
+    if let Ok(port) = std::env::var("TABCTL_TCP_PORT") {
+        let parsed = port
+            .trim()
+            .parse::<u16>()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid TABCTL_TCP_PORT"))?;
+        let listener = TcpListener::bind(("127.0.0.1", parsed))?;
+        return Ok((listener, parsed));
+    }
+
+    let start = deterministic_tcp_start_port(data_dir);
+    for offset in 0..TCP_PORT_ATTEMPTS {
+        let candidate = TCP_PORT_BASE + ((start - TCP_PORT_BASE + offset) % TCP_PORT_SPAN);
+        match TcpListener::bind(("127.0.0.1", candidate)) {
+            Ok(listener) => return Ok((listener, candidate)),
+            Err(err) if err.kind() == io::ErrorKind::AddrInUse => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AddrInUse,
+        "Failed to bind localhost TCP listener",
+    ))
+}
+
+#[cfg(windows)]
+fn write_tcp_port_file(data_dir: &Path, port: u16) -> io::Result<PathBuf> {
+    let path = data_dir.join(TCP_PORT_FILENAME);
+    fs::write(&path, format!("{port}\n"))?;
+    Ok(path)
+}
+
+#[cfg(windows)]
+fn run_windows() -> io::Result<()> {
+    let config = resolve_config();
+    let endpoint = SocketEndpoint::parse(&config.socket_path)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let pipe_path = match endpoint {
+        SocketEndpoint::Pipe { path } => path,
+        SocketEndpoint::Unix { .. } => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Windows host requires a named pipe endpoint",
+            ));
+        }
+        SocketEndpoint::Tcp { .. } => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Windows host socket endpoint must be a named pipe",
+            ));
+        }
+    };
+
+    let data_dir = PathBuf::from(&config.data_dir);
+    fs::create_dir_all(&data_dir)?;
+    let (tcp_listener, tcp_port) = bind_tcp_listener(&data_dir)?;
+    let tcp_port_file = write_tcp_port_file(&data_dir, tcp_port)?;
+
+    let state = Arc::new(Mutex::new(HostState::new(PathBuf::from(config.undo_log))));
+    let clients: Clients = Arc::new(Mutex::new(HashMap::new()));
+    let native_out = Arc::new(Mutex::new(io::stdout()));
+    start_native_reader(state.clone(), clients.clone(), native_out.clone());
+
+    let tcp_state = state.clone();
+    let tcp_clients = clients.clone();
+    let tcp_native_out = native_out.clone();
+    thread::spawn(move || {
+        for incoming in tcp_listener.incoming() {
+            match incoming {
+                Ok(stream) => {
+                    let client_id = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+                    let writer_stream = match stream.try_clone() {
+                        Ok(clone) => clone,
+                        Err(err) => {
+                            log_line(&format!("tcp clone error: {err}"));
+                            continue;
+                        }
+                    };
+                    let writer: ClientWriter = Arc::new(Mutex::new(Box::new(writer_stream)));
+                    if let Ok(mut map) = tcp_clients.lock() {
+                        map.insert(client_id, writer);
+                    }
+                    let state_clone = tcp_state.clone();
+                    let clients_clone = tcp_clients.clone();
+                    let native_out_clone = tcp_native_out.clone();
+                    thread::spawn(move || {
+                        handle_client(
+                            client_id,
+                            Box::new(stream),
+                            state_clone,
+                            clients_clone,
+                            native_out_clone,
+                        )
+                    });
+                }
+                Err(err) => log_line(&format!("tcp accept error: {err}")),
+            }
+        }
+    });
+
+    log_line(&format!("listening on {pipe_path}"));
+    log_line(&format!("listening on tcp://127.0.0.1:{tcp_port}"));
+    log_line(&format!("published tcp port file {}", tcp_port_file.display()));
+
+    loop {
+        match connect_named_pipe_instance(&pipe_path) {
+            Ok(pipe) => {
+                let client_id = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+                let reader = match pipe.try_clone() {
+                    Ok(clone) => clone,
+                    Err(err) => {
+                        log_line(&format!("pipe clone error: {err}"));
+                        continue;
+                    }
+                };
+                let writer: ClientWriter = Arc::new(Mutex::new(Box::new(pipe)));
+                if let Ok(mut map) = clients.lock() {
+                    map.insert(client_id, writer);
+                }
+                let state_clone = state.clone();
+                let clients_clone = clients.clone();
+                let native_out_clone = native_out.clone();
+                thread::spawn(move || {
+                    handle_client(
+                        client_id,
+                        Box::new(reader),
+                        state_clone,
+                        clients_clone,
+                        native_out_clone,
+                    )
+                });
+            }
+            Err(err) => log_line(&format!("named pipe accept error: {err}")),
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn run_host() -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "Rust host runtime currently supports Unix sockets on this target",
+        "Rust host runtime is unsupported on this target",
     ))
+}
+
+#[cfg(unix)]
+fn run_host() -> io::Result<()> {
+    run_unix()
+}
+
+#[cfg(windows)]
+fn run_host() -> io::Result<()> {
+    run_windows()
 }
 
 fn main() {
     let _ = REQUEST_TIMEOUT_MS;
-    if let Err(err) = run_unix() {
+    if let Err(err) = run_host() {
         log_line(&format!("fatal: {err}"));
         process::exit(1);
     }
@@ -1237,23 +1477,29 @@ mod tests {
         let HostEffect::SendNative(native_req) = &effects[0] else {
             panic!("expected ping forward");
         };
+        assert_eq!(native_req.id, "req-ping");
 
         let native_resp = NativeMessage {
             id: native_req.id.clone(),
             action: None,
             ok: Some(true),
             progress: None,
-            params: None,
-            data: Some(Value::Object(Map::from_iter([(
-                "runtimeId".to_string(),
-                Value::String("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string()),
-            )]))),
+            params: Some(Value::Object(Map::new())),
+            data: Some(Value::Object(Map::from_iter([
+                (
+                    "runtimeId".to_string(),
+                    Value::String("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string()),
+                ),
+                ("version".to_string(), Value::String("1.2.3".to_string())),
+                ("component".to_string(), Value::String("extension".to_string())),
+            ]))),
             error: None,
         };
         let effects = state.handle_native_message(native_resp);
         let HostEffect::Respond { payload, .. } = &effects[0] else {
             panic!("expected ping response");
         };
+        assert_eq!(payload.request_id.as_deref(), Some("req-ping"));
         let data = payload
             .data
             .as_ref()
@@ -1263,6 +1509,42 @@ mod tests {
             data.get("runtimeId").and_then(|v| v.as_str()),
             Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
         );
+        assert_eq!(
+            data.get("extensionVersion").and_then(|v| v.as_str()),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            data.get("extensionComponent").and_then(|v| v.as_str()),
+            Some("extension")
+        );
+        assert!(data.get("hostBaseVersion").is_some());
         assert!(payload.ok);
+    }
+
+    #[test]
+    fn version_action_is_served_locally_with_host_metadata() {
+        let mut state = HostState::new(temp_undo_path());
+        let effects = state.handle_cli_request(
+            11,
+            RequestEnvelope {
+                id: Some("req-version".to_string()),
+                action: "version".to_string(),
+                params: Value::Object(Map::new()),
+            },
+        );
+        let HostEffect::Respond { payload, .. } = &effects[0] else {
+            panic!("expected local version response");
+        };
+        assert!(payload.ok);
+        assert_eq!(payload.action.as_deref(), Some("version"));
+        assert_eq!(payload.request_id.as_deref(), Some("req-version"));
+        assert_eq!(payload.component.as_deref(), Some("host"));
+        let data = payload
+            .data
+            .as_ref()
+            .and_then(|v| v.as_object())
+            .expect("version data");
+        assert_eq!(data.get("component").and_then(|v| v.as_str()), Some("host"));
+        assert!(data.get("version").is_some());
     }
 }

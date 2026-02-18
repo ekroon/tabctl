@@ -90,7 +90,7 @@ This will:
 
 > **Edge?** Use `--browser edge` and load from `edge://extensions` instead.
 >
-> **Windows:** setup verifies connectivity after writing setup artifacts and checks the runtime extension ID reported by the browser. Connectivity failures still exit non-zero with manual recovery steps; runtime extension ID mismatches now complete setup with a warning that prints both IDs.
+> **Windows:** setup verifies connectivity after writing setup artifacts and checks the runtime extension ID reported by the browser. Connectivity failures and runtime extension ID mismatches exit non-zero and print manual recovery steps (including expected vs runtime IDs).
 
 If you need to override the auto-derived ID (e.g. for a custom extension path):
 
@@ -211,6 +211,28 @@ See [CLI.md](CLI.md#configuration) for full details.
 - Socket: `<dataDir>/tabctl.sock` (default: `~/.local/state/tabctl/tabctl.sock`)
 - Undo log: `<dataDir>/undo.jsonl` (default: `~/.local/state/tabctl/undo.jsonl`)
 - Profile registry: `<configDir>/profiles.json`
+- WSL TCP port file: `<dataDir>/tcp-port` (written by the Windows host)
+
+## Windows + WSL transport
+
+On Windows, the host exposes a dual endpoint model:
+- Windows native clients use a named pipe endpoint (`\\.\pipe\tabctl-<hash>`).
+- WSL/Linux clients use `tcp://127.0.0.1:<port>`, with the host writing `<dataDir>/tcp-port`.
+
+WSL endpoint discovery (CLI):
+1. `TABCTL_SOCKET` (explicit endpoint); if this is a pipe endpoint in WSL, CLI still prefers discovered TCP.
+2. `TABCTL_TCP_PORT` (forces `127.0.0.1:<port>`).
+3. `tcp-port` file discovery from resolved data dir (and equivalent `/mnt/c/Users/*/.../tabctl/.../tcp-port` locations).
+4. Fallback: `tcp://127.0.0.1:38000`.
+
+Relevant knobs: `TABCTL_SOCKET`, `TABCTL_TCP_PORT`, `TABCTL_PROFILE`, `TABCTL_DATA_DIR`, `TABCTL_STATE_DIR`, `TABCTL_CONFIG_DIR`.
+
+## Troubleshooting (setup/ping on Windows + WSL)
+
+- `tabctl setup` fails with `Windows setup verification failed`: check `data.verification.reason` in JSON output (`ping-timeout`, `socket-not-found`, `socket-refused`, `ping-not-ok`, `extension-id-mismatch`), then follow printed manual steps.
+- Runtime ID mismatch (`extension-id-mismatch`): compare expected vs runtime IDs from setup output, then rerun setup with the runtime ID shown by `edge://extensions` / `chrome://extensions`:
+  - `tabctl setup --browser <edge|chrome> --extension-id <runtime-id>`
+- `tabctl ping` returns connect errors (`ENOENT`, `ECONNREFUSED`, timeout): ensure extension is loaded and active, rerun `tabctl setup`, and in WSL verify `TABCTL_TCP_PORT` or `<dataDir>/tcp-port` matches a listening localhost port.
 
 ## Multi-Browser Setup
 

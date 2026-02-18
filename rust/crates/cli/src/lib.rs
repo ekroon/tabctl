@@ -2,11 +2,22 @@ use clap::{value_parser, Arg, ArgAction, ArgMatches, Command};
 use serde_json::{json, Map, Value};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::net::TcpStream;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(target_os = "linux")]
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tabctl_shared::{ProfileRegistry, RequestEnvelope, ResponseEnvelope};
+use tabctl_shared::{ProfileRegistry, RequestEnvelope, ResponseEnvelope, SocketEndpoint};
+
+#[cfg(windows)]
+use sha2::{Digest, Sha256};
+
+#[cfg(target_os = "linux")]
+const WSL_TCP_PORT_FILENAME: &str = "tcp-port";
+#[cfg(target_os = "linux")]
+const WSL_TCP_PORT_FALLBACK: u16 = 38_000;
 
 pub fn run<I, T>(args: I) -> Result<(), String>
 where
@@ -461,20 +472,135 @@ fn copy_many_i64(sub: &ArgMatches, src: &str, out: &mut Map<String, Value>, key:
     }
 }
 
-fn resolve_socket_path(profile: Option<&str>) -> Result<String, String> {
+fn resolve_socket_endpoint(profile: Option<&str>) -> Result<SocketEndpoint, String> {
     if let Ok(path) = std::env::var("TABCTL_SOCKET") {
         if !path.trim().is_empty() {
-            return Ok(path);
+            let endpoint = SocketEndpoint::parse(&path)?;
+            #[cfg(all(target_os = "linux"))]
+            if matches!(endpoint, SocketEndpoint::Pipe { .. }) && is_wsl_environment() {
+                if let Some(tcp) = discover_wsl_tcp_endpoint(profile) {
+                    return Ok(tcp);
+                }
+            }
+            return Ok(endpoint);
         }
     }
-    let data_dir = resolve_data_dir(profile)?;
-    #[cfg(unix)]
-    {
-        Ok(format!("{data_dir}/tabctl.sock"))
+    #[cfg(all(target_os = "linux"))]
+    if is_wsl_environment() {
+        if let Some(tcp) = discover_wsl_tcp_endpoint(profile) {
+            return Ok(tcp);
+        }
+        return Ok(SocketEndpoint::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: WSL_TCP_PORT_FALLBACK,
+        });
     }
-    #[cfg(not(unix))]
+    let data_dir = resolve_data_dir(profile)?;
+    #[cfg(windows)]
     {
-        Err("Only unix socket transport is currently supported in the Rust CLI".to_string())
+        return Ok(resolve_windows_pipe_endpoint(&data_dir));
+    }
+    SocketEndpoint::parse(&format!("{data_dir}/tabctl.sock"))
+}
+
+#[cfg(all(target_os = "linux"))]
+fn is_wsl_environment() -> bool {
+    std::env::var_os("WSL_INTEROP").is_some()
+        || std::env::var_os("WSL_DISTRO_NAME").is_some()
+        || fs::read_to_string("/proc/version")
+            .map(|content| content.to_ascii_lowercase().contains("microsoft"))
+            .unwrap_or(false)
+}
+
+#[cfg(all(target_os = "linux"))]
+fn discover_wsl_tcp_endpoint(profile: Option<&str>) -> Option<SocketEndpoint> {
+    if let Ok(value) = std::env::var("TABCTL_TCP_PORT") {
+        if let Ok(port) = value.trim().parse::<u16>() {
+            if port > 0 {
+                return Some(SocketEndpoint::Tcp {
+                    host: "127.0.0.1".to_string(),
+                    port,
+                });
+            }
+        }
+    }
+    let data_dir = resolve_data_dir(profile).ok()?;
+    discover_wsl_tcp_port_from_data_dir(&data_dir).map(|port| SocketEndpoint::Tcp {
+        host: "127.0.0.1".to_string(),
+        port,
+    })
+}
+
+#[cfg(all(target_os = "linux"))]
+fn discover_wsl_tcp_port_from_data_dir(data_dir: &str) -> Option<u16> {
+    for path in wsl_tcp_port_candidates(data_dir) {
+        if let Some(port) = read_tcp_port_file(&path) {
+            return Some(port);
+        }
+    }
+    None
+}
+
+#[cfg(all(target_os = "linux"))]
+fn wsl_tcp_port_candidates(data_dir: &str) -> Vec<PathBuf> {
+    let mut candidates = vec![PathBuf::from(data_dir).join(WSL_TCP_PORT_FILENAME)];
+    let Some(relative_suffix) = tabctl_relative_suffix(Path::new(data_dir)) else {
+        return candidates;
+    };
+    let Ok(entries) = fs::read_dir("/mnt/c/Users") else {
+        return candidates;
+    };
+    for entry in entries.flatten() {
+        let root = entry.path().join("AppData").join("Local");
+        candidates.push(
+            root.join("tabctl")
+                .join(&relative_suffix)
+                .join(WSL_TCP_PORT_FILENAME),
+        );
+        candidates.push(
+            root.join("tabctl-state")
+                .join("tabctl")
+                .join(&relative_suffix)
+                .join(WSL_TCP_PORT_FILENAME),
+        );
+    }
+    candidates
+}
+
+#[cfg(all(target_os = "linux"))]
+fn tabctl_relative_suffix(path: &Path) -> Option<PathBuf> {
+    let mut relative = PathBuf::new();
+    let mut found = false;
+    for component in path.components() {
+        if found {
+            relative.push(component.as_os_str());
+            continue;
+        }
+        if component.as_os_str() == "tabctl" {
+            found = true;
+        }
+    }
+    found.then_some(relative)
+}
+
+#[cfg(all(target_os = "linux"))]
+fn read_tcp_port_file(path: &Path) -> Option<u16> {
+    let content = fs::read_to_string(path).ok()?;
+    let port = content.trim().parse::<u16>().ok()?;
+    (port > 0).then_some(port)
+}
+
+#[cfg(windows)]
+fn resolve_windows_pipe_endpoint(data_dir: &str) -> SocketEndpoint {
+    let mut hasher = Sha256::new();
+    hasher.update(data_dir.as_bytes());
+    let digest = hasher.finalize();
+    let hash = digest[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    SocketEndpoint::Pipe {
+        path: format!(r"\\.\pipe\tabctl-{hash}"),
     }
 }
 
@@ -532,27 +658,65 @@ fn send_request(
     profile: Option<&str>,
     show_progress: bool,
 ) -> Result<ResponseEnvelope, String> {
-    let socket_path = resolve_socket_path(profile)?;
-    #[cfg(unix)]
-    let stream =
-        UnixStream::connect(socket_path).map_err(|e| format!("Failed to connect to host: {e}"))?;
-    #[cfg(not(unix))]
-    return Err("Only unix socket transport is currently supported in the Rust CLI".to_string());
+    let endpoint = resolve_socket_endpoint(profile)?;
+    match endpoint {
+        SocketEndpoint::Unix { path } => {
+            #[cfg(unix)]
+            {
+                let stream = UnixStream::connect(path)
+                    .map_err(|e| format!("Failed to connect to host: {e}"))?;
+                send_request_over_stream(stream, action, params, show_progress)
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = path;
+                Err("Unix socket transport is unsupported on this target".to_string())
+            }
+        }
+        SocketEndpoint::Tcp { host, port } => {
+            let stream = TcpStream::connect((host.as_str(), port))
+                .map_err(|e| format!("Failed to connect to host: {e}"))?;
+            send_request_over_stream(stream, action, params, show_progress)
+        }
+        SocketEndpoint::Pipe { path } => {
+            #[cfg(windows)]
+            {
+                let stream = fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(path)
+                    .map_err(|e| format!("Failed to connect to host: {e}"))?;
+                send_request_over_stream(stream, action, params, show_progress)
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = path;
+                Err("Named pipe transport is unsupported on this target".to_string())
+            }
+        }
+    }
+}
 
+fn send_request_over_stream<S>(
+    mut stream: S,
+    action: &str,
+    params: Value,
+    show_progress: bool,
+) -> Result<ResponseEnvelope, String>
+where
+    S: std::io::Read + Write,
+{
     let request = RequestEnvelope {
         id: Some(request_id()),
         action: action.to_string(),
         params,
     };
-    let mut writer = stream
-        .try_clone()
-        .map_err(|e| format!("Failed to open stream for writing: {e}"))?;
-    serde_json::to_writer(&mut writer, &request)
+    serde_json::to_writer(&mut stream, &request)
         .map_err(|e| format!("Failed to encode request: {e}"))?;
-    writer
+    stream
         .write_all(b"\n")
         .map_err(|e| format!("Failed to send request: {e}"))?;
-    writer
+    stream
         .flush()
         .map_err(|e| format!("Failed to flush request: {e}"))?;
 
@@ -632,6 +796,45 @@ fn render_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use std::ffi::OsString;
+    #[cfg(target_os = "linux")]
+    use std::sync::{Mutex, OnceLock};
+
+    #[cfg(target_os = "linux")]
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn with_env_vars<F>(vars: &[(&str, Option<&str>)], run: F)
+    where
+        F: FnOnce(),
+    {
+        let _guard = env_lock().lock().expect("env lock");
+        let saved: Vec<(String, Option<OsString>)> = vars
+            .iter()
+            .map(|(key, _)| ((*key).to_string(), std::env::var_os(key)))
+            .collect();
+        for (key, value) in vars {
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+        run();
+        for (key, value) in saved {
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(&key, value),
+                    None => std::env::remove_var(&key),
+                }
+            }
+        }
+    }
 
     #[test]
     fn routes_group_alias_to_group_list_action() {
@@ -703,5 +906,132 @@ mod tests {
         let routed = route_command(&matches).expect("route command");
         assert_eq!(routed.params["tabIds"], json!([11, 14]));
         assert_eq!(routed.params["page"], json!(false));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn discovers_wsl_tcp_port_from_data_dir_file() {
+        let temp_root = std::env::temp_dir().join(format!("tabctl-cli-test-{}", request_id()));
+        std::fs::create_dir_all(&temp_root).expect("create temp directory");
+        let port_file = temp_root.join(WSL_TCP_PORT_FILENAME);
+        std::fs::write(&port_file, "39001\n").expect("write port file");
+        let port = discover_wsl_tcp_port_from_data_dir(
+            temp_root.to_str().expect("temp path should be valid utf-8"),
+        );
+        std::fs::remove_dir_all(&temp_root).expect("remove temp directory");
+        assert_eq!(port, Some(39001));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rejects_invalid_wsl_tcp_port_file_values() {
+        let temp_root = std::env::temp_dir().join(format!("tabctl-cli-test-{}", request_id()));
+        std::fs::create_dir_all(&temp_root).expect("create temp directory");
+        let port_file = temp_root.join(WSL_TCP_PORT_FILENAME);
+        std::fs::write(&port_file, "not-a-port").expect("write invalid port");
+        let port = read_tcp_port_file(&port_file);
+        std::fs::remove_dir_all(&temp_root).expect("remove temp directory");
+        assert_eq!(port, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolves_pipe_socket_to_wsl_tcp_endpoint() {
+        with_env_vars(
+            &[
+                ("WSL_INTEROP", Some("1")),
+                ("TABCTL_SOCKET", Some("pipe://tabctl-test")),
+                ("TABCTL_TCP_PORT", Some("39005")),
+            ],
+            || {
+                let endpoint = resolve_socket_endpoint(None).expect("resolve endpoint");
+                assert_eq!(
+                    endpoint,
+                    SocketEndpoint::Tcp {
+                        host: "127.0.0.1".to_string(),
+                        port: 39005,
+                    }
+                );
+            },
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn keeps_explicit_tcp_socket_in_wsl() {
+        with_env_vars(
+            &[
+                ("WSL_INTEROP", Some("1")),
+                ("TABCTL_SOCKET", Some("tcp://127.0.0.1:39006")),
+                ("TABCTL_TCP_PORT", Some("39007")),
+            ],
+            || {
+                let endpoint = resolve_socket_endpoint(None).expect("resolve endpoint");
+                assert_eq!(
+                    endpoint,
+                    SocketEndpoint::Tcp {
+                        host: "127.0.0.1".to_string(),
+                        port: 39006,
+                    }
+                );
+            },
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn returns_invalid_socket_error_before_wsl_fallback() {
+        with_env_vars(
+            &[
+                ("WSL_INTEROP", Some("1")),
+                ("TABCTL_SOCKET", Some("tcp://127.0.0.1")),
+                ("TABCTL_TCP_PORT", Some("39008")),
+            ],
+            || {
+                let err = resolve_socket_endpoint(None).expect_err("invalid socket should fail");
+                assert!(err.contains("TCP endpoint must include host and port"));
+            },
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn falls_back_to_default_wsl_tcp_port_when_not_discovered() {
+        let temp_root = std::env::temp_dir().join(format!("tabctl-cli-test-{}", request_id()));
+        std::fs::create_dir_all(&temp_root).expect("create temp directory");
+        with_env_vars(
+            &[
+                ("WSL_INTEROP", Some("1")),
+                ("TABCTL_SOCKET", None),
+                ("TABCTL_TCP_PORT", None),
+                (
+                    "TABCTL_DATA_DIR",
+                    Some(temp_root.to_str().expect("temp path should be valid utf-8")),
+                ),
+            ],
+            || {
+                let endpoint = resolve_socket_endpoint(None).expect("resolve endpoint");
+                assert_eq!(
+                    endpoint,
+                    SocketEndpoint::Tcp {
+                        host: "127.0.0.1".to_string(),
+                        port: WSL_TCP_PORT_FALLBACK,
+                    }
+                );
+            },
+        );
+        std::fs::remove_dir_all(&temp_root).expect("remove temp directory");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolves_windows_pipe_endpoint_from_data_dir_hash() {
+        let endpoint = resolve_windows_pipe_endpoint(r"C:\Users\tester\AppData\Local\tabctl");
+        assert_eq!(
+            endpoint,
+            SocketEndpoint::Pipe {
+                path: r"\\.\pipe\tabctl-f9bd75adcc15".to_string()
+            }
+        );
     }
 }

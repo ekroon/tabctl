@@ -336,7 +336,7 @@ Options:
 
 Each run creates or updates a profile in `profiles.json`. The first profile registered becomes the default.
 
-On Windows, setup verifies host connectivity by default after writing setup artifacts and compares the browser-reported runtime extension ID with the expected ID. Connectivity failures still exit non-zero with manual recovery steps; runtime extension ID mismatches now complete setup with a warning that includes both IDs.
+On Windows, setup verifies host connectivity by default after writing setup artifacts and compares the browser-reported runtime extension ID with the expected ID. Connectivity failures and runtime extension ID mismatches exit non-zero with manual recovery steps (including expected vs runtime IDs).
 
 Run once per browser:
 ```bash
@@ -467,6 +467,20 @@ Check host/extension connectivity.
 tabctl ping
 ```
 
+## Windows + WSL endpoint model
+
+Windows host runtime listens on both:
+- Named pipe for native Windows clients (`\\.\pipe\tabctl-<hash>`)
+- Localhost TCP for WSL/Linux clients (`tcp://127.0.0.1:<port>`)
+
+The host publishes the WSL TCP port to `<dataDir>/tcp-port`.
+
+WSL endpoint resolution order (CLI):
+1. `TABCTL_SOCKET` (explicit endpoint; explicit pipe endpoints are translated to discovered TCP in WSL when available)
+2. `TABCTL_TCP_PORT`
+3. `tcp-port` discovery from resolved data dir and `/mnt/c/Users/*/.../tabctl/.../tcp-port`
+4. Fallback `tcp://127.0.0.1:38000`
+
 Notes:
 - Use `--group-id -1` or `--ungrouped` to target ungrouped tabs.
 - `screenshot --out` writes per-tab folders into the target directory.
@@ -476,10 +490,21 @@ Notes:
 | Variable | Description |
 |----------|-------------|
 | `TABCTL_CONFIG_DIR` | Override config directory (default: `$XDG_CONFIG_HOME/tabctl`) |
+| `TABCTL_DATA_DIR` | Override resolved data directory |
 | `TABCTL_EXTENSION_ID` | Extension ID for `setup` command |
 | `TABCTL_NODE` | Node binary path for `setup` command |
 | `TABCTL_PROFILE` | Override active profile (same as `--profile` flag) |
+| `TABCTL_SOCKET` | Override socket endpoint (`unix://`, `pipe://`, `tcp://`) |
+| `TABCTL_STATE_DIR` | Override state directory fallback (`$XDG_STATE_HOME/tabctl`) |
+| `TABCTL_TCP_PORT` | Force localhost TCP endpoint (WSL/Linux clients) |
 | `TABCTL_VERSION_MODE` | `release` or `dev` for version output |
+
+## Troubleshooting (setup/ping/runtime ID)
+
+- Setup verification failures return `Windows setup verification failed`; inspect `data.verification.reason` (`ping-timeout`, `socket-not-found`, `socket-refused`, `ping-not-ok`, `extension-id-mismatch`) and follow `manualSteps`.
+- For `extension-id-mismatch`, rerun setup with the runtime extension ID shown by the browser:
+  - `tabctl setup --browser <edge|chrome> --extension-id <runtime-id>`
+- `tabctl ping` connect failures (`ENOENT`/`ECONNREFUSED`/timeout) usually mean host/extension disconnect; reload extension, rerun setup, and in WSL confirm `<dataDir>/tcp-port` or `TABCTL_TCP_PORT` matches a listening `127.0.0.1` port.
 
 ## Profiles
 Each `tabctl setup` run registers a profile in `<configDir>/profiles.json`. A profile stores the browser type, extension ID, and data directory. The first profile registered becomes the default.
