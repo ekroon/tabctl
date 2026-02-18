@@ -498,9 +498,12 @@ fn resolve_socket_endpoint(profile: Option<&str>) -> Result<SocketEndpoint, Stri
     let data_dir = resolve_data_dir(profile)?;
     #[cfg(windows)]
     {
-        return Ok(resolve_windows_pipe_endpoint(&data_dir));
+        Ok(resolve_windows_pipe_endpoint(&data_dir))
     }
-    SocketEndpoint::parse(&format!("{data_dir}/tabctl.sock"))
+    #[cfg(not(windows))]
+    {
+        SocketEndpoint::parse(&format!("{data_dir}/tabctl.sock"))
+    }
 }
 
 #[cfg(target_os = "linux")]
