@@ -417,6 +417,19 @@ JSON example:
 tabctl history --json | jq -r '.data[] | {txid, action, summary}'
 ```
 
+### extension-fetch
+Download the release extension bundle for a specific version/tag.
+Options:
+- `--version <version|tag>` (defaults to current CLI version)
+- `--repo <owner/repo>` (defaults to `ekroon/tabctl`)
+- `--asset <name>` (defaults to `tabctl-extension.zip`)
+- `--out <path>` (optional explicit output path)
+
+```bash
+tabctl extension-fetch --version 0.5.3
+tabctl extension-fetch --version v0.5.3 --out /tmp/tabctl-extension.zip
+```
+
 ### skill
 Install the tabctl agent skill for local agents (uses the Skills CLI under the hood).
 Options:

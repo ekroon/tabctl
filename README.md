@@ -330,6 +330,12 @@ Release publishing (`.github/workflows/publish.yml`) enforces:
 - Git tag must match `package.json` version (`v<version>`)
 - prerelease tags publish to `alpha`/`rc`; stable publishes to `latest`
 - `npm run build`, `npm run build:launcher`, and `npm test` must pass before publish
+- release assets include `tabctl-extension.zip` plus `tabctl-extension.zip.sha256`
+
+Fetch the extension asset from a release with:
+```bash
+tabctl extension-fetch --version 0.5.3
+```
 
 Local builds default to a dev version when a `.git` directory is present, appending the short SHA.
 ```bash

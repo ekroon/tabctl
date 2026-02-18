@@ -8,6 +8,7 @@ use std::os::unix::net::UnixStream;
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command as ProcessCommand;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tabctl_shared::{ProfileRegistry, RequestEnvelope, ResponseEnvelope, SocketEndpoint};
 
@@ -30,6 +31,9 @@ where
     if matches.get_flag("version") {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
+    }
+    if let Some(("extension-fetch", sub)) = matches.subcommand() {
+        return run_extension_fetch(&matches, sub);
     }
     let routed = route_command(&matches)?;
     let response = send_request(
@@ -124,7 +128,96 @@ fn build_cli() -> Command {
                     .value_name("n"),
             ),
         )
+        .subcommand(
+            Command::new("extension-fetch")
+                .arg(
+                    Arg::new("version")
+                        .long("version")
+                        .value_name("version|tag"),
+                )
+                .arg(
+                    Arg::new("repo")
+                        .long("repo")
+                        .value_name("owner/repo")
+                        .default_value("ekroon/tabctl"),
+                )
+                .arg(
+                    Arg::new("asset")
+                        .long("asset")
+                        .value_name("name")
+                        .default_value("tabctl-extension.zip"),
+                )
+                .arg(Arg::new("out").long("out").value_name("path")),
+        )
         .subcommand(command_with_scope("reload"))
+}
+
+fn run_extension_fetch(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
+    let version_input = sub
+        .get_one::<String>("version")
+        .map(|v| v.as_str())
+        .unwrap_or(env!("CARGO_PKG_VERSION"));
+    let tag = if version_input.starts_with('v') {
+        version_input.to_string()
+    } else {
+        format!("v{version_input}")
+    };
+    let version = tag.trim_start_matches('v');
+    let repo = sub
+        .get_one::<String>("repo")
+        .map(|v| v.as_str())
+        .unwrap_or("ekroon/tabctl");
+    let asset = sub
+        .get_one::<String>("asset")
+        .map(|v| v.as_str())
+        .unwrap_or("tabctl-extension.zip");
+    let output_path = if let Some(path) = sub.get_one::<String>("out") {
+        PathBuf::from(path)
+    } else {
+        PathBuf::from(resolve_data_dir(None)?)
+            .join("extension")
+            .join(version)
+            .join(asset)
+    };
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create output directory: {e}"))?;
+    }
+    let url = format!("https://github.com/{repo}/releases/download/{tag}/{asset}");
+    let status = ProcessCommand::new("curl")
+        .arg("--fail")
+        .arg("--location")
+        .arg("--silent")
+        .arg("--show-error")
+        .arg("--output")
+        .arg(&output_path)
+        .arg(&url)
+        .status()
+        .map_err(|e| format!("Failed to execute curl: {e}"))?;
+    if !status.success() {
+        return Err(format!("Failed to download extension asset from {url}"));
+    }
+    let payload = json!({
+        "url": url,
+        "path": output_path,
+        "version": version
+    });
+    if matches.get_flag("json") {
+        if !matches.get_flag("no-pretty") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+            );
+        } else {
+            println!(
+                "{}",
+                serde_json::to_string(&payload).map_err(|e| e.to_string())?
+            );
+        }
+    } else {
+        println!("{}", output_path.display());
+    }
+    Ok(())
 }
 
 fn command_with_scope(name: &'static str) -> Command {
@@ -914,6 +1007,19 @@ mod tests {
         let routed = route_command(&matches).expect("route command");
         assert_eq!(routed.params["tabIds"], json!([11, 14]));
         assert_eq!(routed.params["page"], json!(false));
+    }
+
+    #[test]
+    fn parses_extension_fetch_command() {
+        let matches = build_cli()
+            .try_get_matches_from(["tabctl", "extension-fetch", "--version", "0.5.3"])
+            .expect("parse command");
+        let (command, sub) = matches.subcommand().expect("subcommand");
+        assert_eq!(command, "extension-fetch");
+        assert_eq!(
+            sub.get_one::<String>("version").map(String::as_str),
+            Some("0.5.3")
+        );
     }
 
     #[cfg(target_os = "linux")]
