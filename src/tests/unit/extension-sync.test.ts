@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import {
   readExtensionVersion,
   resolveInstalledExtensionDir,
   syncExtension,
   checkExtensionSync,
+  canonicalizeExtensionPath,
   deriveExtensionId,
   readHostVersion,
   resolveInstalledHostPath,
@@ -116,12 +118,49 @@ test("checkExtensionSync detects matching versions", () => {
 
 // --- deriveExtensionId ---
 
+test("canonicalizeExtensionPath resolves and normalizes existing paths", () => {
+  const dir = makeTmpDir();
+  try {
+    const variant = path.join(dir, ".", "nested", "..") + path.sep;
+    const canonical = canonicalizeExtensionPath(variant);
+    const expected = typeof fs.realpathSync.native === "function"
+      ? fs.realpathSync.native(path.resolve(dir))
+      : fs.realpathSync(path.resolve(dir));
+    if (process.platform === "win32") {
+      assert.equal(canonical.toLowerCase(), expected.toLowerCase());
+    } else {
+      assert.equal(canonical, expected);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("canonicalizeExtensionPath falls back to resolved path for missing paths", () => {
+  const missing = path.join(os.tmpdir(), "tabctl-missing-path", "..", "tabctl-missing-path", "extension");
+  const canonical = canonicalizeExtensionPath(missing);
+  assert.equal(canonical, path.normalize(path.resolve(missing)));
+});
+
 test("deriveExtensionId matches Chromium algorithm", () => {
-  // Known test vector: SHA256 of path, first 32 hex chars, 0-f → a-p
-  const id = deriveExtensionId("/Users/erwin/.local/state/tabctl/extension");
-  assert.equal(id.length, 32);
-  assert.match(id, /^[a-p]{32}$/);
-  assert.equal(id, "mpglnmehddpkinfhheeahiicfieegcon");
+  const dir = makeTmpDir();
+  try {
+    const canonical = canonicalizeExtensionPath(dir);
+    const expected = crypto
+      .createHash("sha256")
+      .update(canonical)
+      .digest("hex")
+      .slice(0, 32)
+      .split("")
+      .map((c) => String.fromCharCode("a".charCodeAt(0) + parseInt(c, 16)))
+      .join("");
+    const id = deriveExtensionId(dir);
+    assert.equal(id.length, 32);
+    assert.match(id, /^[a-p]{32}$/);
+    assert.equal(id, expected);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("deriveExtensionId produces different IDs for different paths", () => {

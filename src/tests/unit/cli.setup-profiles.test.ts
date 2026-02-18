@@ -4,12 +4,42 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { runCli, runCliWithStdin, parseOutput } from "./cli-helpers";
+import { startMockSocket, stopMockSocket } from "./socket";
+import { canonicalizeExtensionPath } from "../../shared/extension-sync";
+
+async function withWindowsSetupSocket<T>(
+  envOverrides: Record<string, string>,
+  fn: (env: Record<string, string>) => Promise<T>,
+): Promise<T> {
+  if (process.platform !== "win32") {
+    return fn(envOverrides);
+  }
+  const mock = await startMockSocket((request) => ({
+    ok: true,
+    action: request.action,
+    requestId: request.id,
+    data: { now: Date.now() },
+  }));
+  try {
+    return await fn({ ...envOverrides, TABCTL_SOCKET: mock.socketPath });
+  } finally {
+    await stopMockSocket(mock.server, mock.socketPath, mock.sockets);
+  }
+}
+
+async function runSetupCli(args: string[], envOverrides: Record<string, string>) {
+  return withWindowsSetupSocket(envOverrides, (env) => runCli(args, undefined, env));
+}
+
+async function runSetupCliWithStdin(args: string[], stdinData: string, envOverrides: Record<string, string>) {
+  return withWindowsSetupSocket(envOverrides, (env) => runCliWithStdin(args, stdinData, env));
+}
 
 test("setup writes native host manifest", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-"));
   const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const nodePath = process.execPath;
-  const result = await runCli([
+  const result = await runSetupCli([
     "setup",
     "--browser",
     "edge",
@@ -17,13 +47,18 @@ test("setup writes native host manifest", async () => {
     extensionId,
     "--node",
     nodePath,
-  ], undefined, { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state"), XDG_CONFIG_HOME: path.join(homeDir, ".config") });
+  ], { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state"), XDG_CONFIG_HOME: path.join(homeDir, ".config") });
 
   assert.equal(result.status, 0);
   const output = parseOutput(result) as { ok: boolean; action?: string; data: Record<string, unknown> };
   assert.equal(output.ok, true);
   assert.equal(output.action, "setup");
   assert.equal(output.data.profileName, "edge");
+  if (process.platform === "win32") {
+    const verification = output.data.verification as { attempted?: boolean; ok?: boolean };
+    assert.equal(verification.attempted, true);
+    assert.equal(verification.ok, true);
+  }
 
   const isWin = process.platform === "win32";
   const wrapperPath = output.data.wrapperPath as string;
@@ -80,7 +115,7 @@ test("setup writes native host manifest for chrome", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-chrome-"));
   const extensionId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
   const nodePath = process.execPath;
-  const result = await runCli([
+  const result = await runSetupCli([
     "setup",
     "--browser",
     "chrome",
@@ -88,7 +123,7 @@ test("setup writes native host manifest for chrome", async () => {
     extensionId,
     "--node",
     nodePath,
-  ], undefined, { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state"), XDG_CONFIG_HOME: path.join(homeDir, ".config") });
+  ], { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state"), XDG_CONFIG_HOME: path.join(homeDir, ".config") });
 
   assert.equal(result.status, 0);
   const output = parseOutput(result) as { ok: boolean; action?: string; data: Record<string, unknown> };
@@ -151,7 +186,7 @@ test("setup --user-data-dir writes manifest to custom path", async () => {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-udd-chrome-"));
   const extensionId = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
   const nodePath = process.execPath;
-  const result = await runCli([
+  const result = await runSetupCli([
     "setup",
     "--browser",
     "chrome",
@@ -161,7 +196,7 @@ test("setup --user-data-dir writes manifest to custom path", async () => {
     nodePath,
     "--user-data-dir",
     userDataDir,
-  ], undefined, { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state"), XDG_CONFIG_HOME: path.join(homeDir, ".config") });
+  ], { HOME: homeDir, XDG_STATE_HOME: path.join(homeDir, ".local", "state"), XDG_CONFIG_HOME: path.join(homeDir, ".config") });
 
   assert.equal(result.status, 0);
   const output = parseOutput(result) as { ok: boolean; action?: string; data: Record<string, unknown> };
@@ -367,13 +402,13 @@ test("setup --name creates custom-named profile", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-name-"));
   try {
     const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const result = await runCli([
+    const result = await runSetupCli([
       "setup",
       "--browser", "edge",
       "--extension-id", extensionId,
       "--name", "my-edge",
       "--node", process.execPath,
-    ], undefined, {
+    ], {
       HOME: homeDir,
       XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
       XDG_CONFIG_HOME: path.join(homeDir, ".config"),
@@ -501,7 +536,7 @@ test("setup explicit --extension-id overrides auto-derived ID", async () => {
       XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
       XDG_CONFIG_HOME: path.join(homeDir, ".config"),
     };
-    const result = await runCliWithStdin(
+    const result = await runSetupCliWithStdin(
       ["setup", "--browser", "chrome", "--node", process.execPath, "--extension-id", extensionId],
       "",
       envOverrides,
@@ -539,7 +574,7 @@ test("setup auto-derived extension ID matches Chromium algorithm", async () => {
       XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
       XDG_CONFIG_HOME: path.join(homeDir, ".config"),
     };
-    const result = await runCliWithStdin(
+    const result = await runSetupCliWithStdin(
       ["setup", "--browser", "chrome", "--node", process.execPath],
       "",
       envOverrides,
@@ -552,7 +587,8 @@ test("setup auto-derived extension ID matches Chromium algorithm", async () => {
     // Verify the derived ID matches the Chromium SHA256-based algorithm
     const extensionDir = path.join(homeDir, ".local", "state", "tabctl", "extension");
     const crypto = require("node:crypto");
-    const hash = crypto.createHash("sha256").update(extensionDir).digest("hex").slice(0, 32);
+    const hashInput = canonicalizeExtensionPath(extensionDir);
+    const hash = crypto.createHash("sha256").update(hashInput).digest("hex").slice(0, 32);
     const expectedId = hash.split("").map((c: string) => String.fromCharCode("a".charCodeAt(0) + parseInt(c, 16))).join("");
     assert.equal(output.data.extensionId, expectedId);
   } finally {
@@ -569,7 +605,7 @@ test("setup without --extension-id falls back to auto-derived extension ID", asy
       XDG_CONFIG_HOME: path.join(homeDir, ".config"),
     };
     // No --extension-id: auto-derive from synced extension path
-    const result = await runCliWithStdin(
+    const result = await runSetupCliWithStdin(
       ["setup", "--browser", "chrome", "--node", process.execPath],
       "",
       envOverrides,
@@ -579,6 +615,10 @@ test("setup without --extension-id falls back to auto-derived extension ID", asy
     assert.ok(
       result.stderr.includes("Extension ID derived from:"),
       "expected auto-derive message on stderr",
+    );
+    assert.ok(
+      result.stderr.includes("Derived extension ID:"),
+      "expected derived ID value on stderr",
     );
     const output = parseOutput(result);
     assert.ok(output.ok);
@@ -599,18 +639,18 @@ test("setup second profile does not nest under first profile dataDir", async () 
     const baseStateDir = path.join(homeDir, ".local", "state", "tabctl");
 
     // First setup creates "edge" as default
-    await runCli([
+    await runSetupCli([
       "setup", "--browser", "edge",
       "--extension-id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "--node", process.execPath,
-    ], undefined, envOverrides);
+    ], envOverrides);
 
     // Second setup creates "chrome"
-    const result = await runCli([
+    const result = await runSetupCli([
       "setup", "--browser", "chrome",
       "--extension-id", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "--node", process.execPath,
-    ], undefined, envOverrides);
+    ], envOverrides);
 
     assert.equal(result.status, 0);
     const output = parseOutput(result);
@@ -628,11 +668,11 @@ test("setup JSON output reflects newly-created profile in footer", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-profile-ctx-"));
   try {
     const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const result = await runCli([
+    const result = await runSetupCli([
       "setup", "--browser", "edge",
       "--extension-id", extensionId,
       "--node", process.execPath,
-    ], undefined, {
+    ], {
       HOME: homeDir,
       XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
       XDG_CONFIG_HOME: path.join(homeDir, ".config"),
@@ -653,11 +693,11 @@ test("setup prints verify-connection hint on stderr", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-hints-"));
   try {
     const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const result = await runCli([
+    const result = await runSetupCli([
       "setup", "--browser", "edge",
       "--extension-id", extensionId,
       "--node", process.execPath,
-    ], undefined, {
+    ], {
       HOME: homeDir,
       XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
       XDG_CONFIG_HOME: path.join(homeDir, ".config"),
@@ -682,18 +722,18 @@ test("setup non-default profile prints usage hints on stderr", async () => {
     };
 
     // First setup creates "edge" as default
-    await runCli([
+    await runSetupCli([
       "setup", "--browser", "edge",
       "--extension-id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "--node", process.execPath,
-    ], undefined, envOverrides);
+    ], envOverrides);
 
     // Second setup creates "chrome" (non-default)
-    const result = await runCli([
+    const result = await runSetupCli([
       "setup", "--browser", "chrome",
       "--extension-id", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "--node", process.execPath,
-    ], undefined, envOverrides);
+    ], envOverrides);
 
     assert.equal(result.status, 0);
     const output = parseOutput(result);
@@ -706,6 +746,75 @@ test("setup non-default profile prints usage hints on stderr", async () => {
     // Should also show verify-connection hint
     assert.ok(result.stderr.includes("Verify connection: tabctl --profile chrome ping"), "expected verify hint");
   } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("setup fails with manual guidance when Windows verification fails", { skip: process.platform !== "win32" && "windows only" }, async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-verify-fail-"));
+  try {
+    const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const missingSocket = `\\\\.\\pipe\\tabctl-missing-${Date.now()}`;
+    const result = await runCli([
+      "setup", "--browser", "chrome",
+      "--extension-id", extensionId,
+      "--node", process.execPath,
+    ], undefined, {
+      HOME: homeDir,
+      XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
+      XDG_CONFIG_HOME: path.join(homeDir, ".config"),
+      TABCTL_SOCKET: missingSocket,
+    });
+
+    assert.notEqual(result.status, 0, "expected non-zero setup status on failed verification");
+    const output = parseOutput(result);
+    assert.equal(output.ok, false);
+    assert.equal(output.action, "setup");
+    assert.equal(output.error?.message, "Windows setup verification failed");
+    assert.equal(output.data?.verification?.attempted, true);
+    assert.equal(output.data?.verification?.ok, false);
+    assert.ok(Array.isArray(output.data?.verification?.manualSteps));
+    assert.ok(output.data.verification.manualSteps.length > 0, "expected manual remediation steps");
+    assert.ok(result.stderr.includes("Manual installation steps"), "expected manual guidance in stderr");
+    assert.ok(result.stderr.includes("Verify connection: tabctl --profile"), "expected verify command hint");
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("setup warns when Windows runtime extension ID mismatches expected ID", { skip: process.platform !== "win32" && "windows only" }, async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-setup-verify-id-mismatch-"));
+  const expectedExtensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const runtimeExtensionId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const mock = await startMockSocket((request) => ({
+    ok: true,
+    action: request.action,
+    requestId: request.id,
+    data: { now: Date.now(), runtimeId: runtimeExtensionId },
+  }));
+  try {
+    const result = await runCli([
+      "setup", "--browser", "chrome",
+      "--extension-id", expectedExtensionId,
+      "--node", process.execPath,
+    ], undefined, {
+      HOME: homeDir,
+      XDG_STATE_HOME: path.join(homeDir, ".local", "state"),
+      XDG_CONFIG_HOME: path.join(homeDir, ".config"),
+      TABCTL_SOCKET: mock.socketPath,
+    });
+
+    assert.equal(result.status, 0, "expected successful setup status on runtime extension ID mismatch");
+    const output = parseOutput(result);
+    assert.equal(output.ok, true);
+    assert.equal(output.data?.verification?.reason, "extension-id-mismatch");
+    assert.equal(output.data?.verification?.expectedExtensionId, expectedExtensionId);
+    assert.equal(output.data?.verification?.runtimeExtensionId, runtimeExtensionId);
+    assert.ok(result.stderr.includes("runtime extension ID mismatch"), "expected mismatch warning");
+    assert.ok(result.stderr.includes("Expected extension ID"), "expected expected-id diagnostics");
+    assert.ok(result.stderr.includes("Runtime extension ID"), "expected runtime-id diagnostics");
+  } finally {
+    await stopMockSocket(mock.server, mock.socketPath, mock.sockets);
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });

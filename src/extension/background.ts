@@ -188,6 +188,7 @@ async function handleAction(action: string, params: Record<string, unknown>, req
     case "ping":
       return {
         now: Date.now(),
+        runtimeId: chrome.runtime.id,
         version: VERSION_INFO.version,
         baseVersion: VERSION_INFO.baseVersion,
         gitSha: VERSION_INFO.gitSha,
@@ -196,6 +197,7 @@ async function handleAction(action: string, params: Record<string, unknown>, req
       };
     case "version":
       return {
+        runtimeId: chrome.runtime.id,
         version: VERSION_INFO.version,
         baseVersion: VERSION_INFO.baseVersion,
         gitSha: VERSION_INFO.gitSha,

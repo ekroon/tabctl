@@ -493,6 +493,70 @@ async function main(): Promise<void> {
       }
     }
 
+    await runTestFn("windows setup extension-id parity", async () => {
+      if (process.platform !== "win32") {
+        return true;
+      }
+      const profileName = `setup-parity-${Date.now()}`;
+      const setupArgs = [
+        "setup",
+        "--browser", "chrome",
+        "--name", profileName,
+        "--node", process.execPath,
+        "--json",
+      ];
+      let setupResult = runCli(setupArgs);
+      if (!setupResult.ok) {
+        log(`    setup failed: ${setupResult.raw.slice(0, 400)}`);
+        return false;
+      }
+
+      const setupExtensionDir = setupResult.data?.extensionDir as string | undefined;
+      if (!setupExtensionDir || !fs.existsSync(setupExtensionDir)) {
+        log(`    setup extension dir missing: ${setupExtensionDir}`);
+        return false;
+      }
+      const loadedSetupExtensionId = await loadExtension(setupExtensionDir);
+
+      let setupId = setupResult.data?.extensionId;
+      if (setupId !== loadedSetupExtensionId) {
+        setupResult = runCli([...setupArgs, "--extension-id", loadedSetupExtensionId]);
+        if (!setupResult.ok) {
+          log(`    setup retry with loaded runtime extension ID failed: ${setupResult.raw.slice(0, 400)}`);
+          return false;
+        }
+        setupId = setupResult.data?.extensionId;
+      }
+
+      const manifestPathFromSetup = setupResult.data?.manifestPath as string | undefined;
+      if (!manifestPathFromSetup || !fs.existsSync(manifestPathFromSetup)) {
+        log(`    setup manifest missing: ${manifestPathFromSetup}`);
+        return false;
+      }
+      const manifest = JSON.parse(fs.readFileSync(manifestPathFromSetup, "utf8")) as { allowed_origins?: string[] };
+      const expectedOrigin = `chrome-extension://${loadedSetupExtensionId}/`;
+      if (!manifest.allowed_origins?.includes(expectedOrigin)) {
+        log(`    manifest allowed_origins missing expected origin: ${expectedOrigin}`);
+        return false;
+      }
+
+      const verification = setupResult.data?.verification as {
+        attempted?: boolean;
+        ok?: boolean;
+        expectedExtensionId?: string | null;
+        runtimeExtensionId?: string | null;
+      } | undefined;
+      if (!verification?.attempted || !verification?.ok) {
+        log(`    expected successful setup verification, got ${JSON.stringify(verification)}`);
+        return false;
+      }
+      if (verification.expectedExtensionId !== setupId) {
+        log(`    setup verification expectedExtensionId mismatch: expected=${setupId}, got=${verification.expectedExtensionId}`);
+        return false;
+      }
+      return true;
+    });
+
     log("");
     log("--- Group reuse / dedup / gather tests ---");
 
@@ -655,20 +719,33 @@ async function main(): Promise<void> {
       if (!grouped.ok) { log(`    grouped open failed: ${grouped.raw.slice(0, 200)}`); return false; }
       await sleep(1000);
 
-      // List tabs and check ordering
-      const listResult = runCli(["list", "--window", String(windowId), "--json"]);
-      if (!listResult.ok) { log(`    list failed: ${listResult.raw.slice(0, 200)}`); return false; }
+      // List tabs and check ordering (poll briefly to avoid transient ordering races)
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const listResult = runCli(["list", "--window", String(windowId), "--json"]);
+        if (!listResult.ok) { log(`    list failed: ${listResult.raw.slice(0, 200)}`); return false; }
 
-      const windows: Array<{ tabs: Array<{ index: number; groupId?: number; url?: string }> }> = listResult.data?.windows ?? [];
-      const tabs = windows.flatMap((w: any) => w.tabs ?? []);
-      const groupedTab = tabs.find((t: any) => t.groupId && t.groupId !== -1);
-      const ungroupedTab = tabs.find((t: any) => (!t.groupId || t.groupId === -1) && t.url !== "chrome://newtab/");
-      if (!groupedTab || !ungroupedTab) { log(`    could not find grouped/ungrouped tabs`); return false; }
-      if (groupedTab.index >= ungroupedTab.index) {
-        log(`    expected grouped index (${groupedTab.index}) < ungrouped index (${ungroupedTab.index})`);
-        return false;
+        const windows: Array<{ tabs: Array<{ index: number; groupId?: number; url?: string }> }> = listResult.data?.windows ?? [];
+        const tabs = windows.flatMap((w: any) => w.tabs ?? []);
+        const groupedTab = tabs.find((t: any) => t.groupId && t.groupId !== -1);
+        const ungroupedTab = tabs.find((t: any) => (!t.groupId || t.groupId === -1) && t.url !== "chrome://newtab/");
+        if (!groupedTab || !ungroupedTab) {
+          if (attempt === 5) {
+            log("    could not find grouped/ungrouped tabs");
+            return false;
+          }
+          await sleep(500);
+          continue;
+        }
+        if (groupedTab.index < ungroupedTab.index) {
+          return true;
+        }
+        if (attempt === 5) {
+          log(`    expected grouped index (${groupedTab.index}) < ungrouped index (${ungroupedTab.index})`);
+          return false;
+        }
+        await sleep(500);
       }
-      return true;
+      return false;
     });
 
     // -- Doctor tests ----------------------------------------------------------

@@ -322,7 +322,7 @@ Options:
 - `--confirm`
 
 ### setup
-Install the native host manifest and register a profile (macOS only).
+Install the native host manifest and register a profile.
 Options:
 - `--browser edge|chrome` (required)
 - `--extension-id <id>` (optional; auto-derived from installed extension path, or `TABCTL_EXTENSION_ID`)
@@ -331,6 +331,8 @@ Options:
 - `--dev` (coming soon; dev/CI mode via CDP)
 
 Each run creates or updates a profile in `profiles.json`. The first profile registered becomes the default.
+
+On Windows, setup verifies host connectivity by default after writing setup artifacts and compares the browser-reported runtime extension ID with the expected ID. Connectivity failures still exit non-zero with manual recovery steps; runtime extension ID mismatches now complete setup with a warning that includes both IDs.
 
 Run once per browser:
 ```bash
