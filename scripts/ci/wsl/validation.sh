@@ -261,8 +261,12 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $Workspace
 $tabctlCommand = @()
+$workspaceScript = Join-Path $Workspace "dist\\cli\\tabctl.js"
+if (Test-Path -LiteralPath $workspaceScript) {
+  $tabctlCommand = @("node", $workspaceScript)
+}
 $prefix = (& npm prefix -g).Trim()
-if ($prefix) {
+if ($tabctlCommand.Count -eq 0 -and $prefix) {
   $cmdCandidate = Join-Path $prefix "tabctl.cmd"
   if (Test-Path -LiteralPath $cmdCandidate) {
     $tabctlCommand = @($cmdCandidate)
