@@ -297,6 +297,7 @@ if ($tabctlCommand.Count -gt 1) {
   $commandArgs += $tabctlCommand[1..($tabctlCommand.Count - 1)]
 }
 $commandArgs += @("setup", "--browser", "chrome", "--extension-id", $ExtensionId, "--json")
+$PSNativeCommandUseErrorActionPreference = $false
 $json = & $command @commandArgs 2>&1
 $exitCode = $LASTEXITCODE
 if ($exitCode -ne 0) {
