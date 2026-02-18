@@ -526,7 +526,8 @@ export async function runSetup(options: Options, prettyOutput: boolean): Promise
       verification.detail ? `Reason: ${verification.detail}` : null,
       verification.expectedExtensionId ? `Expected extension ID: ${verification.expectedExtensionId}` : null,
       verification.runtimeExtensionId ? `Runtime extension ID: ${verification.runtimeExtensionId}` : null,
-      "Setup completed, but verify you loaded the intended extension ID in browser extensions.",
+      "Setup completed, but this profile may be connected to a different loaded extension setup.",
+      `Check ${extensionsUrl} and confirm the intended extension ID for this profile before continuing.`,
       "",
     ].filter(Boolean).join("\n"));
   }
