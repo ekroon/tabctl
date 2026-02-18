@@ -306,6 +306,8 @@ Integration script (currently Rust-suite parity in CI/local):
 npm run test:integration
 ```
 
+WSL CI validates the WSL->Windows invocation bridge (`test.yml` `wsl` job) with phases: `prerequisites`, `diagnostics`, `build_and_unit`, `setup_validation`, `windows_invocation`, `integration`. Runtime/build execution is delegated to Windows commands (`cmd.exe`/`powershell.exe`), so WSL-local Rust compilation is not required.
+
 ### Versioning
 The base version lives in `package.json` and is embedded into the CLI, host, and extension at build time.
 

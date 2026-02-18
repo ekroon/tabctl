@@ -19,6 +19,7 @@ rm -f /tmp/tabctl-wsl-diagnostics.txt \
   /tmp/tabctl-wsl-integration.log \
   /tmp/tabctl-wsl-execution-marker.txt \
   /tmp/tabctl-wsl-integration.ps1 \
+  /tmp/tabctl-wsl-invocation.ps1 \
   "$TIMINGS_FILE"
 
 copy_artifact() {
@@ -194,19 +195,9 @@ capture_diagnostics() {
 }
 
 run_build_and_unit_tests() {
-  cd "$WSL_WORKSPACE"
-  if [ -f src/tests/unit/fixtures/npx ]; then
-    sed -i 's/\r$//' src/tests/unit/fixtures/npx
-  fi
-  local win_launcher_version
-  win_launcher_version="$(node -e 'const pkg = require("./package.json"); process.stdout.write((pkg.optionalDependencies && pkg.optionalDependencies["tabctl-win32-x64"]) || "")')"
-  if [ -z "$win_launcher_version" ]; then
-    echo "Missing tabctl-win32-x64 optional dependency version in package.json" >&2
-    return 1
-  fi
-  cmd.exe /d /c npm install -g "tabctl-win32-x64@$win_launcher_version" --no-fund --no-audit
-  npm ci
-  TABCTL_TEST_CLI_TIMEOUT_MS=5000 npm run test:unit
+  local win_workspace
+  win_workspace="$(wslpath -w "$WSL_WORKSPACE")"
+  cmd.exe /d /s /c "cd /d \"$win_workspace\" && npm ci && npm run build"
 }
 
 run_setup_validation() {
@@ -286,6 +277,127 @@ NODE
   copy_artifact "$setup_output" "wsl-setup.json"
 }
 
+run_windows_invocation_checks() {
+  cd "$WSL_WORKSPACE"
+  local expected_version
+  expected_version="$(node -e 'process.stdout.write(require("./package.json").version)')"
+
+  local cmd_tabctl_version cmd_tabctl_version_status
+  set +e
+  cmd_tabctl_version="$(timeout 10s cmd.exe /d /s /c "tabctl --version" 2>&1)"
+  cmd_tabctl_version_status="$?"
+  set -e
+  if [ "$cmd_tabctl_version_status" -ne 0 ]; then
+    echo "Windows invocation check failed: cmd.exe could not run tabctl --version." >&2
+    printf '%s\n' "$cmd_tabctl_version" | tr -d '\r' >&2
+    return 1
+  fi
+  local cmd_tabctl_version_clean
+  cmd_tabctl_version_clean="$(printf '%s\n' "$cmd_tabctl_version" | tr -d '\r' | head -n1 | tr -d '[:space:]')"
+  if [ "$cmd_tabctl_version_clean" != "$expected_version" ]; then
+    echo "Windows invocation check failed: expected tabctl --version=$expected_version via cmd.exe, got '$cmd_tabctl_version_clean'." >&2
+    return 1
+  fi
+
+  local ps_runner win_ps_runner
+  ps_runner="/tmp/tabctl-wsl-invocation.ps1"
+  win_ps_runner="$(wslpath -w "$ps_runner")"
+  cat > "$ps_runner" <<'POWERSHELL'
+param(
+  [Parameter(Mandatory=$true)][string]$ExpectedVersion
+)
+$ErrorActionPreference = "Stop"
+
+$tabctlVersion = (& tabctl --version).Trim()
+if ($tabctlVersion -ne $ExpectedVersion) {
+  throw "expected tabctl --version=$ExpectedVersion via PowerShell, got '$tabctlVersion'"
+}
+
+$hostPath = (Get-Command tabctl-host.exe -CommandType Application -ErrorAction Stop).Source
+if (-not (Test-Path -LiteralPath $hostPath)) {
+  throw "tabctl-host.exe was resolved but path does not exist: $hostPath"
+}
+
+$request = @{ id = "wsl-host-version"; action = "version"; params = @{} } | ConvertTo-Json -Compress
+$requestBytes = [System.Text.Encoding]::UTF8.GetBytes($request)
+$lengthBytes = [System.BitConverter]::GetBytes([int]$requestBytes.Length)
+
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = $hostPath
+$psi.UseShellExecute = $false
+$psi.RedirectStandardInput = $true
+$psi.RedirectStandardOutput = $true
+$psi.RedirectStandardError = $true
+$process = [System.Diagnostics.Process]::Start($psi)
+if (-not $process) {
+  throw "failed to start tabctl-host.exe"
+}
+
+$stdin = $process.StandardInput.BaseStream
+$stdout = $process.StandardOutput.BaseStream
+$stdin.Write($lengthBytes, 0, 4)
+$stdin.Write($requestBytes, 0, $requestBytes.Length)
+$stdin.Flush()
+$process.StandardInput.Close()
+
+$responseLengthBytes = New-Object byte[] 4
+$readLength = 0
+while ($readLength -lt 4) {
+  $count = $stdout.Read($responseLengthBytes, $readLength, 4 - $readLength)
+  if ($count -le 0) { break }
+  $readLength += $count
+}
+if ($readLength -ne 4) {
+  $stderr = $process.StandardError.ReadToEnd()
+  throw "tabctl-host.exe did not return a native response header (stderr: $stderr)"
+}
+
+$responseLength = [System.BitConverter]::ToInt32($responseLengthBytes, 0)
+if ($responseLength -le 0 -or $responseLength -gt 1048576) {
+  throw "invalid native response length from tabctl-host.exe: $responseLength"
+}
+
+$responseBytes = New-Object byte[] $responseLength
+$readBody = 0
+while ($readBody -lt $responseLength) {
+  $count = $stdout.Read($responseBytes, $readBody, $responseLength - $readBody)
+  if ($count -le 0) { break }
+  $readBody += $count
+}
+if ($readBody -ne $responseLength) {
+  $stderr = $process.StandardError.ReadToEnd()
+  throw "tabctl-host.exe returned truncated native response (stderr: $stderr)"
+}
+
+$responseJson = [System.Text.Encoding]::UTF8.GetString($responseBytes)
+$response = $responseJson | ConvertFrom-Json
+if (-not $response.ok) {
+  throw "tabctl-host.exe version request failed: $responseJson"
+}
+if ($response.action -ne "version") {
+  throw "unexpected action from tabctl-host.exe: $($response.action)"
+}
+if (-not $response.data -or -not $response.data.version) {
+  throw "tabctl-host.exe version response missing data.version: $responseJson"
+}
+
+if (-not $process.WaitForExit(10000)) {
+  $process.Kill()
+  throw "tabctl-host.exe did not exit within timeout after version request"
+}
+POWERSHELL
+
+  set +e
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$win_ps_runner" "$expected_version"
+  local ps_status="$?"
+  set -e
+  rm -f "$ps_runner"
+  if [ "$ps_status" -ne 0 ]; then
+    echo "Windows invocation check failed: PowerShell bridge validation for tabctl-host.exe failed." >&2
+    return "$ps_status"
+  fi
+}
+
 find_windows_browser() {
   if [ -f /mnt/c/Program\ Files/Google/Chrome/Application/chrome.exe ]; then
     wslpath -w /mnt/c/Program\ Files/Google/Chrome/Application/chrome.exe
@@ -359,4 +471,5 @@ run_timed_phase prerequisites install_prerequisites
 run_timed_phase diagnostics capture_diagnostics
 run_timed_phase build_and_unit run_build_and_unit_tests
 run_timed_phase setup_validation run_setup_validation
+run_timed_phase windows_invocation run_windows_invocation_checks
 run_timed_phase integration run_integration_tests

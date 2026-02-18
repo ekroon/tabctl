@@ -14,6 +14,7 @@ npm run test:integration  # Run integration tests (requires Chrome)
 A **split hook gate** is active via `core.hooksPath=.githooks` (set by `npm install`):
 - **pre-commit** (`.githooks/pre-commit`) runs fast unit checks (`npm run test:unit`).
 - **pre-push** (`.githooks/pre-push`) runs heavier checks (`npm run rust:verify` and `npm run test:integration`) when Rust/build/hook-related files changed.
+- CI `wsl` job validates the WSL -> Windows invocation bridge (setup + Windows command/native-host invocation + integration handoff); it does not compile Rust inside WSL.
 
 ## Project architecture
 
