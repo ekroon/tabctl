@@ -32,6 +32,9 @@ where
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    if let Some(("setup", sub)) = matches.subcommand() {
+        return run_setup(&matches, sub);
+    }
     if let Some(("extension-fetch", sub)) = matches.subcommand() {
         return run_extension_fetch(&matches, sub);
     }
@@ -118,6 +121,7 @@ fn build_cli() -> Command {
         .subcommand(command_with_scope("archive"))
         .subcommand(command_close())
         .subcommand(command_report())
+        .subcommand(command_setup())
         .subcommand(command_with_scope("screenshot"))
         .subcommand(command_undo())
         .subcommand(
@@ -153,26 +157,47 @@ fn build_cli() -> Command {
 }
 
 fn run_extension_fetch(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
-    let version_input = sub
-        .get_one::<String>("version")
-        .map(|v| v.as_str())
-        .unwrap_or(env!("CARGO_PKG_VERSION"));
+    let payload = fetch_extension_asset(
+        sub.get_one::<String>("version").map(|v| v.as_str()),
+        sub.get_one::<String>("repo").map(|v| v.as_str()),
+        sub.get_one::<String>("asset").map(|v| v.as_str()),
+        sub.get_one::<String>("out").map(PathBuf::from),
+    )?;
+    if matches.get_flag("json") {
+        if !matches.get_flag("no-pretty") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+            );
+        } else {
+            println!(
+                "{}",
+                serde_json::to_string(&payload).map_err(|e| e.to_string())?
+            );
+        }
+    } else if let Some(path) = payload.get("path").and_then(Value::as_str) {
+        println!("{path}");
+    }
+    Ok(())
+}
+
+fn fetch_extension_asset(
+    version_input: Option<&str>,
+    repo_input: Option<&str>,
+    asset_input: Option<&str>,
+    output_path_input: Option<PathBuf>,
+) -> Result<Value, String> {
+    let version_input = version_input.unwrap_or(env!("CARGO_PKG_VERSION"));
     let tag = if version_input.starts_with('v') {
         version_input.to_string()
     } else {
         format!("v{version_input}")
     };
     let version = tag.trim_start_matches('v');
-    let repo = sub
-        .get_one::<String>("repo")
-        .map(|v| v.as_str())
-        .unwrap_or("ekroon/tabctl");
-    let asset = sub
-        .get_one::<String>("asset")
-        .map(|v| v.as_str())
-        .unwrap_or("tabctl-extension.zip");
-    let output_path = if let Some(path) = sub.get_one::<String>("out") {
-        PathBuf::from(path)
+    let repo = repo_input.unwrap_or("ekroon/tabctl");
+    let asset = asset_input.unwrap_or("tabctl-extension.zip");
+    let output_path = if let Some(path) = output_path_input {
+        path
     } else {
         PathBuf::from(resolve_data_dir(None)?)
             .join("extension")
@@ -197,25 +222,80 @@ fn run_extension_fetch(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), Str
     if !status.success() {
         return Err(format!("Failed to download extension asset from {url}"));
     }
-    let payload = json!({
+    Ok(json!({
         "url": url,
-        "path": output_path,
+        "path": output_path.display().to_string(),
         "version": version
+    }))
+}
+
+fn command_setup() -> Command {
+    Command::new("setup")
+        .arg(
+            Arg::new("browser")
+                .long("browser")
+                .required(true)
+                .value_name("edge|chrome"),
+        )
+        .arg(
+            Arg::new("skip-extension-download")
+                .long("skip-extension-download")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
+    let browser = sub
+        .get_one::<String>("browser")
+        .map(|v| v.as_str())
+        .ok_or_else(|| "Missing --browser".to_string())?;
+    if browser != "edge" && browser != "chrome" {
+        return Err("Missing or invalid --browser (edge|chrome)".to_string());
+    }
+    let extension_asset = if sub.get_flag("skip-extension-download") {
+        json!({ "downloaded": false, "reason": "skipped" })
+    } else {
+        let payload = fetch_extension_asset(None, None, None, None)?;
+        json!({ "downloaded": true, "asset": payload })
+    };
+    let data_dir = resolve_data_dir(None)?;
+    let runtime_env = if cfg!(windows) {
+        "native-win32"
+    } else if cfg!(target_os = "macos") {
+        "native-darwin"
+    } else {
+        "native-linux"
+    };
+    let setup_payload = json!({
+        "ok": true,
+        "action": "setup",
+        "data": {
+            "profileName": browser,
+            "browser": browser,
+            "runtimeEnv": runtime_env,
+            "dataDir": data_dir,
+            "wrapperPath": data_dir,
+            "manifestPath": data_dir,
+            "extensionReleaseAsset": extension_asset
+        }
     });
     if matches.get_flag("json") {
         if !matches.get_flag("no-pretty") {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+                serde_json::to_string_pretty(&setup_payload).map_err(|e| e.to_string())?
             );
         } else {
             println!(
                 "{}",
-                serde_json::to_string(&payload).map_err(|e| e.to_string())?
+                serde_json::to_string(&setup_payload).map_err(|e| e.to_string())?
             );
         }
     } else {
-        println!("{}", output_path.display());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&setup_payload["data"]).map_err(|e| e.to_string())?
+        );
     }
     Ok(())
 }
@@ -1020,6 +1100,26 @@ mod tests {
             sub.get_one::<String>("version").map(String::as_str),
             Some("0.5.3")
         );
+    }
+
+    #[test]
+    fn parses_setup_command_with_extension_toggle() {
+        let matches = build_cli()
+            .try_get_matches_from([
+                "tabctl",
+                "setup",
+                "--browser",
+                "edge",
+                "--skip-extension-download",
+            ])
+            .expect("parse command");
+        let (command, sub) = matches.subcommand().expect("subcommand");
+        assert_eq!(command, "setup");
+        assert_eq!(
+            sub.get_one::<String>("browser").map(String::as_str),
+            Some("edge")
+        );
+        assert!(sub.get_flag("skip-extension-download"));
     }
 
     #[cfg(target_os = "linux")]

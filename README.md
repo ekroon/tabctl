@@ -87,6 +87,7 @@ This will:
 2. Print the path (and copy it to your clipboard)
 3. Ask you to load it as an unpacked extension in `chrome://extensions`
 4. Auto-derive the extension ID from the installed path
+5. Download the version-pinned release extension asset (`tabctl-extension.zip` + `.sha256`) into the tabctl data directory for offline/manual recovery
 
 > **Edge?** Use `--browser edge` and load from `edge://extensions` instead.
 >

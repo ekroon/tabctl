@@ -327,6 +327,7 @@ Options:
 
 ### setup
 Install the native host manifest and register a profile.
+Also attempts to download the version-matched release extension asset (`tabctl-extension.zip` + `.sha256`) into the tabctl data directory.
 Options:
 - `--browser edge|chrome` (required)
 - `--extension-id <id>` (optional; auto-derived from installed extension path, or `TABCTL_EXTENSION_ID`)
