@@ -310,14 +310,19 @@ mod tests {
 
     #[test]
     fn parses_unix_endpoint_from_absolute_path() {
-        let endpoint = SocketEndpoint::parse("/tmp/tabctl.sock").expect("parse unix path");
-        assert_eq!(
-            endpoint,
-            SocketEndpoint::Unix {
-                path: "/tmp/tabctl.sock".to_string()
-            }
-        );
-        assert_eq!(endpoint.as_uri(), "unix:///tmp/tabctl.sock");
+        let endpoint = SocketEndpoint::parse("/tmp/tabctl.sock");
+        if cfg!(windows) {
+            assert!(endpoint.is_err());
+        } else {
+            let endpoint = endpoint.expect("parse unix path");
+            assert_eq!(
+                endpoint,
+                SocketEndpoint::Unix {
+                    path: "/tmp/tabctl.sock".to_string()
+                }
+            );
+            assert_eq!(endpoint.as_uri(), "unix:///tmp/tabctl.sock");
+        }
     }
 
     #[test]

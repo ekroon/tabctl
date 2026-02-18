@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 #[cfg(target_os = "linux")]
 const WSL_TCP_PORT_FILENAME: &str = "tcp-port";
 #[cfg(target_os = "linux")]
-const WSL_TCP_PORT_FALLBACK: u16 = 38_000;
+const WSL_TCP_PORT_FALLBACK: u16 = 39_001;
 
 pub fn run<I, T>(args: I) -> Result<(), String>
 where

@@ -176,7 +176,7 @@ fn resolve_socket_path(data_dir: &Path) -> String {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect::<String>();
-        return format!(r"\\.\pipe\tabctl-{hash}");
+        format!(r"\\.\pipe\tabctl-{hash}")
     }
     #[cfg(not(windows))]
     {
