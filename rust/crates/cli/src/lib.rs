@@ -1,0 +1,707 @@
+use clap::{value_parser, Arg, ArgAction, ArgMatches, Command};
+use serde_json::{json, Map, Value};
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tabctl_shared::{ProfileRegistry, RequestEnvelope, ResponseEnvelope};
+
+pub fn run<I, T>(args: I) -> Result<(), String>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let matches = build_cli()
+        .try_get_matches_from(args)
+        .map_err(|e| e.to_string())?;
+    if matches.get_flag("version") {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    let routed = route_command(&matches)?;
+    let response = send_request(
+        &routed.action,
+        routed.params,
+        routed.profile.as_deref(),
+        routed.progress,
+    )?;
+    render_response(&response, routed.json, routed.pretty)
+}
+
+#[derive(Debug)]
+struct RoutedCommand {
+    action: String,
+    params: Value,
+    json: bool,
+    pretty: bool,
+    progress: bool,
+    profile: Option<String>,
+}
+
+fn build_cli() -> Command {
+    Command::new("tabctl")
+        .disable_help_subcommand(true)
+        .arg(
+            Arg::new("json")
+                .long("json")
+                .action(ArgAction::SetTrue)
+                .global(true),
+        )
+        .arg(
+            Arg::new("pretty")
+                .long("pretty")
+                .action(ArgAction::SetTrue)
+                .global(true),
+        )
+        .arg(
+            Arg::new("no-pretty")
+                .long("no-pretty")
+                .action(ArgAction::SetTrue)
+                .global(true),
+        )
+        .arg(
+            Arg::new("profile")
+                .long("profile")
+                .value_name("name")
+                .global(true),
+        )
+        .arg(
+            Arg::new("progress")
+                .long("progress")
+                .action(ArgAction::SetTrue)
+                .global(true),
+        )
+        .arg(
+            Arg::new("version")
+                .long("version")
+                .short('v')
+                .action(ArgAction::SetTrue)
+                .global(true),
+        )
+        .subcommand(command_with_scope("ping"))
+        .subcommand(command_with_scope("list"))
+        .subcommand(
+            command_with_scope("group-list")
+                .visible_alias("groups")
+                .visible_alias("group"),
+        )
+        .subcommand(command_with_scope("analyze"))
+        .subcommand(command_with_scope("dedupe"))
+        .subcommand(command_with_scope("inspect"))
+        .subcommand(command_with_scope("focus"))
+        .subcommand(command_with_scope("refresh"))
+        .subcommand(command_open())
+        .subcommand(command_group_update())
+        .subcommand(command_group_ungroup())
+        .subcommand(command_group_assign())
+        .subcommand(command_with_scope("group-gather"))
+        .subcommand(command_with_scope("move-tab"))
+        .subcommand(command_with_scope("move-group"))
+        .subcommand(command_merge_window())
+        .subcommand(command_with_scope("archive"))
+        .subcommand(command_close())
+        .subcommand(command_report())
+        .subcommand(command_with_scope("screenshot"))
+        .subcommand(command_undo())
+        .subcommand(
+            Command::new("history").arg(
+                Arg::new("limit")
+                    .long("limit")
+                    .value_parser(value_parser!(u64))
+                    .value_name("n"),
+            ),
+        )
+        .subcommand(command_with_scope("reload"))
+}
+
+fn command_with_scope(name: &'static str) -> Command {
+    Command::new(name)
+        .arg(
+            Arg::new("tab")
+                .long("tab")
+                .action(ArgAction::Append)
+                .value_name("id"),
+        )
+        .arg(Arg::new("group").long("group").value_name("name"))
+        .arg(
+            Arg::new("group-id")
+                .long("group-id")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("ungrouped")
+                .long("ungrouped")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("window")
+                .long("window")
+                .value_name("id|active|last-focused|new"),
+        )
+        .arg(Arg::new("all").long("all").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("limit")
+                .long("limit")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("offset")
+                .long("offset")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("no-page")
+                .long("no-page")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+fn command_open() -> Command {
+    command_with_scope("open")
+        .arg(
+            Arg::new("url")
+                .long("url")
+                .action(ArgAction::Append)
+                .value_name("url"),
+        )
+        .arg(Arg::new("color").long("color").value_name("name"))
+        .arg(
+            Arg::new("before-tab")
+                .long("before-tab")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("after-tab")
+                .long("after-tab")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("after-group")
+                .long("after-group")
+                .value_name("name"),
+        )
+        .arg(
+            Arg::new("new-window")
+                .long("new-window")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("window-group")
+                .long("window-group")
+                .value_name("name"),
+        )
+        .arg(
+            Arg::new("window-tab")
+                .long("window-tab")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("window-url")
+                .long("window-url")
+                .value_name("substring"),
+        )
+        .arg(
+            Arg::new("new-group")
+                .long("new-group")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("allow-duplicates")
+                .long("allow-duplicates")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+fn command_group_update() -> Command {
+    command_with_scope("group-update")
+        .arg(Arg::new("title").long("title").value_name("name"))
+        .arg(Arg::new("color").long("color").value_name("name"))
+        .arg(
+            Arg::new("collapsed")
+                .long("collapsed")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("expanded")
+                .long("expanded")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+fn command_group_ungroup() -> Command {
+    command_with_scope("group-ungroup")
+}
+
+fn command_group_assign() -> Command {
+    command_with_scope("group-assign")
+        .arg(Arg::new("create").long("create").action(ArgAction::SetTrue))
+        .arg(Arg::new("color").long("color").value_name("name"))
+        .arg(
+            Arg::new("collapsed")
+                .long("collapsed")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("expanded")
+                .long("expanded")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+fn command_merge_window() -> Command {
+    Command::new("merge-window")
+        .arg(
+            Arg::new("from")
+                .long("from")
+                .required(true)
+                .value_parser(value_parser!(i64)),
+        )
+        .arg(
+            Arg::new("to")
+                .long("to")
+                .required(true)
+                .value_parser(value_parser!(i64)),
+        )
+        .arg(
+            Arg::new("close-source")
+                .long("close-source")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("confirm")
+                .long("confirm")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+fn command_close() -> Command {
+    command_with_scope("close")
+        .arg(Arg::new("apply").long("apply").value_name("analysisId"))
+        .arg(
+            Arg::new("confirm")
+                .long("confirm")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("dry-run")
+                .long("dry-run")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+fn command_report() -> Command {
+    command_with_scope("report")
+        .arg(Arg::new("format").long("format").value_name("json|md|csv"))
+        .arg(Arg::new("out").long("out").value_name("path"))
+}
+
+fn command_undo() -> Command {
+    Command::new("undo")
+        .arg(Arg::new("txid").value_name("txid").index(1))
+        .arg(Arg::new("txid-flag").long("txid").value_name("txid"))
+        .arg(Arg::new("latest").long("latest").action(ArgAction::SetTrue))
+}
+
+fn route_command(matches: &ArgMatches) -> Result<RoutedCommand, String> {
+    let json = matches.get_flag("json");
+    let pretty = !matches.get_flag("no-pretty");
+    let profile = matches
+        .get_one::<String>("profile")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let progress = matches.get_flag("progress");
+
+    let (command, sub) = matches
+        .subcommand()
+        .ok_or_else(|| "No command provided. Use --help for usage.".to_string())?;
+
+    let action = match command {
+        "dedupe" => "analyze".to_string(),
+        "groups" | "group" => "group-list".to_string(),
+        name => name.to_string(),
+    };
+
+    let mut params = collect_scope_params(sub);
+    match command {
+        "analyze" | "dedupe" => {
+            if command == "dedupe" {
+                params.insert("dedupe".to_string(), Value::Bool(true));
+            }
+        }
+        "open" => {
+            copy_many_strings(sub, "url", &mut params, "urls");
+            copy_opt_string(sub, "color", &mut params, "color");
+            copy_opt_i64(sub, "before-tab", &mut params, "beforeTabId");
+            copy_opt_i64(sub, "after-tab", &mut params, "afterTabId");
+            copy_opt_string(sub, "after-group", &mut params, "afterGroup");
+            copy_opt_bool(sub, "new-window", &mut params, "newWindow");
+            copy_opt_string(sub, "window-group", &mut params, "windowGroup");
+            copy_opt_i64(sub, "window-tab", &mut params, "windowTabId");
+            copy_opt_string(sub, "window-url", &mut params, "windowUrl");
+            copy_opt_bool(sub, "new-group", &mut params, "newGroup");
+            copy_opt_bool(sub, "allow-duplicates", &mut params, "allowDuplicates");
+        }
+        "group-update" => {
+            copy_opt_string(sub, "title", &mut params, "title");
+            copy_opt_string(sub, "color", &mut params, "color");
+            copy_opt_bool(sub, "collapsed", &mut params, "collapsed");
+            copy_opt_bool(sub, "expanded", &mut params, "expanded");
+        }
+        "group-assign" => {
+            copy_opt_bool(sub, "create", &mut params, "create");
+            copy_opt_string(sub, "color", &mut params, "color");
+            copy_opt_bool(sub, "collapsed", &mut params, "collapsed");
+            copy_opt_bool(sub, "expanded", &mut params, "expanded");
+        }
+        "merge-window" => {
+            copy_opt_i64(sub, "from", &mut params, "fromWindowId");
+            copy_opt_i64(sub, "to", &mut params, "toWindowId");
+            copy_opt_bool(sub, "close-source", &mut params, "closeSource");
+            copy_opt_bool(sub, "confirm", &mut params, "confirmed");
+        }
+        "close" => {
+            copy_opt_string(sub, "apply", &mut params, "analysisId");
+            copy_opt_bool(sub, "confirm", &mut params, "confirmed");
+            copy_opt_bool(sub, "dry-run", &mut params, "dryRun");
+        }
+        "report" => {
+            copy_opt_string(sub, "format", &mut params, "format");
+            copy_opt_string(sub, "out", &mut params, "out");
+        }
+        "undo" => {
+            if let Some(txid) = sub.get_one::<String>("txid") {
+                params.insert("txid".to_string(), Value::String(txid.to_string()));
+            } else if let Some(txid) = sub.get_one::<String>("txid-flag") {
+                params.insert("txid".to_string(), Value::String(txid.to_string()));
+            }
+            copy_opt_bool(sub, "latest", &mut params, "latest");
+        }
+        "history" => copy_opt_u64(sub, "limit", &mut params, "limit"),
+        _ => {}
+    }
+
+    Ok(RoutedCommand {
+        action,
+        params: Value::Object(params),
+        json,
+        pretty,
+        progress,
+        profile,
+    })
+}
+
+fn collect_scope_params(sub: &ArgMatches) -> Map<String, Value> {
+    let mut params = Map::new();
+    copy_many_i64(sub, "tab", &mut params, "tabIds");
+    copy_opt_string(sub, "group", &mut params, "groupTitle");
+    copy_opt_i64(sub, "group-id", &mut params, "groupId");
+    copy_opt_bool(sub, "ungrouped", &mut params, "ungrouped");
+    copy_opt_string(sub, "window", &mut params, "windowId");
+    copy_opt_bool(sub, "all", &mut params, "all");
+    copy_opt_u64(sub, "limit", &mut params, "limit");
+    copy_opt_u64(sub, "offset", &mut params, "offset");
+    if sub.get_flag("no-page") {
+        params.insert("page".to_string(), Value::Bool(false));
+    }
+    params
+}
+
+fn copy_opt_string(sub: &ArgMatches, src: &str, out: &mut Map<String, Value>, key: &str) {
+    if let Some(value) = sub.get_one::<String>(src) {
+        out.insert(key.to_string(), Value::String(value.to_string()));
+    }
+}
+
+fn copy_opt_i64(sub: &ArgMatches, src: &str, out: &mut Map<String, Value>, key: &str) {
+    if let Some(value) = sub.get_one::<i64>(src) {
+        out.insert(key.to_string(), Value::from(*value));
+    }
+}
+
+fn copy_opt_u64(sub: &ArgMatches, src: &str, out: &mut Map<String, Value>, key: &str) {
+    if let Some(value) = sub.get_one::<u64>(src) {
+        out.insert(key.to_string(), Value::from(*value));
+    }
+}
+
+fn copy_opt_bool(sub: &ArgMatches, src: &str, out: &mut Map<String, Value>, key: &str) {
+    if sub.get_flag(src) {
+        out.insert(key.to_string(), Value::Bool(true));
+    }
+}
+
+fn copy_many_strings(sub: &ArgMatches, src: &str, out: &mut Map<String, Value>, key: &str) {
+    if let Some(values) = sub.get_many::<String>(src) {
+        let entries: Vec<Value> = values.map(|v| Value::String(v.to_string())).collect();
+        if !entries.is_empty() {
+            out.insert(key.to_string(), Value::Array(entries));
+        }
+    }
+}
+
+fn copy_many_i64(sub: &ArgMatches, src: &str, out: &mut Map<String, Value>, key: &str) {
+    if let Some(values) = sub.get_many::<String>(src) {
+        let mut ids = Vec::new();
+        for value in values {
+            if let Ok(id) = value.parse::<i64>() {
+                ids.push(Value::from(id));
+            }
+        }
+        if !ids.is_empty() {
+            out.insert(key.to_string(), Value::Array(ids));
+        }
+    }
+}
+
+fn resolve_socket_path(profile: Option<&str>) -> Result<String, String> {
+    if let Ok(path) = std::env::var("TABCTL_SOCKET") {
+        if !path.trim().is_empty() {
+            return Ok(path);
+        }
+    }
+    let data_dir = resolve_data_dir(profile)?;
+    #[cfg(unix)]
+    {
+        Ok(format!("{data_dir}/tabctl.sock"))
+    }
+    #[cfg(not(unix))]
+    {
+        Err("Only unix socket transport is currently supported in the Rust CLI".to_string())
+    }
+}
+
+fn resolve_data_dir(profile: Option<&str>) -> Result<String, String> {
+    if let Ok(path) = std::env::var("TABCTL_DATA_DIR") {
+        if !path.trim().is_empty() {
+            return Ok(path);
+        }
+    }
+    let config_dir = if let Ok(path) = std::env::var("TABCTL_CONFIG_DIR") {
+        path
+    } else if let Ok(path) = std::env::var("XDG_CONFIG_HOME") {
+        format!("{path}/tabctl")
+    } else {
+        let home =
+            dirs::home_dir().ok_or_else(|| "Unable to resolve home directory".to_string())?;
+        format!("{}/.config/tabctl", home.display())
+    };
+    if let Some(profile_name) = profile {
+        let profiles_path = PathBuf::from(&config_dir).join("profiles.json");
+        if let Ok(contents) = fs::read_to_string(profiles_path) {
+            if let Ok(registry) = serde_json::from_str::<ProfileRegistry>(&contents) {
+                if let Some(profile_entry) = registry.profiles.get(profile_name) {
+                    return Ok(profile_entry.data_dir.clone());
+                }
+            }
+        }
+        return Err(format!(
+            "Profile \"{profile_name}\" not found in profiles.json"
+        ));
+    }
+    if let Ok(path) = std::env::var("TABCTL_STATE_DIR") {
+        if !path.trim().is_empty() {
+            return Ok(path);
+        }
+    }
+    if let Ok(path) = std::env::var("XDG_STATE_HOME") {
+        return Ok(format!("{path}/tabctl"));
+    }
+    let home = dirs::home_dir().ok_or_else(|| "Unable to resolve home directory".to_string())?;
+    Ok(format!("{}/.local/state/tabctl", home.display()))
+}
+
+fn request_id() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("req-{now}-{}", std::process::id())
+}
+
+fn send_request(
+    action: &str,
+    params: Value,
+    profile: Option<&str>,
+    show_progress: bool,
+) -> Result<ResponseEnvelope, String> {
+    let socket_path = resolve_socket_path(profile)?;
+    #[cfg(unix)]
+    let stream =
+        UnixStream::connect(socket_path).map_err(|e| format!("Failed to connect to host: {e}"))?;
+    #[cfg(not(unix))]
+    return Err("Only unix socket transport is currently supported in the Rust CLI".to_string());
+
+    let request = RequestEnvelope {
+        id: Some(request_id()),
+        action: action.to_string(),
+        params,
+    };
+    let mut writer = stream
+        .try_clone()
+        .map_err(|e| format!("Failed to open stream for writing: {e}"))?;
+    serde_json::to_writer(&mut writer, &request)
+        .map_err(|e| format!("Failed to encode request: {e}"))?;
+    writer
+        .write_all(b"\n")
+        .map_err(|e| format!("Failed to send request: {e}"))?;
+    writer
+        .flush()
+        .map_err(|e| format!("Failed to flush request: {e}"))?;
+
+    let reader = BufReader::new(stream);
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("Failed to read response: {e}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let response: ResponseEnvelope =
+            serde_json::from_str(&line).map_err(|e| format!("Invalid response payload: {e}"))?;
+        if response.progress.unwrap_or(false) {
+            if show_progress {
+                let data = response.data.unwrap_or(json!({}));
+                eprintln!("[tabctl] progress: {}", data);
+            }
+            continue;
+        }
+        return Ok(response);
+    }
+    Err("No response received".to_string())
+}
+
+fn render_response(
+    response: &ResponseEnvelope,
+    json_mode: bool,
+    pretty: bool,
+) -> Result<(), String> {
+    if json_mode {
+        if pretty {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(response).map_err(|e| e.to_string())?
+            );
+        } else {
+            println!(
+                "{}",
+                serde_json::to_string(response).map_err(|e| e.to_string())?
+            );
+        }
+        if !response.ok {
+            return Err("request failed".to_string());
+        }
+        return Ok(());
+    }
+
+    if response.ok {
+        if let Some(data) = &response.data {
+            if pretty {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(data).map_err(|e| e.to_string())?
+                );
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string(data).map_err(|e| e.to_string())?
+                );
+            }
+        } else {
+            println!("ok");
+        }
+        return Ok(());
+    }
+
+    if let Some(error) = &response.error {
+        eprintln!("error: {}", error.message);
+        if let Some(hint) = &error.hint {
+            eprintln!("hint: {hint}");
+        }
+    } else {
+        eprintln!("error: request failed");
+    }
+    Err("request failed".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn routes_group_alias_to_group_list_action() {
+        let matches = build_cli()
+            .try_get_matches_from(["tabctl", "group", "--window", "12"])
+            .expect("parse command");
+        let routed = route_command(&matches).expect("route command");
+        assert_eq!(routed.action, "group-list");
+        assert_eq!(routed.params["windowId"], "12");
+    }
+
+    #[test]
+    fn maps_close_flags_to_host_params() {
+        let matches = build_cli()
+            .try_get_matches_from(["tabctl", "close", "--tab", "1", "--confirm", "--dry-run"])
+            .expect("parse command");
+        let routed = route_command(&matches).expect("route command");
+        assert_eq!(routed.action, "close");
+        assert_eq!(routed.params["tabIds"], json!([1]));
+        assert_eq!(routed.params["confirmed"], json!(true));
+        assert_eq!(routed.params["dryRun"], json!(true));
+    }
+
+    #[test]
+    fn supports_dedupe_alias_with_analyze_action() {
+        let matches = build_cli()
+            .try_get_matches_from(["tabctl", "dedupe", "--window", "active"])
+            .expect("parse command");
+        let routed = route_command(&matches).expect("route command");
+        assert_eq!(routed.action, "analyze");
+        assert_eq!(routed.params["dedupe"], json!(true));
+    }
+
+    #[test]
+    fn routes_global_rendering_flags_and_profile() {
+        let matches = build_cli()
+            .try_get_matches_from([
+                "tabctl",
+                "--json",
+                "--no-pretty",
+                "--profile",
+                "edge-work",
+                "list",
+                "--all",
+            ])
+            .expect("parse command");
+        let routed = route_command(&matches).expect("route command");
+        assert!(routed.json);
+        assert!(!routed.pretty);
+        assert_eq!(routed.profile.as_deref(), Some("edge-work"));
+        assert_eq!(routed.params["all"], json!(true));
+    }
+
+    #[test]
+    fn maps_no_page_and_valid_tab_ids_only() {
+        let matches = build_cli()
+            .try_get_matches_from([
+                "tabctl",
+                "list",
+                "--tab",
+                "11",
+                "--tab",
+                "bad",
+                "--tab",
+                "14",
+                "--no-page",
+            ])
+            .expect("parse command");
+        let routed = route_command(&matches).expect("route command");
+        assert_eq!(routed.params["tabIds"], json!([11, 14]));
+        assert_eq!(routed.params["page"], json!(false));
+    }
+}

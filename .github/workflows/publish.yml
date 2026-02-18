@@ -21,23 +21,57 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           cache: 'npm'
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          go-version: '1.21'
+          targets: x86_64-pc-windows-gnu
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Install MinGW linker
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
 
       - name: Build
         run: npm run build
         env:
           TABCTL_VERSION_MODE: release
 
+      - name: Build Windows launcher
+        run: npm run build:launcher
+
       - name: Run tests
         run: npm test
         env:
           TABCTL_VERSION_MODE: release
+
+      - name: Resolve release channel
+        id: release
+        shell: bash
+        run: |
+          tag='${{ github.event.release.tag_name }}'
+          version="$(node -p "require('./package.json').version")"
+          expected_tag="v${version}"
+          if [ "$tag" != "$expected_tag" ]; then
+            echo "Release tag ($tag) must match package version tag ($expected_tag)." >&2
+            exit 1
+          fi
+          if [ '${{ github.event.release.prerelease }}' = 'true' ]; then
+            if [[ "$version" == *-alpha.* ]]; then
+              echo "dist_tag=alpha" >> "$GITHUB_OUTPUT"
+            elif [[ "$version" == *-rc.* ]]; then
+              echo "dist_tag=rc" >> "$GITHUB_OUTPUT"
+            else
+              echo "Prerelease must use an -alpha.N or -rc.N version." >&2
+              exit 1
+            fi
+          else
+            if [[ "$version" == *-* ]]; then
+              echo "Stable releases must not publish prerelease versions." >&2
+              exit 1
+            fi
+            echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Sync platform package version
         run: |
@@ -49,8 +83,8 @@ jobs:
           "
 
       - name: Publish tabctl-win32-x64
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --tag '${{ steps.release.outputs.dist_tag }}'
         working-directory: packages/win32-x64
 
       - name: Publish tabctl
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --tag '${{ steps.release.outputs.dist_tag }}'

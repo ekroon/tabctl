@@ -1,0 +1,11 @@
+[package]
+name = "tabctl-cli"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+clap = { version = "4", features = ["std"] }
+dirs = "5"
+serde_json = "1"
+tabctl-shared = { path = "../shared" }

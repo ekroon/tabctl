@@ -57,9 +57,9 @@ When tabctl is installed as a skill, your agent sees what you see. Just talk to 
 `tabctl` works through a lightweight local stack: the CLI talks to a native messaging host, which proxies requests to a browser extension. The host only runs while the browser is open and the extension is connected.
 
 This repo contains:
-- Chrome/Edge extension (tab/group inspection + actions)
-- Native messaging host (Node)
-- CLI (`tabctl`) for on-demand workflows
+- Chrome/Edge extension (`src/extension`, TypeScript boundary)
+- Rust workspace (`rust/crates/*`) for CLI, host, launcher, and shared runtime
+- Node packaging/build scripts for distribution
 
 ## Quick Start
 
@@ -263,19 +263,25 @@ Policy is shared across all profiles.
 
 ## Development
 
-### TypeScript workflow
-Source lives in `src/` and compiles to `build/`, then syncs to the runtime locations:
-- `src/extension/background.ts` -> `extension/background.js`
-- `src/host/host.ts` -> `host/host.js`
-- `src/cli/tabctl.ts` -> `cli/tabctl.js`
-- `src/tests/unit/*.ts` -> `tests/unit/*.js`
+### Build workflow
+Cargo is the primary build path for runtime components (`rust/` workspace), while TypeScript is limited to the browser extension boundary (`src/extension/`).
 
-Build and test:
+Build and verify:
 
 ```bash
 npm install
 npm run build
 npm test
+```
+
+Rust-only validation:
+```bash
+npm run rust:verify
+```
+
+Integration script (currently Rust-suite parity in CI/local):
+```bash
+npm run test:integration
 ```
 
 ### Versioning
@@ -286,7 +292,20 @@ Commands:
 npm run bump:patch
 npm run bump:minor
 npm run bump:major
+npm run bump:alpha
+npm run bump:rc
+npm run bump:stable
 ```
+
+Pre-release staging flow:
+- `bump:alpha` creates/increments `x.y.z-alpha.N`
+- `bump:rc` promotes alpha to `x.y.z-rc.1` (or increments RC)
+- `bump:stable` drops the prerelease suffix for final stable publish
+
+Release publishing (`.github/workflows/publish.yml`) enforces:
+- Git tag must match `package.json` version (`v<version>`)
+- prerelease tags publish to `alpha`/`rc`; stable publishes to `latest`
+- `npm run build`, `npm run build:launcher`, and `npm test` must pass before publish
 
 Local builds default to a dev version when a `.git` directory is present, appending the short SHA.
 ```bash

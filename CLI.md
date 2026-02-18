@@ -2,12 +2,16 @@
 
 ## Quick start
 ```bash
+npm install
+npm run build
 npm link
 tabctl --help
 tabctl help --json
 tabctl policy --init
 tabctl skill
 ```
+
+Runtime architecture: Rust-first workspace (`rust/crates/*`) for CLI/host/runtime, with TypeScript limited to the extension boundary (`src/extension`).
 
 ## Configuration
 
@@ -493,3 +497,13 @@ Each profile gets its own data directory with a separate socket and undo log. Po
 - Profile registry: `<configDir>/profiles.json`
 
 See [Configuration](#configuration) for how the data directory is resolved.
+
+## Build and release
+- `npm run build`: generates version metadata, compiles TypeScript artifacts, bundles the extension, and builds the Rust workspace.
+- `npm test`: runs build + Rust formatting/lint/tests (`npm run rust:verify`).
+- `npm run test:integration`: currently runs the Rust integration-equivalent suite (`npm run rust:test`).
+
+Release channel mapping:
+- `x.y.z-alpha.N` → npm `alpha`
+- `x.y.z-rc.N` → npm `rc`
+- `x.y.z` → npm `latest`
