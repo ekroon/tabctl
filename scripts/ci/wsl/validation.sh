@@ -261,8 +261,8 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $Workspace
 $tabctlCommand = @()
-$workspaceScript = Join-Path $Workspace "dist\\cli\\tabctl.js"
-if (Test-Path -LiteralPath $workspaceScript) {
+if (Test-Path -LiteralPath "dist\\cli\\tabctl.js") {
+  $workspaceScript = (Resolve-Path -LiteralPath "dist\\cli\\tabctl.js").Path
   $tabctlCommand = @("node", $workspaceScript)
 }
 $prefix = (& npm prefix -g).Trim()
@@ -284,7 +284,8 @@ if ($tabctlCommand.Count -eq 0) {
   }
 }
 if ($tabctlCommand.Count -eq 0) {
-  throw "Failed to resolve Windows tabctl executable (npm prefix -g: '$prefix')."
+  $workspaceScriptExists = Test-Path -LiteralPath "dist\\cli\\tabctl.js"
+  throw "Failed to resolve Windows tabctl executable (npm prefix -g: '$prefix', workspace script exists: '$workspaceScriptExists')."
 }
 $command = $tabctlCommand[0]
 $commandArgs = @()
