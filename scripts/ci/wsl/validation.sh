@@ -260,24 +260,35 @@ param(
 )
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $Workspace
-$tabctlPath = ""
+$tabctlCommand = @()
 $prefix = (& npm prefix -g).Trim()
 if ($prefix) {
-  $candidate = Join-Path $prefix "tabctl.cmd"
-  if (Test-Path -LiteralPath $candidate) {
-    $tabctlPath = $candidate
+  $cmdCandidate = Join-Path $prefix "tabctl.cmd"
+  if (Test-Path -LiteralPath $cmdCandidate) {
+    $tabctlCommand = @($cmdCandidate)
+  } else {
+    $scriptCandidate = Join-Path $prefix "node_modules\\tabctl\\dist\\cli\\tabctl.js"
+    if (Test-Path -LiteralPath $scriptCandidate) {
+      $tabctlCommand = @("node", $scriptCandidate)
+    }
   }
 }
-if (-not $tabctlPath) {
+if ($tabctlCommand.Count -eq 0) {
   $cmd = Get-Command tabctl -CommandType Application -ErrorAction SilentlyContinue
   if ($cmd) {
-    $tabctlPath = $cmd.Source
+    $tabctlCommand = @($cmd.Source)
   }
 }
-if (-not $tabctlPath) {
+if ($tabctlCommand.Count -eq 0) {
   throw "Failed to resolve Windows tabctl executable (npm prefix -g: '$prefix')."
 }
-$json = & $tabctlPath setup --browser chrome --extension-id $ExtensionId --json
+$command = $tabctlCommand[0]
+$commandArgs = @()
+if ($tabctlCommand.Count -gt 1) {
+  $commandArgs += $tabctlCommand[1..($tabctlCommand.Count - 1)]
+}
+$commandArgs += @("setup", "--browser", "chrome", "--extension-id", $ExtensionId, "--json")
+$json = & $command @commandArgs
 $exitCode = $LASTEXITCODE
 $json | Out-File -LiteralPath $OutputPath -Encoding utf8
 if ($exitCode -ne 0) {
