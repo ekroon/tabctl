@@ -11,7 +11,9 @@ npm test             # Build + run unit tests (no browser needed)
 npm run test:integration  # Run integration tests (requires Chrome)
 ```
 
-A **pre-commit hook** (`.githooks/pre-commit`) runs `npm test` and, when Chrome is available, `npm run test:integration` automatically. The hook is activated by `npm install` via the `prepare` script (`git config core.hooksPath .githooks`).
+A **split hook gate** is active via `core.hooksPath=.githooks` (set by `npm install`):
+- **pre-commit** (`.githooks/pre-commit`) runs fast unit checks (`npm run test:unit`).
+- **pre-push** (`.githooks/pre-push`) runs heavier checks (`npm run rust:verify` and `npm run test:integration`) when Rust/build/hook-related files changed.
 
 ## Project architecture
 
@@ -141,7 +143,7 @@ Always finish with:
 4. A screenshot-first smoke step: capture a screenshot before running selector-based extraction.
 5. If multiple profiles are configured, verify the active profile with `tabctl profile-show` before running smoke tests.
 
-> **Note:** The pre-commit hook enforces steps 1 and 2 automatically. If you bypass it with `--no-verify`, you must run them manually.
+> **Note:** Hooks provide split enforcement (fast on commit, heavy on push). If you bypass with `--no-verify` or `--no-verify` on push, run required checks manually.
 
 Example (recommended for development):
 ```bash
