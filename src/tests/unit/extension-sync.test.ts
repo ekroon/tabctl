@@ -230,11 +230,15 @@ test("synced host bundle is executable", () => {
 
     // Verify the bundle actually runs (will exit when stdin closes)
     const { spawnSync } = require("node:child_process");
+    const testEnv: NodeJS.ProcessEnv = { ...process.env, XDG_STATE_HOME: dir, XDG_CONFIG_HOME: cleanConfigHome };
+    // Clear WSL env vars to avoid TCP port conflicts in tests
+    delete testEnv.WSL_DISTRO_NAME;
+    delete testEnv.WSL_INTEROP;
     const proc = spawnSync(process.execPath, [result.hostPath], {
       input: "{}",
       encoding: "utf-8",
       timeout: 5000,
-      env: { ...process.env, XDG_STATE_HOME: dir, XDG_CONFIG_HOME: cleanConfigHome },
+      env: testEnv,
     });
     // Host should start and exit cleanly when stdin closes
     assert.ok(proc.stderr.includes("Listening on") || proc.stderr.includes("Extension disconnected"),

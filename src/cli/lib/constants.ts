@@ -1,6 +1,6 @@
 // Re-export version info from shared module
 export { VERSION, BASE_VERSION, GIT_SHA, DIRTY } from "../../shared/version";
-export { resolveConfig } from "../../shared/config";
+export { resolveConfig, parseSocketPath, readTcpPortFromHost, writeTcpPortForWSL } from "../../shared/config";
 export type { TabctlConfig } from "../../shared/config";
 
 export const HOST_NAME = "com.erwinkroon.tabctl";

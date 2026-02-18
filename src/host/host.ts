@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import net from "node:net";
 import crypto from "node:crypto";
-import { resolveConfig } from "../shared/config";
+import { resolveConfig, parseSocketPath, writeTcpPortForWSL, DEFAULT_WSL_TCP_PORT } from "../shared/config";
 import {
   handleNativeMessage as _handleNativeMessage,
   handleCliRequest as _handleCliRequest,
@@ -83,67 +83,151 @@ process.stdin.on("end", () => {
 
 function startSocketServer() {
   ensureDir();
+
+  const socketInfo = parseSocketPath(SOCKET_PATH);
+
   // Named pipes on Windows don't use filesystem paths; skip cleanup
-  if (process.platform !== "win32" && fs.existsSync(SOCKET_PATH)) {
+  if (socketInfo.type === "unix" && fs.existsSync(SOCKET_PATH)) {
     fs.unlinkSync(SOCKET_PATH);
   }
 
-  const server = net.createServer((socket) => {
-    socket.setEncoding("utf8");
-    let buffer = "";
+  const servers: net.Server[] = [];
 
-    socket.on("data", (data) => {
-      buffer += data;
-      let index;
-      while ((index = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, index).trim();
-        buffer = buffer.slice(index + 1);
-        if (!line) {
-          continue;
+  function createHandler() {
+    return (socket: net.Socket) => {
+      socket.setEncoding("utf8");
+      let buffer = "";
+
+      socket.on("data", (data) => {
+        buffer += data;
+        let index;
+        while ((index = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, index).trim();
+          buffer = buffer.slice(index + 1);
+          if (!line) {
+            continue;
+          }
+          let request: Record<string, unknown>;
+          try {
+            request = JSON.parse(line);
+          } catch {
+            respond(socket, { ok: false, error: { message: "Invalid JSON" } });
+            continue;
+          }
+          handleCliRequest(socket, request);
         }
-        let request: Record<string, unknown>;
-        try {
-          request = JSON.parse(line);
-        } catch {
-          respond(socket, { ok: false, error: { message: "Invalid JSON" } });
-          continue;
-        }
-        handleCliRequest(socket, request);
+      });
+
+      socket.on("error", (error) => {
+        log("CLI socket error", error.message);
+      });
+    };
+  }
+
+  // On Windows, listen on both named pipe (for Windows CLI) and TCP (for WSL CLI)
+  if (process.platform === "win32") {
+    // Primary: named pipe
+    const pipeServer = net.createServer(createHandler());
+    servers.push(pipeServer);
+
+    pipeServer.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE") {
+        log("Named pipe in use, retrying...");
+        setTimeout(() => pipeServer.listen(SOCKET_PATH), 500);
+      } else {
+        throw err;
       }
     });
 
-    socket.on("error", (error) => {
-      log("CLI socket error", error.message);
+    pipeServer.listen(SOCKET_PATH, () => {
+      log(`Listening on ${SOCKET_PATH}`);
     });
-  });
+
+    // Secondary: TCP socket for WSL access
+    // Start at default port 24050, then increment if taken (up to +10 attempts)
+    const defaultPort = DEFAULT_WSL_TCP_PORT;
+    
+    function tryTcpPort(port: number, attemptsLeft: number) {
+      if (attemptsLeft <= 0) {
+        log(`Failed to bind TCP socket after trying ports ${defaultPort}-${port - 1}`);
+        return;
+      }
+      
+      const tcpServer = net.createServer(createHandler());
+      servers.push(tcpServer);
+
+      tcpServer.on("error", (err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE") {
+          log(`Port ${port} already in use, trying ${port + 1}...`);
+          // Remove failed server from list
+          const idx = servers.indexOf(tcpServer);
+          if (idx >= 0) servers.splice(idx, 1);
+          // Try next port
+          tryTcpPort(port + 1, attemptsLeft - 1);
+        } else {
+          log(`TCP socket failed (port ${port}): ${err.message}`);
+        }
+      });
+
+      tcpServer.listen(port, "127.0.0.1", () => {
+        log(`Listening on tcp://127.0.0.1:${port} (for WSL)`);
+        if (port !== defaultPort) {
+          log(`Note: Using port ${port} instead of default ${defaultPort} (port conflict)`);
+        }
+        // Write actual port file for WSL to discover
+        writeTcpPortForWSL(config.dataDir, port);
+      });
+    }
+    
+    // Start with default port, allow up to 10 retries
+    tryTcpPort(defaultPort, 10);
+
+    return servers;
+  }
+
+  // Non-Windows: single server (TCP if configured, otherwise Unix socket)
+  const server = net.createServer(createHandler());
 
   let retries = 0;
-  const maxRetries = process.platform === "win32" ? 5 : 0;
+  const maxRetries = 0;
 
   server.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE" && retries < maxRetries) {
       retries++;
       log(`Socket in use, retrying (${retries}/${maxRetries})…`);
-      setTimeout(() => server.listen(SOCKET_PATH), 500);
+      setTimeout(() => {
+        if (socketInfo.type === "tcp") {
+          server.listen(socketInfo.port!, socketInfo.host!);
+        } else {
+          server.listen(SOCKET_PATH);
+        }
+      }, 500);
     } else {
       throw err;
     }
   });
 
-  server.listen(SOCKET_PATH, () => {
-    if (process.platform !== "win32") {
-      try { fs.chmodSync(SOCKET_PATH, 0o600); } catch { /* ignore on platforms without chmod */ }
-    }
-    log(`Listening on ${SOCKET_PATH}`);
-  });
+  if (socketInfo.type === "tcp") {
+    server.listen(socketInfo.port!, socketInfo.host!, () => {
+      log(`Listening on tcp://${socketInfo.host}:${socketInfo.port}`);
+    });
+  } else {
+    server.listen(SOCKET_PATH, () => {
+      if (socketInfo.type === "unix") {
+        try { fs.chmodSync(SOCKET_PATH, 0o600); } catch { /* ignore on platforms without chmod */ }
+      }
+      log(`Listening on ${SOCKET_PATH}`);
+    });
+  }
 
-  return server;
+  return [server];
 }
 
 function cleanupAndExit(code: number) {
   try {
-    // Named pipes on Windows don't need filesystem cleanup
-    if (process.platform !== "win32" && fs.existsSync(SOCKET_PATH)) {
+    const socketInfo = parseSocketPath(SOCKET_PATH);
+    // Only Unix sockets need filesystem cleanup
+    if (socketInfo.type === "unix" && fs.existsSync(SOCKET_PATH)) {
       fs.unlinkSync(SOCKET_PATH);
     }
   } catch {
@@ -152,9 +236,11 @@ function cleanupAndExit(code: number) {
   process.exit(code);
 }
 
-const server = startSocketServer();
+const servers = startSocketServer();
 
 process.on("SIGINT", () => cleanupAndExit(0));
 process.on("SIGTERM", () => cleanupAndExit(0));
 
-server.on("close", () => cleanupAndExit(0));
+for (const server of servers) {
+  server.on("close", () => cleanupAndExit(0));
+}

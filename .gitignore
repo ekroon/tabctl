@@ -6,3 +6,5 @@ node_modules/
 *.sock
 .DS_Store
 /src/shared/version.ts
+
+.idea

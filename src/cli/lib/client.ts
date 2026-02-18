@@ -1,5 +1,5 @@
 import net from "node:net";
-import { resolveConfig } from "./constants";
+import { resolveConfig, parseSocketPath } from "./constants";
 import type { ProgressCallback } from "./types";
 
 export function createRequestId(): string {
@@ -12,7 +12,15 @@ export function sendRequest(
 ): Promise<Record<string, unknown>> {
   return new Promise<Record<string, unknown>>((resolve, reject) => {
     const { socketPath } = resolveConfig();
-    const client = net.createConnection(socketPath);
+    const socketInfo = parseSocketPath(socketPath);
+
+    let client: net.Socket;
+    if (socketInfo.type === "tcp") {
+      client = net.createConnection({ port: socketInfo.port!, host: socketInfo.host! });
+    } else {
+      client = net.createConnection(socketPath);
+    }
+
     let buffer = "";
 
     client.on("connect", () => {
@@ -68,7 +76,15 @@ export async function fetchSnapshot(): Promise<Record<string, unknown> | null> {
 export function sendFireAndForget(payload: Record<string, unknown>): void {
   try {
     const { socketPath } = resolveConfig();
-    const client = net.createConnection(socketPath);
+    const socketInfo = parseSocketPath(socketPath);
+
+    let client: net.Socket;
+    if (socketInfo.type === "tcp") {
+      client = net.createConnection({ port: socketInfo.port!, host: socketInfo.host! });
+    } else {
+      client = net.createConnection(socketPath);
+    }
+
     client.on("connect", () => {
       client.write(`${JSON.stringify(payload)}\n`);
       // Unref after write so Node can exit without waiting for response
