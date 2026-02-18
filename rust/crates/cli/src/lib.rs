@@ -1028,7 +1028,11 @@ mod tests {
                 );
             },
         );
-        std::fs::remove_dir_all(&temp_root).expect("remove temp directory");
+        if let Err(err) = std::fs::remove_dir_all(&temp_root) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                panic!("remove temp directory: {err}");
+            }
+        }
     }
 
     #[cfg(windows)]

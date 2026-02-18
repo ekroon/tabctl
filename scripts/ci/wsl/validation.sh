@@ -234,17 +234,6 @@ run_setup_validation() {
   else
     cmd.exe /d /c npm install -g "$win_workspace" --no-fund --no-audit
   fi
-  local win_where_tabctl win_where_tabctl_status win_tabctl_path
-  set +e
-  win_where_tabctl="$(cmd.exe /d /s /c "where tabctl" 2>&1)"
-  win_where_tabctl_status="$?"
-  set -e
-  win_tabctl_path="$(printf '%s\n' "$win_where_tabctl" | tr -d '\r' | grep -E '^[A-Za-z]:\\\\' | head -n1 || true)"
-  if [ "$win_where_tabctl_status" -ne 0 ] || [ -z "$win_tabctl_path" ]; then
-    echo "Failed to resolve Windows tabctl executable via 'where tabctl'." >&2
-    printf '%s\n' "$win_where_tabctl" | tr -d '\r' >&2
-    return 1
-  fi
   local extension_id
   extension_id="$(node <<'NODE'
 const crypto = require("node:crypto");
@@ -266,13 +255,29 @@ NODE
   cat > "$ps_runner" <<'POWERSHELL'
 param(
   [Parameter(Mandatory=$true)][string]$Workspace,
-  [Parameter(Mandatory=$true)][string]$TabctlPath,
   [Parameter(Mandatory=$true)][string]$ExtensionId,
   [Parameter(Mandatory=$true)][string]$OutputPath
 )
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $Workspace
-$json = & $TabctlPath setup --browser chrome --extension-id $ExtensionId --json
+$tabctlPath = ""
+$prefix = (& npm prefix -g).Trim()
+if ($prefix) {
+  $candidate = Join-Path $prefix "tabctl.cmd"
+  if (Test-Path -LiteralPath $candidate) {
+    $tabctlPath = $candidate
+  }
+}
+if (-not $tabctlPath) {
+  $cmd = Get-Command tabctl -CommandType Application -ErrorAction SilentlyContinue
+  if ($cmd) {
+    $tabctlPath = $cmd.Source
+  }
+}
+if (-not $tabctlPath) {
+  throw "Failed to resolve Windows tabctl executable (npm prefix -g: '$prefix')."
+}
+$json = & $tabctlPath setup --browser chrome --extension-id $ExtensionId --json
 $exitCode = $LASTEXITCODE
 $json | Out-File -LiteralPath $OutputPath -Encoding utf8
 if ($exitCode -ne 0) {
@@ -280,7 +285,7 @@ if ($exitCode -ne 0) {
 }
 POWERSHELL
   set +e
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$win_ps_runner" "$win_workspace" "$win_tabctl_path" "$extension_id" "$win_setup_output"
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$win_ps_runner" "$win_workspace" "$extension_id" "$win_setup_output"
   setup_status="$?"
   set -e
   rm -f "$ps_runner"
