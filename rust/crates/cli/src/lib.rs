@@ -476,7 +476,7 @@ fn resolve_socket_endpoint(profile: Option<&str>) -> Result<SocketEndpoint, Stri
     if let Ok(path) = std::env::var("TABCTL_SOCKET") {
         if !path.trim().is_empty() {
             let endpoint = SocketEndpoint::parse(&path)?;
-            #[cfg(all(target_os = "linux"))]
+            #[cfg(target_os = "linux")]
             if matches!(endpoint, SocketEndpoint::Pipe { .. }) && is_wsl_environment() {
                 if let Some(tcp) = discover_wsl_tcp_endpoint(profile) {
                     return Ok(tcp);
@@ -485,7 +485,7 @@ fn resolve_socket_endpoint(profile: Option<&str>) -> Result<SocketEndpoint, Stri
             return Ok(endpoint);
         }
     }
-    #[cfg(all(target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     if is_wsl_environment() {
         if let Some(tcp) = discover_wsl_tcp_endpoint(profile) {
             return Ok(tcp);
@@ -503,7 +503,7 @@ fn resolve_socket_endpoint(profile: Option<&str>) -> Result<SocketEndpoint, Stri
     SocketEndpoint::parse(&format!("{data_dir}/tabctl.sock"))
 }
 
-#[cfg(all(target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn is_wsl_environment() -> bool {
     std::env::var_os("WSL_INTEROP").is_some()
         || std::env::var_os("WSL_DISTRO_NAME").is_some()
@@ -512,7 +512,7 @@ fn is_wsl_environment() -> bool {
             .unwrap_or(false)
 }
 
-#[cfg(all(target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn discover_wsl_tcp_endpoint(profile: Option<&str>) -> Option<SocketEndpoint> {
     if let Ok(value) = std::env::var("TABCTL_TCP_PORT") {
         if let Ok(port) = value.trim().parse::<u16>() {
@@ -531,7 +531,7 @@ fn discover_wsl_tcp_endpoint(profile: Option<&str>) -> Option<SocketEndpoint> {
     })
 }
 
-#[cfg(all(target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn discover_wsl_tcp_port_from_data_dir(data_dir: &str) -> Option<u16> {
     for path in wsl_tcp_port_candidates(data_dir) {
         if let Some(port) = read_tcp_port_file(&path) {
@@ -541,7 +541,7 @@ fn discover_wsl_tcp_port_from_data_dir(data_dir: &str) -> Option<u16> {
     None
 }
 
-#[cfg(all(target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn wsl_tcp_port_candidates(data_dir: &str) -> Vec<PathBuf> {
     let mut candidates = vec![PathBuf::from(data_dir).join(WSL_TCP_PORT_FILENAME)];
     let Some(relative_suffix) = tabctl_relative_suffix(Path::new(data_dir)) else {
@@ -567,7 +567,7 @@ fn wsl_tcp_port_candidates(data_dir: &str) -> Vec<PathBuf> {
     candidates
 }
 
-#[cfg(all(target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn tabctl_relative_suffix(path: &Path) -> Option<PathBuf> {
     let mut relative = PathBuf::new();
     let mut found = false;
@@ -583,7 +583,7 @@ fn tabctl_relative_suffix(path: &Path) -> Option<PathBuf> {
     found.then_some(relative)
 }
 
-#[cfg(all(target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn read_tcp_port_file(path: &Path) -> Option<u16> {
     let content = fs::read_to_string(path).ok()?;
     let port = content.trim().parse::<u16>().ok()?;
@@ -812,7 +812,9 @@ mod tests {
     where
         F: FnOnce(),
     {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let saved: Vec<(String, Option<OsString>)> = vars
             .iter()
             .map(|(key, _)| ((*key).to_string(), std::env::var_os(key)))
@@ -825,7 +827,7 @@ mod tests {
                 }
             }
         }
-        run();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
         for (key, value) in saved {
             unsafe {
                 match value {
@@ -833,6 +835,9 @@ mod tests {
                     None => std::env::remove_var(&key),
                 }
             }
+        }
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
         }
     }
 

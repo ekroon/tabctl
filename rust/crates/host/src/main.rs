@@ -26,14 +26,12 @@ use std::os::windows::ffi::OsStrExt;
 #[cfg(windows)]
 use std::os::windows::io::{FromRawHandle, RawHandle};
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE,
-};
+use windows_sys::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE};
 #[cfg(windows)]
-use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_FIRST_PIPE_INSTANCE;
+use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
 #[cfg(windows)]
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, PIPE_ACCESS_DUPLEX, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
+    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
     PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 
@@ -1104,7 +1102,10 @@ fn run_windows() -> io::Result<()> {
 
     log_line(&format!("listening on {pipe_path}"));
     log_line(&format!("listening on tcp://127.0.0.1:{tcp_port}"));
-    log_line(&format!("published tcp port file {}", tcp_port_file.display()));
+    log_line(&format!(
+        "published tcp port file {}",
+        tcp_port_file.display()
+    ));
 
     loop {
         match connect_named_pipe_instance(&pipe_path) {
@@ -1491,7 +1492,10 @@ mod tests {
                     Value::String("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string()),
                 ),
                 ("version".to_string(), Value::String("1.2.3".to_string())),
-                ("component".to_string(), Value::String("extension".to_string())),
+                (
+                    "component".to_string(),
+                    Value::String("extension".to_string()),
+                ),
             ]))),
             error: None,
         };
