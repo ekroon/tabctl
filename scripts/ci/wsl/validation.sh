@@ -261,7 +261,10 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $Workspace
 $tabctlCommand = @()
-if (Test-Path -LiteralPath "dist\\cli\\tabctl.js") {
+if (Test-Path -LiteralPath "rust\\target\\debug\\tabctl-cli.exe") {
+  $tabctlCommand = @((Resolve-Path -LiteralPath "rust\\target\\debug\\tabctl-cli.exe").Path)
+}
+if ($tabctlCommand.Count -eq 0 -and (Test-Path -LiteralPath "dist\\cli\\tabctl.js")) {
   $workspaceScript = (Resolve-Path -LiteralPath "dist\\cli\\tabctl.js").Path
   $tabctlCommand = @("node", $workspaceScript)
 }
@@ -285,7 +288,8 @@ if ($tabctlCommand.Count -eq 0) {
 }
 if ($tabctlCommand.Count -eq 0) {
   $workspaceScriptExists = Test-Path -LiteralPath "dist\\cli\\tabctl.js"
-  throw "Failed to resolve Windows tabctl executable (npm prefix -g: '$prefix', workspace script exists: '$workspaceScriptExists')."
+  $workspaceRustCliExists = Test-Path -LiteralPath "rust\\target\\debug\\tabctl-cli.exe"
+  throw "Failed to resolve Windows tabctl executable (npm prefix -g: '$prefix', workspace rust cli exists: '$workspaceRustCliExists', workspace script exists: '$workspaceScriptExists')."
 }
 $command = $tabctlCommand[0]
 $commandArgs = @()
@@ -336,15 +340,17 @@ NODE
 run_windows_invocation_checks() {
   cd "$WSL_WORKSPACE"
   local expected_version
+  local win_workspace
   expected_version="$(node -e 'process.stdout.write(require("./package.json").version)')"
+  win_workspace="$(wslpath -w "$WSL_WORKSPACE")"
 
   local cmd_tabctl_version cmd_tabctl_version_status
   set +e
-  cmd_tabctl_version="$(timeout 10s cmd.exe /d /s /c "tabctl --version" 2>&1)"
+  cmd_tabctl_version="$(timeout 10s cmd.exe /d /s /c "\"$win_workspace\\rust\\target\\debug\\tabctl-cli.exe\" --version" 2>&1)"
   cmd_tabctl_version_status="$?"
   set -e
   if [ "$cmd_tabctl_version_status" -ne 0 ]; then
-    echo "Windows invocation check failed: cmd.exe could not run tabctl --version." >&2
+    echo "Windows invocation check failed: cmd.exe could not run rust\\target\\debug\\tabctl-cli.exe --version." >&2
     printf '%s\n' "$cmd_tabctl_version" | tr -d '\r' >&2
     return 1
   fi
@@ -360,16 +366,25 @@ run_windows_invocation_checks() {
   win_ps_runner="$(wslpath -w "$ps_runner")"
   cat > "$ps_runner" <<'POWERSHELL'
 param(
-  [Parameter(Mandatory=$true)][string]$ExpectedVersion
+  [Parameter(Mandatory=$true)][string]$ExpectedVersion,
+  [Parameter(Mandatory=$true)][string]$Workspace
 )
 $ErrorActionPreference = "Stop"
 
-$tabctlVersion = (& tabctl --version).Trim()
+$cliPath = Join-Path $Workspace "rust\\target\\debug\\tabctl-cli.exe"
+if (Test-Path -LiteralPath $cliPath) {
+  $tabctlVersion = (& $cliPath --version).Trim()
+} else {
+  $tabctlVersion = (& tabctl --version).Trim()
+}
 if ($tabctlVersion -ne $ExpectedVersion) {
   throw "expected tabctl --version=$ExpectedVersion via PowerShell, got '$tabctlVersion'"
 }
 
-$hostPath = (Get-Command tabctl-host.exe -CommandType Application -ErrorAction Stop).Source
+$hostPath = Join-Path $Workspace "rust\\target\\debug\\tabctl-host.exe"
+if (-not (Test-Path -LiteralPath $hostPath)) {
+  $hostPath = (Get-Command tabctl-host.exe -CommandType Application -ErrorAction Stop).Source
+}
 if (-not (Test-Path -LiteralPath $hostPath)) {
   throw "tabctl-host.exe was resolved but path does not exist: $hostPath"
 }
@@ -444,7 +459,7 @@ if (-not $process.WaitForExit(10000)) {
 POWERSHELL
 
   set +e
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$win_ps_runner" "$expected_version"
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$win_ps_runner" "$expected_version" "$win_workspace"
   local ps_status="$?"
   set -e
   rm -f "$ps_runner"
