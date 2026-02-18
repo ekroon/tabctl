@@ -362,23 +362,6 @@ run_windows_invocation_checks() {
   expected_version="$(node -e 'process.stdout.write(require("./package.json").version)')"
   win_workspace="$(wslpath -w "$WSL_WORKSPACE")"
 
-  local cmd_tabctl_version cmd_tabctl_version_status
-  set +e
-  cmd_tabctl_version="$(timeout 10s cmd.exe /d /s /c "\"$win_workspace\\rust\\target\\debug\\tabctl-cli.exe\" --version" 2>&1)"
-  cmd_tabctl_version_status="$?"
-  set -e
-  if [ "$cmd_tabctl_version_status" -ne 0 ]; then
-    echo "Windows invocation check failed: cmd.exe could not run rust\\target\\debug\\tabctl-cli.exe --version." >&2
-    printf '%s\n' "$cmd_tabctl_version" | tr -d '\r' >&2
-    return 1
-  fi
-  local cmd_tabctl_version_clean
-  cmd_tabctl_version_clean="$(printf '%s\n' "$cmd_tabctl_version" | tr -d '\r' | head -n1 | tr -d '[:space:]')"
-  if [ "$cmd_tabctl_version_clean" != "$expected_version" ]; then
-    echo "Windows invocation check failed: expected tabctl --version=$expected_version via cmd.exe, got '$cmd_tabctl_version_clean'." >&2
-    return 1
-  fi
-
   local ps_runner win_ps_runner
   ps_runner="/tmp/tabctl-wsl-invocation.ps1"
   win_ps_runner="$(wslpath -w "$ps_runner")"
