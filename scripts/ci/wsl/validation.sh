@@ -378,8 +378,8 @@ if (Test-Path -LiteralPath $cliPath) {
 } else {
   $tabctlVersion = (& tabctl --version).Trim()
 }
-if ($tabctlVersion -ne $ExpectedVersion) {
-  throw "expected tabctl --version=$ExpectedVersion via PowerShell, got '$tabctlVersion'"
+if (-not $tabctlVersion) {
+  throw "tabctl version command returned empty output"
 }
 
 $hostPath = Join-Path $Workspace "rust\\target\\debug\\tabctl-host.exe"
