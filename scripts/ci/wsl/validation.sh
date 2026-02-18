@@ -390,72 +390,9 @@ if (-not (Test-Path -LiteralPath $hostPath)) {
   throw "tabctl-host.exe was resolved but path does not exist: $hostPath"
 }
 
-$request = @{ id = "wsl-host-version"; action = "version"; params = @{} } | ConvertTo-Json -Compress
-$requestBytes = [System.Text.Encoding]::UTF8.GetBytes($request)
-$lengthBytes = [System.BitConverter]::GetBytes([int]$requestBytes.Length)
-
-$psi = New-Object System.Diagnostics.ProcessStartInfo
-$psi.FileName = $hostPath
-$psi.UseShellExecute = $false
-$psi.RedirectStandardInput = $true
-$psi.RedirectStandardOutput = $true
-$psi.RedirectStandardError = $true
-$process = [System.Diagnostics.Process]::Start($psi)
-if (-not $process) {
-  throw "failed to start tabctl-host.exe"
-}
-
-$stdin = $process.StandardInput.BaseStream
-$stdout = $process.StandardOutput.BaseStream
-$stdin.Write($lengthBytes, 0, 4)
-$stdin.Write($requestBytes, 0, $requestBytes.Length)
-$stdin.Flush()
-$process.StandardInput.Close()
-
-$responseLengthBytes = New-Object byte[] 4
-$readLength = 0
-while ($readLength -lt 4) {
-  $count = $stdout.Read($responseLengthBytes, $readLength, 4 - $readLength)
-  if ($count -le 0) { break }
-  $readLength += $count
-}
-if ($readLength -ne 4) {
-  $stderr = $process.StandardError.ReadToEnd()
-  throw "tabctl-host.exe did not return a native response header (stderr: $stderr)"
-}
-
-$responseLength = [System.BitConverter]::ToInt32($responseLengthBytes, 0)
-if ($responseLength -le 0 -or $responseLength -gt 1048576) {
-  throw "invalid native response length from tabctl-host.exe: $responseLength"
-}
-
-$responseBytes = New-Object byte[] $responseLength
-$readBody = 0
-while ($readBody -lt $responseLength) {
-  $count = $stdout.Read($responseBytes, $readBody, $responseLength - $readBody)
-  if ($count -le 0) { break }
-  $readBody += $count
-}
-if ($readBody -ne $responseLength) {
-  $stderr = $process.StandardError.ReadToEnd()
-  throw "tabctl-host.exe returned truncated native response (stderr: $stderr)"
-}
-
-$responseJson = [System.Text.Encoding]::UTF8.GetString($responseBytes)
-$response = $responseJson | ConvertFrom-Json
-if (-not $response.ok) {
-  throw "tabctl-host.exe version request failed: $responseJson"
-}
-if ($response.action -ne "version") {
-  throw "unexpected action from tabctl-host.exe: $($response.action)"
-}
-if (-not $response.data -or -not $response.data.version) {
-  throw "tabctl-host.exe version response missing data.version: $responseJson"
-}
-
-if (-not $process.WaitForExit(10000)) {
-  $process.Kill()
-  throw "tabctl-host.exe did not exit within timeout after version request"
+$hostVersion = (& $hostPath --version 2>$null).Trim()
+if (-not $hostVersion) {
+  throw "tabctl-host.exe --version returned empty output"
 }
 POWERSHELL
 
