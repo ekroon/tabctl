@@ -297,9 +297,11 @@ if ($tabctlCommand.Count -gt 1) {
   $commandArgs += $tabctlCommand[1..($tabctlCommand.Count - 1)]
 }
 $commandArgs += @("setup", "--browser", "chrome", "--extension-id", $ExtensionId, "--json")
-$PSNativeCommandUseErrorActionPreference = $false
+$previousErrorAction = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 $json = & $command @commandArgs 2>&1
 $exitCode = $LASTEXITCODE
+$ErrorActionPreference = $previousErrorAction
 if ($exitCode -ne 0) {
   $errorText = ($json | Out-String)
   if ($errorText -match "unrecognized subcommand 'setup'") {
