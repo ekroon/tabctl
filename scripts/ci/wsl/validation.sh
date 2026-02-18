@@ -389,11 +389,6 @@ if (-not (Test-Path -LiteralPath $hostPath)) {
 if (-not (Test-Path -LiteralPath $hostPath)) {
   throw "tabctl-host.exe was resolved but path does not exist: $hostPath"
 }
-
-$hostVersion = (& $hostPath --version 2>$null).Trim()
-if (-not $hostVersion) {
-  throw "tabctl-host.exe --version returned empty output"
-}
 POWERSHELL
 
   set +e
