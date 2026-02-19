@@ -33,6 +33,7 @@
     "bump:minor": "node scripts/bump-version.js minor",
     "bump:patch": "node scripts/bump-version.js patch",
     "bump:alpha": "node scripts/bump-version.js alpha",
+    "check:targets": "bash scripts/check-targets.sh",
     "bump:rc": "node scripts/bump-version.js rc",
     "bump:stable": "node scripts/bump-version.js stable",
     "rust:check": "cargo check --manifest-path rust/Cargo.toml --workspace --all-targets",

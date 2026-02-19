@@ -882,7 +882,7 @@ fn read_tcp_port_file(path: &Path) -> Option<u16> {
     (port > 0).then_some(port)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(windows)]
 fn resolve_windows_pipe_endpoint(data_dir: &str) -> SocketEndpoint {
     let mut hasher = Sha256::new();
     hasher.update(data_dir.as_bytes());
