@@ -368,18 +368,11 @@ fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
 /// Prefers the current running executable; falls back to searching PATH.
 fn resolve_tabctl_binary_path() -> String {
     if let Ok(exe) = std::env::current_exe() {
-        let path_str = if let Ok(canonical) = exe.canonicalize() {
+        let path_str = if let Ok(canonical) = dunce::canonicalize(&exe) {
             canonical.display().to_string()
         } else {
             exe.display().to_string()
         };
-        // On Windows, canonicalize() may add the \\?\ extended path prefix.
-        // Strip it so downstream tools see a conventional Windows path.
-        #[cfg(windows)]
-        let path_str = path_str
-            .strip_prefix(r"\\?\")
-            .unwrap_or(&path_str)
-            .to_string();
         return path_str;
     }
     // Fallback: look up "tabctl" in PATH
