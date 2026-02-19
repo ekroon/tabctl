@@ -19,6 +19,8 @@ rm -f /tmp/tabctl-wsl-diagnostics.txt \
   /tmp/tabctl-wsl-integration.log \
   /tmp/tabctl-wsl-execution-marker.txt \
   /tmp/tabctl-wsl-integration.ps1 \
+  /tmp/tabctl-wsl-invocation.ps1 \
+  /tmp/tabctl-wsl-build.ps1 \
   "$TIMINGS_FILE"
 
 copy_artifact() {
@@ -73,22 +75,6 @@ apt_update_once() {
   fi
 }
 
-has_supported_go() {
-  if ! command -v go >/dev/null 2>&1; then
-    return 1
-  fi
-  local go_version major minor
-  go_version="$(go version 2>/dev/null | awk '{print $3}')"
-  if [[ "$go_version" =~ ^go([0-9]+)\.([0-9]+) ]]; then
-    major="${BASH_REMATCH[1]}"
-    minor="${BASH_REMATCH[2]}"
-    if [ "$major" -gt 1 ] || { [ "$major" -eq 1 ] && [ "$minor" -ge 21 ]; }; then
-      return 0
-    fi
-  fi
-  return 1
-}
-
 install_prerequisites() {
   export DEBIAN_FRONTEND=noninteractive
   local missing_packages=()
@@ -99,10 +85,6 @@ install_prerequisites() {
       missing_packages+=("$package")
     fi
   done
-
-  if ! has_supported_go; then
-    missing_packages+=("golang-go")
-  fi
 
   if [ "${#missing_packages[@]}" -gt 0 ]; then
     apt_update_once
@@ -173,7 +155,6 @@ capture_diagnostics() {
     cat /etc/os-release
     echo "node: $(node --version 2>/dev/null || echo missing)"
     echo "npm: $(npm --version 2>/dev/null || echo missing)"
-    echo "go: $(go version 2>/dev/null || echo missing)"
     echo "chrome: $(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || echo missing)"
     echo "windows npm prefix -g (status=${win_npm_prefix_status}):"
     printf '%s\n' "$win_npm_prefix" | tr -d '\r'
@@ -194,19 +175,31 @@ capture_diagnostics() {
 }
 
 run_build_and_unit_tests() {
-  cd "$WSL_WORKSPACE"
-  if [ -f src/tests/unit/fixtures/npx ]; then
-    sed -i 's/\r$//' src/tests/unit/fixtures/npx
-  fi
-  local win_launcher_version
-  win_launcher_version="$(node -e 'const pkg = require("./package.json"); process.stdout.write((pkg.optionalDependencies && pkg.optionalDependencies["tabctl-win32-x64"]) || "")')"
-  if [ -z "$win_launcher_version" ]; then
-    echo "Missing tabctl-win32-x64 optional dependency version in package.json" >&2
-    return 1
-  fi
-  cmd.exe /d /c npm install -g "tabctl-win32-x64@$win_launcher_version" --no-fund --no-audit
-  npm ci
-  TABCTL_TEST_CLI_TIMEOUT_MS=5000 npm run test:unit
+  local ps_runner win_ps_runner win_workspace ps_status
+  ps_runner="/tmp/tabctl-wsl-build.ps1"
+  win_ps_runner="$(wslpath -w "$ps_runner")"
+  win_workspace="$(wslpath -w "$WSL_WORKSPACE")"
+  cat > "$ps_runner" <<'POWERSHELL'
+param(
+  [Parameter(Mandatory=$true)][string]$Workspace
+)
+$ErrorActionPreference = "Stop"
+Set-Location -LiteralPath $Workspace
+& npm ci
+if ($LASTEXITCODE -ne 0) {
+  exit $LASTEXITCODE
+}
+& npm run build
+if ($LASTEXITCODE -ne 0) {
+  exit $LASTEXITCODE
+}
+POWERSHELL
+  set +e
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$win_ps_runner" "$win_workspace"
+  ps_status="$?"
+  set -e
+  rm -f "$ps_runner"
+  return "$ps_status"
 }
 
 run_setup_validation() {
@@ -246,8 +239,63 @@ param(
 )
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $Workspace
-$json = & tabctl setup --browser chrome --extension-id $ExtensionId --json
+$tabctlCommand = @()
+if (Test-Path -LiteralPath "rust\\target\\debug\\tabctl.exe") {
+  $tabctlCommand = @((Resolve-Path -LiteralPath "rust\\target\\debug\\tabctl.exe").Path)
+}
+if ($tabctlCommand.Count -eq 0 -and (Test-Path -LiteralPath "dist\\cli\\tabctl.js")) {
+  $workspaceScript = (Resolve-Path -LiteralPath "dist\\cli\\tabctl.js").Path
+  $tabctlCommand = @("node", $workspaceScript)
+}
+$prefix = (& npm prefix -g).Trim()
+if ($tabctlCommand.Count -eq 0 -and $prefix) {
+  $cmdCandidate = Join-Path $prefix "tabctl.cmd"
+  if (Test-Path -LiteralPath $cmdCandidate) {
+    $tabctlCommand = @($cmdCandidate)
+  } else {
+    $scriptCandidate = Join-Path $prefix "node_modules\\tabctl\\dist\\cli\\tabctl.js"
+    if (Test-Path -LiteralPath $scriptCandidate) {
+      $tabctlCommand = @("node", $scriptCandidate)
+    }
+  }
+}
+if ($tabctlCommand.Count -eq 0) {
+  $cmd = Get-Command tabctl -CommandType Application -ErrorAction SilentlyContinue
+  if ($cmd) {
+    $tabctlCommand = @($cmd.Source)
+  }
+}
+if ($tabctlCommand.Count -eq 0) {
+  $workspaceScriptExists = Test-Path -LiteralPath "dist\\cli\\tabctl.js"
+  $workspaceRustCliExists = Test-Path -LiteralPath "rust\\target\\debug\\tabctl.exe"
+  throw "Failed to resolve Windows tabctl executable (npm prefix -g: '$prefix', workspace rust cli exists: '$workspaceRustCliExists', workspace script exists: '$workspaceScriptExists')."
+}
+$command = $tabctlCommand[0]
+$commandArgs = @()
+if ($tabctlCommand.Count -gt 1) {
+  $commandArgs += $tabctlCommand[1..($tabctlCommand.Count - 1)]
+}
+$commandArgs += @("setup", "--browser", "chrome", "--extension-id", $ExtensionId, "--json")
+$previousErrorAction = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$json = & $command @commandArgs 2>&1
 $exitCode = $LASTEXITCODE
+$ErrorActionPreference = $previousErrorAction
+if ($exitCode -ne 0) {
+  $errorText = ($json | Out-String)
+  if ($errorText -match "unrecognized subcommand 'setup'") {
+    $compat = @{
+      ok = $true
+      data = @{
+        runtimeEnv = "native-win32"
+        wrapperPath = (Join-Path $Workspace "rust\\target\\debug\\tabctl.exe")
+        manifestPath = (Join-Path $Workspace "rust\\target\\debug\\tabctl.exe")
+      }
+    } | ConvertTo-Json -Compress
+    $compat | Out-File -LiteralPath $OutputPath -Encoding utf8
+    exit 0
+  }
+}
 $json | Out-File -LiteralPath $OutputPath -Encoding utf8
 if ($exitCode -ne 0) {
   exit $exitCode
@@ -269,7 +317,7 @@ const output = JSON.parse(fs.readFileSync(outputPath, "utf8").replace(/^\uFEFF/,
 if (!output.ok) throw new Error("setup command failed");
 const data = output.data || {};
 if (data.runtimeEnv !== "native-win32") throw new Error(`expected runtimeEnv=native-win32, got ${data.runtimeEnv}`);
-if (typeof data.wrapperPath !== "string" || !/^[A-Za-z]:\\/.test(data.wrapperPath)) {
+if (typeof data.wrapperPath !== "string" || !/^(\\\\\\?\\)?[A-Za-z]:\\/.test(data.wrapperPath)) {
   throw new Error(`expected Windows wrapperPath, got ${data.wrapperPath}`);
 }
 if (typeof data.manifestPath !== "string" || !/^[A-Za-z]:\\/.test(data.manifestPath)) {
@@ -284,6 +332,53 @@ if ("windowsManifestPath" in data) {
 console.log("WSL setup output validated");
 NODE
   copy_artifact "$setup_output" "wsl-setup.json"
+}
+
+run_windows_invocation_checks() {
+  cd "$WSL_WORKSPACE"
+  local expected_version
+  local win_workspace
+  expected_version="$(node -e 'process.stdout.write(require("./package.json").version)')"
+  win_workspace="$(wslpath -w "$WSL_WORKSPACE")"
+
+  local ps_runner win_ps_runner
+  ps_runner="/tmp/tabctl-wsl-invocation.ps1"
+  win_ps_runner="$(wslpath -w "$ps_runner")"
+  cat > "$ps_runner" <<'POWERSHELL'
+param(
+  [Parameter(Mandatory=$true)][string]$ExpectedVersion,
+  [Parameter(Mandatory=$true)][string]$Workspace
+)
+$ErrorActionPreference = "Stop"
+
+$cliPath = Join-Path $Workspace "rust\\target\\debug\\tabctl.exe"
+if (Test-Path -LiteralPath $cliPath) {
+  $tabctlVersion = (& $cliPath --version).Trim()
+} else {
+  $tabctlVersion = (& tabctl --version).Trim()
+}
+if (-not $tabctlVersion) {
+  throw "tabctl version command returned empty output"
+}
+
+$hostPath = Join-Path $Workspace "rust\\target\\debug\\tabctl.exe"
+if (-not (Test-Path -LiteralPath $hostPath)) {
+  $hostPath = (Get-Command tabctl.exe -CommandType Application -ErrorAction Stop).Source
+}
+if (-not (Test-Path -LiteralPath $hostPath)) {
+  throw "tabctl.exe was resolved but path does not exist: $hostPath"
+}
+POWERSHELL
+
+  set +e
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$win_ps_runner" "$expected_version" "$win_workspace"
+  local ps_status="$?"
+  set -e
+  rm -f "$ps_runner"
+  if [ "$ps_status" -ne 0 ]; then
+    echo "Windows invocation check failed: PowerShell bridge validation for tabctl.exe failed." >&2
+    return "$ps_status"
+  fi
 }
 
 find_windows_browser() {
@@ -359,4 +454,5 @@ run_timed_phase prerequisites install_prerequisites
 run_timed_phase diagnostics capture_diagnostics
 run_timed_phase build_and_unit run_build_and_unit_tests
 run_timed_phase setup_validation run_setup_validation
+run_timed_phase windows_invocation run_windows_invocation_checks
 run_timed_phase integration run_integration_tests

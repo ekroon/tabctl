@@ -1,0 +1,184 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  # ── Validate release tag against package.json version ──────────────
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      dist_tag: ${{ steps.check.outputs.dist_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate tag and resolve channel
+        id: check
+        shell: bash
+        run: |
+          tag='${{ github.event.release.tag_name }}'
+          version="$(node -p "require('./package.json').version")"
+          expected_tag="v${version}"
+          if [ "$tag" != "$expected_tag" ]; then
+            echo "Release tag ($tag) must match package version tag ($expected_tag)." >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if [ '${{ github.event.release.prerelease }}' = 'true' ]; then
+            if [[ "$version" == *-alpha.* ]]; then
+              echo "dist_tag=alpha" >> "$GITHUB_OUTPUT"
+            elif [[ "$version" == *-rc.* ]]; then
+              echo "dist_tag=rc" >> "$GITHUB_OUTPUT"
+            else
+              echo "Prerelease must use an -alpha.N or -rc.N version." >&2
+              exit 1
+            fi
+          else
+            if [[ "$version" == *-* ]]; then
+              echo "Stable releases must not publish prerelease versions." >&2
+              exit 1
+            fi
+            echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Build cross-platform Rust binaries ─────────────────────────────
+  build:
+    needs: validate
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset_suffix: darwin-x86_64
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset_suffix: darwin-arm64
+            archive: tar.gz
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_suffix: linux-x86_64
+            archive: tar.gz
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            asset_suffix: linux-arm64
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_suffix: windows-x86_64
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Install cross-compilation toolchain (aarch64 Linux)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        run: cargo build --manifest-path rust/Cargo.toml --release --target ${{ matrix.target }} -p tabctl
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          cd rust/target/${{ matrix.target }}/release
+          tar czf "$GITHUB_WORKSPACE/tabctl-${{ github.event.release.tag_name }}-${{ matrix.asset_suffix }}.tar.gz" tabctl
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "rust/target/${{ matrix.target }}/release/tabctl.exe" -DestinationPath "tabctl-${{ github.event.release.tag_name }}-${{ matrix.asset_suffix }}.zip"
+
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload '${{ github.event.release.tag_name }}' tabctl-${{ github.event.release.tag_name }}-${{ matrix.asset_suffix }}.* --clobber
+
+  # ── Build and upload browser extension ─────────────────────────────
+  extension:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - name: Package extension
+        run: |
+          mkdir -p artifacts
+          (cd dist && zip -qr ../artifacts/tabctl-extension.zip extension)
+          shasum -a 256 artifacts/tabctl-extension.zip > artifacts/tabctl-extension.zip.sha256
+      - name: Upload extension assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload '${{ github.event.release.tag_name }}' artifacts/tabctl-extension.zip artifacts/tabctl-extension.zip.sha256 --clobber
+
+  # ── Publish to npm (secondary distribution channel) ────────────────
+  npm-publish:
+    needs: [validate, build, extension]
+    runs-on: ubuntu-latest
+    # Set to false to skip npm publish; useful during Rust migration
+    if: ${{ vars.PUBLISH_NPM != 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: Install MinGW linker
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+
+      - name: Build
+        run: npm run build
+        env:
+          TABCTL_VERSION_MODE: release
+
+      - name: Build Windows launcher
+        run: npm run build:launcher
+
+      - name: Run tests
+        run: npm test
+        env:
+          TABCTL_VERSION_MODE: release
+
+      - name: Sync platform package version
+        run: |
+          node -e "
+            const pkg = require('./package.json');
+            const win = require('./packages/win32-x64/package.json');
+            win.version = pkg.version;
+            require('fs').writeFileSync('./packages/win32-x64/package.json', JSON.stringify(win, null, 2) + '\n');
+          "
+
+      - name: Publish tabctl-win32-x64
+        run: npm publish --provenance --access public --tag '${{ needs.validate.outputs.dist_tag }}'
+        working-directory: packages/win32-x64
+
+      - name: Publish tabctl
+        run: npm publish --provenance --access public --tag '${{ needs.validate.outputs.dist_tag }}'

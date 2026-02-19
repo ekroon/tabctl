@@ -1,22 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Check if staged files include source code that needs integration testing
-has_source_changes() {
-  git diff --cached --name-only | grep -qE '\.(ts|go)$'
-}
-
-echo "pre-commit: running unit tests…"
+echo "pre-commit: running fast unit checks…"
 npm run test:unit
-
-if has_source_changes; then
-  # Integration tests require Chrome — skip if unavailable
-  if command -v google-chrome &>/dev/null || command -v google-chrome-stable &>/dev/null || [ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]; then
-    echo "pre-commit: running integration tests (source files changed)…"
-    npm run test:integration
-  else
-    echo "pre-commit: Chrome not found, skipping integration tests"
-  fi
-else
-  echo "pre-commit: no .ts/.go changes, skipping integration tests"
-fi

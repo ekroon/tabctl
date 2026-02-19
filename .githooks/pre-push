@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+changed_files="$(mktemp)"
+trap 'rm -f "$changed_files"' EXIT
+
+zero_sha='0000000000000000000000000000000000000000'
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -z "${local_ref:-}" ] && continue
+  [ "${local_sha}" = "${zero_sha}" ] && continue
+  if [ "${remote_sha}" = "${zero_sha}" ]; then
+    git diff --name-only "${local_sha}^..${local_sha}" >>"${changed_files}"
+  else
+    git diff --name-only "${remote_sha}..${local_sha}" >>"${changed_files}"
+  fi
+done
+
+if ! grep -qE '(^rust/)|(^Cargo\.toml$)|(^Cargo\.lock$)|(^\.githooks/)|(^\.github/workflows/)|(^package\.json$)|(^scripts/)' "${changed_files}"; then
+  echo "pre-push: no Rust/build/hook changes detected, skipping heavy checks"
+  exit 0
+fi
+
+if grep -qE '\.(rs)$|(^|/)Cargo\.(toml|lock)$' "${changed_files}"; then
+  echo "pre-push: Rust source changes detected — running cross-target check…"
+  if ! bash scripts/check-targets.sh; then
+    echo "pre-push: cross-target check failed (cfg issue?). Push aborted."
+    exit 1
+  fi
+fi
+
+echo "pre-push: running rust verify…"
+npm run rust:verify
+echo "pre-push: running integration checks…"
+npm run test:integration

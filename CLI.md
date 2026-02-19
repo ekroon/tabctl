@@ -2,12 +2,14 @@
 
 ## Quick start
 ```bash
-npm link
+mise use -g github:ekroon/tabctl   # or: cargo install --path rust/crates/tabctl
 tabctl --help
 tabctl help --json
 tabctl policy --init
 tabctl skill
 ```
+
+Runtime architecture: single `tabctl` Rust binary for CLI and native messaging host (`rust/crates/*`), with TypeScript limited to the extension boundary (`src/extension`).
 
 ## Configuration
 
@@ -323,16 +325,22 @@ Options:
 
 ### setup
 Install the native host manifest and register a profile.
+Also attempts to download the version-matched release extension asset (`tabctl-extension.zip` + `.sha256`) into the tabctl data directory.
 Options:
 - `--browser edge|chrome` (required)
 - `--extension-id <id>` (optional; auto-derived from installed extension path, or `TABCTL_EXTENSION_ID`)
-- `--node <path>` (optional; or `TABCTL_NODE`)
 - `--name <name>` (optional; defaults to browser name)
+- `--release-repo <owner/repo>` (optional; or `TABCTL_RELEASE_REPO`)
+- `--release-tag <tag>` / `--release-version <version>` (optional; or `TABCTL_RELEASE_TAG`)
+- `--release-asset <name>` (optional; or `TABCTL_RELEASE_ASSET`)
+- `--skip-extension-download` (optional; or `TABCTL_SETUP_FETCH_EXTENSION=0`)
 - `--dev` (coming soon; dev/CI mode via CDP)
 
 Each run creates or updates a profile in `profiles.json`. The first profile registered becomes the default.
+Release override precedence: CLI flags take precedence over environment variables, then built-in defaults.
+If extension release download fails, setup continues and reports `extension_download_failed` in `data.warnings` with fallback path details.
 
-On Windows, setup verifies host connectivity by default after writing setup artifacts and compares the browser-reported runtime extension ID with the expected ID. Connectivity failures still exit non-zero with manual recovery steps; runtime extension ID mismatches now complete setup with a warning that includes both IDs.
+On Windows, setup verifies host connectivity by default after writing setup artifacts and compares the browser-reported runtime extension ID with the expected ID. Connectivity failures and runtime extension ID mismatches exit non-zero with manual recovery steps (including expected vs runtime IDs).
 
 Run once per browser:
 ```bash
@@ -341,16 +349,16 @@ tabctl setup --browser chrome --name chrome-work
 ```
 
 ### doctor
-Diagnose and repair profile health. Checks each profile's wrapper for valid Node and host paths.
+Diagnose and repair profile health. Checks each profile's native host manifest and binary path.
 Options:
-- `--fix` auto-repair broken wrappers using the current Node path
+- `--fix` auto-repair broken profiles
 
 ```bash
 tabctl doctor              # show health status
 tabctl doctor --fix        # auto-repair broken profiles
 ```
 
-Wrapper auto-repair also runs automatically when a version mismatch is detected during normal CLI usage.
+Auto-repair also runs automatically when a version mismatch is detected during normal CLI usage.
 
 ### policy
 Show the current policy summary and path, or create a default policy file.
@@ -413,6 +421,19 @@ JSON example:
 tabctl history --json | jq -r '.data[] | {txid, action, summary}'
 ```
 
+### extension-fetch
+Download the release extension bundle for a specific version/tag.
+Options:
+- `--version <version|tag>` (defaults to current CLI version)
+- `--repo <owner/repo>` (defaults to `ekroon/tabctl`)
+- `--asset <name>` (defaults to `tabctl-extension.zip`)
+- `--out <path>` (optional explicit output path)
+
+```bash
+tabctl extension-fetch --version 0.5.3
+tabctl extension-fetch --version v0.5.3 --out /tmp/tabctl-extension.zip
+```
+
 ### skill
 Install the tabctl agent skill for local agents (uses the Skills CLI under the hood).
 Options:
@@ -463,6 +484,29 @@ Check host/extension connectivity.
 tabctl ping
 ```
 
+### host
+Run as native messaging host (stdio mode). This subcommand is invoked automatically by the browser via the native messaging manifest — it is not typically run manually.
+
+```bash
+tabctl host
+```
+
+The browser launches `tabctl host` when the extension connects. It communicates over stdin/stdout using the Chrome native messaging protocol and listens on a Unix socket (or named pipe on Windows) for CLI commands.
+
+## Windows + WSL endpoint model
+
+Windows host runtime listens on both:
+- Named pipe for native Windows clients (`\\.\pipe\tabctl-<hash>`)
+- Localhost TCP for WSL/Linux clients (`tcp://127.0.0.1:<port>`)
+
+The host publishes the WSL TCP port to `<dataDir>/tcp-port`.
+
+WSL endpoint resolution order (CLI):
+1. `TABCTL_SOCKET` (explicit endpoint; explicit pipe endpoints are translated to discovered TCP in WSL when available)
+2. `TABCTL_TCP_PORT`
+3. `tcp-port` discovery from resolved data dir and `/mnt/c/Users/*/.../tabctl/.../tcp-port`
+4. Fallback `tcp://127.0.0.1:38000`
+
 Notes:
 - Use `--group-id -1` or `--ungrouped` to target ungrouped tabs.
 - `screenshot --out` writes per-tab folders into the target directory.
@@ -472,10 +516,24 @@ Notes:
 | Variable | Description |
 |----------|-------------|
 | `TABCTL_CONFIG_DIR` | Override config directory (default: `$XDG_CONFIG_HOME/tabctl`) |
+| `TABCTL_DATA_DIR` | Override resolved data directory |
 | `TABCTL_EXTENSION_ID` | Extension ID for `setup` command |
-| `TABCTL_NODE` | Node binary path for `setup` command |
 | `TABCTL_PROFILE` | Override active profile (same as `--profile` flag) |
+| `TABCTL_RELEASE_ASSET` | Override setup release asset filename |
+| `TABCTL_RELEASE_REPO` | Override setup release repository (`owner/repo`) |
+| `TABCTL_RELEASE_TAG` | Override setup release tag/version |
+| `TABCTL_SOCKET` | Override socket endpoint (`unix://`, `pipe://`, `tcp://`) |
+| `TABCTL_STATE_DIR` | Override state directory fallback (`$XDG_STATE_HOME/tabctl`) |
+| `TABCTL_SETUP_FETCH_EXTENSION` | Set to `0` to skip setup extension release download |
+| `TABCTL_TCP_PORT` | Force localhost TCP endpoint (WSL/Linux clients) |
 | `TABCTL_VERSION_MODE` | `release` or `dev` for version output |
+
+## Troubleshooting (setup/ping/runtime ID)
+
+- Setup verification failures return `Windows setup verification failed`; inspect `data.verification.reason` (`ping-timeout`, `socket-not-found`, `socket-refused`, `ping-not-ok`, `extension-id-mismatch`) and follow `manualSteps`.
+- For `extension-id-mismatch`, rerun setup with the runtime extension ID shown by the browser:
+  - `tabctl setup --browser <edge|chrome> --extension-id <runtime-id>`
+- `tabctl ping` connect failures (`ENOENT`/`ECONNREFUSED`/timeout) usually mean host/extension disconnect; reload extension, rerun setup, and in WSL confirm `<dataDir>/tcp-port` or `TABCTL_TCP_PORT` matches a listening `127.0.0.1` port.
 
 ## Profiles
 Each `tabctl setup` run registers a profile in `<configDir>/profiles.json`. A profile stores the browser type, extension ID, and data directory. The first profile registered becomes the default.
@@ -493,3 +551,13 @@ Each profile gets its own data directory with a separate socket and undo log. Po
 - Profile registry: `<configDir>/profiles.json`
 
 See [Configuration](#configuration) for how the data directory is resolved.
+
+## Build and release
+- `npm run build`: generates version metadata, bundles the extension, and builds the Rust workspace (single `tabctl` binary).
+- `npm test`: runs build + Rust formatting/lint/tests (`npm run rust:verify`).
+- `npm run test:integration`: runs the Rust integration-equivalent suite (`npm run rust:test`).
+
+Release channel mapping:
+- `x.y.z-alpha.N` → npm `alpha`
+- `x.y.z-rc.N` → npm `rc`
+- `x.y.z` → npm `latest`

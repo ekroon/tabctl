@@ -27,20 +27,8 @@ jobs:
           node-version: "24"
           cache: "npm"
 
-      - name: Ensure Go is available
-        run: |
-          if ! command -v go &>/dev/null; then
-            echo "Go not found, installing via setup-go"
-            echo "GO_MISSING=true" >> "$GITHUB_ENV"
-          else
-            echo "Go $(go version | awk '{print $3}') already available"
-          fi
-
-      - name: Install Go (fallback)
-        if: env.GO_MISSING == 'true'
-        uses: actions/setup-go@v5
-        with:
-          go-version: "stable"
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
         run: npm ci

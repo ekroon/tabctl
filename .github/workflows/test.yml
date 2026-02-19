@@ -4,9 +4,9 @@ on:
   schedule:
     - cron: "0 6 * * *"
   push:
-    branches: [main]
+    branches: [main, rust-migration/mainline]
   pull_request:
-    branches: [main]
+    branches: [main, rust-migration/mainline]
 
 jobs:
   test:
@@ -27,9 +27,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-      - uses: actions/setup-go@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
-          go-version: '1.21'
+          workspaces: rust
       - run: npm ci
       - run: npm test
 
@@ -51,20 +52,48 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-      - uses: actions/setup-go@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
-          go-version: '1.21'
+          workspaces: rust
       - run: npm ci
       - run: npm run build
       - run: npm run test:integration
 
-  wsl:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: windows-latest
-    timeout-minutes: 60
+  rust:
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+          - os: ubuntu-latest
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Validate WSL setup and integration
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - run: cargo check --manifest-path rust/Cargo.toml --workspace --all-targets
+      - if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+      - if: matrix.os == 'ubuntu-latest'
+        run: cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings
+      - run: cargo test --manifest-path rust/Cargo.toml --workspace --all-targets
+
+  wsl:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    needs: integration
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Validate WSL-to-Windows setup and integration
         shell: pwsh
         run: ./scripts/ci/run-wsl-validation.ps1 -Workspace "${{ github.workspace }}"
       - name: Upload WSL CI artifacts

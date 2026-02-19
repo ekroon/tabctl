@@ -7,7 +7,6 @@ const { execSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
 const pkgPath = path.join(root, "package.json");
-const targetPath = path.join(root, "src", "shared", "version.ts");
 const manifestTemplatePath = path.join(root, "src", "extension", "manifest.template.json");
 const manifestPath = path.join(root, "dist", "extension", "manifest.json");
 
@@ -60,21 +59,6 @@ const devBuild = mode === "dev";
 if (devBuild && gitSha) {
   dirty = isDirty();
   version = `${baseVersion}-dev.${gitSha}${dirty ? ".dirty" : ""}`;
-}
-
-const content = [
-  `export const BASE_VERSION = "${baseVersion}";`,
-  `export const VERSION = "${version}";`,
-  `export const GIT_SHA = ${gitSha ? `"${gitSha}"` : "null"};`,
-  `export const DIRTY = ${dirty};`,
-  `export const DEV_BUILD = ${devBuild};`,
-  "",
-].join("\n");
-
-
-fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-if (!fs.existsSync(targetPath) || fs.readFileSync(targetPath, "utf8") !== content) {
-  fs.writeFileSync(targetPath, content, "utf8");
 }
 
 fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
