@@ -4,7 +4,6 @@ use std::fs;
 #[cfg(windows)]
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
-#[cfg(windows)]
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -17,7 +16,6 @@ use tabctl_shared::{
     TabctlConfig, VersionInfo,
 };
 
-#[cfg(windows)]
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::net::UnixListener;
@@ -40,15 +38,15 @@ const MAX_RESPONSE_BYTES: usize = 20 * 1024 * 1024;
 const MAX_NATIVE_MESSAGE_BYTES: usize = 10 * 1024 * 1024;
 const HISTORY_LIMIT_DEFAULT: usize = 20;
 const RETENTION_DAYS: u64 = 30;
-#[cfg(any(windows, test))]
+#[allow(dead_code)]
 const TCP_PORT_FILENAME: &str = "tcp-port";
-#[cfg(any(windows, test))]
+#[allow(dead_code)]
 const AUTH_TOKEN_FILENAME: &str = "auth-token";
-#[cfg(any(windows, test))]
+#[allow(dead_code)]
 const AUTH_TOKEN_LENGTH: usize = 32; // 32 hex chars = 128 bits
 const TCP_PORT_BASE: u16 = 38_000;
 const TCP_PORT_SPAN: u16 = 1_000;
-#[cfg(windows)]
+#[allow(dead_code)]
 const TCP_PORT_ATTEMPTS: u16 = 128;
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -1026,7 +1024,7 @@ fn connect_named_pipe_instance(path: &str) -> io::Result<File> {
     }
 }
 
-#[cfg(windows)]
+#[allow(dead_code)]
 fn deterministic_tcp_start_port(data_dir: &Path) -> u16 {
     let mut hasher = Sha256::new();
     hasher.update(data_dir.to_string_lossy().as_bytes());
@@ -1035,7 +1033,7 @@ fn deterministic_tcp_start_port(data_dir: &Path) -> u16 {
     TCP_PORT_BASE + (seed % TCP_PORT_SPAN)
 }
 
-#[cfg(windows)]
+#[allow(dead_code)]
 fn bind_tcp_listener(data_dir: &Path) -> io::Result<(TcpListener, u16)> {
     if let Ok(port) = std::env::var("TABCTL_TCP_PORT") {
         let parsed = port
@@ -1061,14 +1059,14 @@ fn bind_tcp_listener(data_dir: &Path) -> io::Result<(TcpListener, u16)> {
     ))
 }
 
-#[cfg(windows)]
+#[allow(dead_code)]
 fn write_tcp_port_file(data_dir: &Path, port: u16) -> io::Result<PathBuf> {
     let path = data_dir.join(TCP_PORT_FILENAME);
     fs::write(&path, format!("{port}\n"))?;
     Ok(path)
 }
 
-#[cfg(any(windows, test))]
+#[allow(dead_code)]
 fn generate_and_write_auth_token(data_dir: &Path) -> io::Result<String> {
     let mut bytes = [0u8; 16]; // 16 bytes = 128 bits → 32 hex chars
     getrandom::getrandom(&mut bytes).map_err(|e| io::Error::other(e.to_string()))?;
