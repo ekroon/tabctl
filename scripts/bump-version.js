@@ -17,15 +17,24 @@ function writePackage(pkg) {
 }
 
 function parseVersion(version) {
-  const match = String(version).trim().match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
+  const match = String(version).trim().match(/^(\d+)\.(\d+)\.(\d+)(?:-(alpha|rc)\.(\d+))?(?:\+.*)?$/);
   if (!match) {
     throw new Error(`Invalid version: ${version}`);
   }
-  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prereleaseTag: match[4] || null,
+    prereleaseNumber: match[5] ? Number(match[5]) : null,
+  };
 }
 
 function formatVersion(parts) {
-  return `${parts.major}.${parts.minor}.${parts.patch}`;
+  const base = `${parts.major}.${parts.minor}.${parts.patch}`;
+  if (!parts.prereleaseTag) return base;
+  const num = Number.isInteger(parts.prereleaseNumber) ? parts.prereleaseNumber : 1;
+  return `${base}-${parts.prereleaseTag}.${num}`;
 }
 
 function bump(current, kind) {
@@ -34,11 +43,41 @@ function bump(current, kind) {
     next.major += 1;
     next.minor = 0;
     next.patch = 0;
+    next.prereleaseTag = null;
+    next.prereleaseNumber = null;
   } else if (kind === "minor") {
     next.minor += 1;
     next.patch = 0;
+    next.prereleaseTag = null;
+    next.prereleaseNumber = null;
   } else if (kind === "patch") {
     next.patch += 1;
+    next.prereleaseTag = null;
+    next.prereleaseNumber = null;
+  } else if (kind === "alpha") {
+    if (next.prereleaseTag === "alpha") {
+      next.prereleaseNumber += 1;
+    } else if (next.prereleaseTag === "rc") {
+      throw new Error("Cannot bump alpha from an rc prerelease");
+    } else {
+      next.patch += 1;
+      next.prereleaseTag = "alpha";
+      next.prereleaseNumber = 1;
+    }
+  } else if (kind === "rc") {
+    if (next.prereleaseTag === "rc") {
+      next.prereleaseNumber += 1;
+    } else if (next.prereleaseTag === "alpha") {
+      next.prereleaseTag = "rc";
+      next.prereleaseNumber = 1;
+    } else {
+      next.patch += 1;
+      next.prereleaseTag = "rc";
+      next.prereleaseNumber = 1;
+    }
+  } else if (kind === "stable") {
+    next.prereleaseTag = null;
+    next.prereleaseNumber = null;
   } else {
     throw new Error(`Unknown bump kind: ${kind}`);
   }

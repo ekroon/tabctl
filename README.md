@@ -7,13 +7,21 @@ A command-line instrument for browser tab orchestration — list, search, group,
 ## Install
 
 ```bash
-npm install -g tabctl
-tabctl setup --browser chrome
-# Load the extension: chrome://extensions → Developer mode → Load unpacked → paste: ~/.local/state/tabctl/extension/
+mise use -g github:ekroon/tabctl   # install the tabctl binary
+tabctl setup --browser edge         # or: --browser chrome
+# Load the extension: edge://extensions → Developer mode → Load unpacked → paste: ~/.local/state/tabctl/extension/
 tabctl ping
 ```
 
 If it pings back, the wire is live. You're connected.
+
+### Alternative: build from source
+
+```bash
+cargo install --path rust/crates/tabctl
+```
+
+> **Legacy:** `npm install -g tabctl` still works for the Node.js-based distribution but is no longer the primary install method. No Node.js or Go is required at runtime — the single `tabctl` binary handles everything.
 
 ## Agent Skill
 
@@ -54,24 +62,27 @@ When tabctl is installed as a skill, your agent sees what you see. Just talk to 
 
 ---
 
-`tabctl` works through a lightweight local stack: the CLI talks to a native messaging host, which proxies requests to a browser extension. The host only runs while the browser is open and the extension is connected.
+`tabctl` is a single Rust binary that serves as both the CLI and the native messaging host. The CLI sends commands over a Unix socket (or named pipe on Windows) to the host, which proxies them to the browser extension via native messaging. The `tabctl host` subcommand is the native messaging entry point — invoked automatically by the browser, not manually.
 
 This repo contains:
-- Chrome/Edge extension (tab/group inspection + actions)
-- Native messaging host (Node)
-- CLI (`tabctl`) for on-demand workflows
+- Chrome/Edge extension (`src/extension/`, the only TypeScript component)
+- Rust workspace (`rust/crates/*`) — single `tabctl` binary for CLI + host + shared runtime
+- Node packaging/build scripts for distribution (legacy)
 
 ## Quick Start
 
 ### 1. Build and install
 
 ```bash
-npm install
-npm run build
-npm link          # puts tabctl on your PATH
+cargo install --path rust/crates/tabctl   # puts tabctl on your PATH
 ```
 
-If you haven't run `npm link`, you can always use `node ./cli/tabctl.js` instead of `tabctl`.
+For development with the full build pipeline (extension + Rust):
+
+```bash
+npm install
+npm run build
+```
 
 ### 2. Set up your browser
 
@@ -87,10 +98,16 @@ This will:
 2. Print the path (and copy it to your clipboard)
 3. Ask you to load it as an unpacked extension in `chrome://extensions`
 4. Auto-derive the extension ID from the installed path
+5. Download the version-pinned release extension asset (`tabctl-extension.zip` + `.sha256`) into the tabctl data directory for offline/manual recovery
+
+Optional setup release overrides:
+- Flags: `--release-repo`, `--release-tag` (or `--release-version`), `--release-asset`, `--skip-extension-download`
+- Env vars: `TABCTL_RELEASE_REPO`, `TABCTL_RELEASE_TAG`, `TABCTL_RELEASE_ASSET`, `TABCTL_SETUP_FETCH_EXTENSION=0`
+- Precedence: flags override env vars, then built-in defaults; if download fails, setup continues and includes warning details in setup output.
 
 > **Edge?** Use `--browser edge` and load from `edge://extensions` instead.
 >
-> **Windows:** setup verifies connectivity after writing setup artifacts and checks the runtime extension ID reported by the browser. Connectivity failures still exit non-zero with manual recovery steps; runtime extension ID mismatches now complete setup with a warning that prints both IDs.
+> **Windows:** setup verifies connectivity after writing setup artifacts and checks the runtime extension ID reported by the browser. Connectivity failures and runtime extension ID mismatches exit non-zero and print manual recovery steps (including expected vs runtime IDs).
 
 If you need to override the auto-derived ID (e.g. for a custom extension path):
 
@@ -211,6 +228,28 @@ See [CLI.md](CLI.md#configuration) for full details.
 - Socket: `<dataDir>/tabctl.sock` (default: `~/.local/state/tabctl/tabctl.sock`)
 - Undo log: `<dataDir>/undo.jsonl` (default: `~/.local/state/tabctl/undo.jsonl`)
 - Profile registry: `<configDir>/profiles.json`
+- WSL TCP port file: `<dataDir>/tcp-port` (written by the Windows host)
+
+## Windows + WSL transport
+
+On Windows, the host exposes a dual endpoint model:
+- Windows native clients use a named pipe endpoint (`\\.\pipe\tabctl-<hash>`).
+- WSL/Linux clients use `tcp://127.0.0.1:<port>`, with the host writing `<dataDir>/tcp-port`.
+
+WSL endpoint discovery (CLI):
+1. `TABCTL_SOCKET` (explicit endpoint); if this is a pipe endpoint in WSL, CLI still prefers discovered TCP.
+2. `TABCTL_TCP_PORT` (forces `127.0.0.1:<port>`).
+3. `tcp-port` file discovery from resolved data dir (and equivalent `/mnt/c/Users/*/.../tabctl/.../tcp-port` locations).
+4. Fallback: `tcp://127.0.0.1:38000`.
+
+Relevant knobs: `TABCTL_SOCKET`, `TABCTL_TCP_PORT`, `TABCTL_PROFILE`, `TABCTL_DATA_DIR`, `TABCTL_STATE_DIR`, `TABCTL_CONFIG_DIR`.
+
+## Troubleshooting (setup/ping on Windows + WSL)
+
+- `tabctl setup` fails with `Windows setup verification failed`: check `data.verification.reason` in JSON output (`ping-timeout`, `socket-not-found`, `socket-refused`, `ping-not-ok`, `extension-id-mismatch`), then follow printed manual steps.
+- Runtime ID mismatch (`extension-id-mismatch`): compare expected vs runtime IDs from setup output, then rerun setup with the runtime ID shown by `edge://extensions` / `chrome://extensions`:
+  - `tabctl setup --browser <edge|chrome> --extension-id <runtime-id>`
+- `tabctl ping` returns connect errors (`ENOENT`, `ECONNREFUSED`, timeout): ensure extension is loaded and active, rerun `tabctl setup`, and in WSL verify `TABCTL_TCP_PORT` or `<dataDir>/tcp-port` matches a listening localhost port.
 
 ## Multi-Browser Setup
 
@@ -263,20 +302,28 @@ Policy is shared across all profiles.
 
 ## Development
 
-### TypeScript workflow
-Source lives in `src/` and compiles to `build/`, then syncs to the runtime locations:
-- `src/extension/background.ts` -> `extension/background.js`
-- `src/host/host.ts` -> `host/host.js`
-- `src/cli/tabctl.ts` -> `cli/tabctl.js`
-- `src/tests/unit/*.ts` -> `tests/unit/*.js`
+### Build workflow
+The single `tabctl` binary is built from the Rust workspace (`rust/`). TypeScript is limited to the browser extension boundary (`src/extension/`). No Node.js or Go is required at runtime.
 
-Build and test:
+Build and verify:
 
 ```bash
-npm install
-npm run build
-npm test
+cargo build --release -p tabctl   # build the binary
+npm install && npm run build      # full pipeline (extension + Rust)
+npm test                          # unit tests
 ```
+
+Rust-only validation:
+```bash
+npm run rust:verify
+```
+
+Integration script (currently Rust-suite parity in CI/local):
+```bash
+npm run test:integration
+```
+
+WSL CI validates the WSL->Windows invocation bridge (`test.yml` `wsl` job) with phases: `prerequisites`, `diagnostics`, `build_and_unit`, `setup_validation`, `windows_invocation`, `integration`. Runtime/build execution is delegated to Windows commands (`cmd.exe`/`powershell.exe`), so WSL-local Rust compilation is not required.
 
 ### Versioning
 The base version lives in `package.json` and is embedded into the CLI, host, and extension at build time.
@@ -286,6 +333,25 @@ Commands:
 npm run bump:patch
 npm run bump:minor
 npm run bump:major
+npm run bump:alpha
+npm run bump:rc
+npm run bump:stable
+```
+
+Pre-release staging flow:
+- `bump:alpha` creates/increments `x.y.z-alpha.N`
+- `bump:rc` promotes alpha to `x.y.z-rc.1` (or increments RC)
+- `bump:stable` drops the prerelease suffix for final stable publish
+
+Release publishing (`.github/workflows/publish.yml`) enforces:
+- Git tag must match `package.json` version (`v<version>`)
+- prerelease tags publish to `alpha`/`rc`; stable publishes to `latest`
+- `npm run build` and `npm test` must pass before publish
+- release assets include `tabctl-extension.zip` plus `tabctl-extension.zip.sha256`
+
+Fetch the extension asset from a release with:
+```bash
+tabctl extension-fetch --version 0.5.3
 ```
 
 Local builds default to a dev version when a `.git` directory is present, appending the short SHA.

@@ -6,35 +6,38 @@ This project controls a live browser session (Edge or Chrome). The testing appro
 
 ```bash
 npm install          # Install deps + configure git hooks (via prepare script)
-npm run build        # Compile TypeScript, bundle extension & host
+npm run build        # Bundle extension & build Rust binary
 npm test             # Build + run unit tests (no browser needed)
 npm run test:integration  # Run integration tests (requires Chrome)
 ```
 
-A **pre-commit hook** (`.githooks/pre-commit`) runs `npm test` and, when Chrome is available, `npm run test:integration` automatically. The hook is activated by `npm install` via the `prepare` script (`git config core.hooksPath .githooks`).
+A **split hook gate** is active via `core.hooksPath=.githooks` (set by `npm install`):
+- **pre-commit** (`.githooks/pre-commit`) runs fast unit checks (`npm run test:unit`).
+- **pre-push** (`.githooks/pre-push`) runs heavier checks (`npm run rust:verify` and `npm run test:integration`) when Rust/build/hook-related files changed.
+- CI `wsl` job validates the WSL -> Windows invocation bridge (setup + Windows command/native-host invocation + integration handoff); it does not compile Rust inside WSL.
 
 ## Project architecture
 
+The single `tabctl` binary (Rust) serves as both the CLI and the native messaging host. The `tabctl host` subcommand is the native messaging entry point, invoked by the browser automatically.
+
 ```
+rust/
+  crates/
+    tabctl/      # Single binary: CLI + host entry point
+    host/        # Native messaging host logic
+    shared/      # Shared utilities (config, profiles, WSL support)
 src/
-  cli/           # CLI entry point (tabctl.ts) and command handling
-    lib/
-      commands/  # Parameter builders and command metadata
-      options-commands.ts  # Command definitions and flag specs
-  extension/     # Chrome extension (background service worker)
+  extension/     # Chrome extension (background service worker) — only TypeScript component
     lib/
       tabs.ts    # Tab operations (open, focus, refresh)
       groups.ts  # Group management (list, update, assign, gather)
       move.ts    # Tab/group movement
       archive.ts # Archive operations
       undo-handlers.ts  # Undo logic for all mutations
-  host/          # Native messaging host (Node.js ↔ extension bridge)
-  shared/        # Shared utilities (config, profiles, WSL support)
-  scripts/       # Build scripts and integration test harness
   tests/unit/    # Unit tests (no browser required)
 ```
 
-**Data flow:** CLI → Unix socket/named pipe → Host → Native messaging → Extension → Chrome APIs
+**Data flow:** CLI → Unix socket/named pipe → Host (`tabctl host`) → Native messaging → Extension → Chrome APIs
 
 ## CLI Usage Rules for Agents
 
@@ -105,7 +108,7 @@ tabctl dedupe --window 123 --confirm # Execute after review
 - Edge is open.
 - The extension is loaded (`extension/`) and connected to the native host.
 - The native host manifest is installed (use `tabctl setup --browser edge`).
-- For development, prefer the repo script (`node ./cli/tabctl.js`) so a stable global `tabctl` can stay installed.
+- For development, use `cargo run -p tabctl --` or a debug build so a stable global `tabctl` can stay installed.
 
 ## Profile awareness
 When multiple profiles are configured, verify which browser the CLI is targeting before running commands:
@@ -141,13 +144,13 @@ Always finish with:
 4. A screenshot-first smoke step: capture a screenshot before running selector-based extraction.
 5. If multiple profiles are configured, verify the active profile with `tabctl profile-show` before running smoke tests.
 
-> **Note:** The pre-commit hook enforces steps 1 and 2 automatically. If you bypass it with `--no-verify`, you must run them manually.
+> **Note:** Hooks provide split enforcement (fast on commit, heavy on push). If you bypass with `--no-verify` or `--no-verify` on push, run required checks manually.
 
 Example (recommended for development):
 ```bash
 ts=$(date +%s)
-node ./cli/tabctl.js open --new-window --url https://example.com --url https://example.org --url https://example.net --group "TEST-Smoke-${ts}"
-node ./cli/tabctl.js group-list --window last-focused
+tabctl open --new-window --url https://example.com --url https://example.org --url https://example.net --group "TEST-Smoke-${ts}"
+tabctl group-list --window last-focused
 ```
 
 
