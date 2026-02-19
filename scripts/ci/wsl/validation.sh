@@ -317,7 +317,7 @@ const output = JSON.parse(fs.readFileSync(outputPath, "utf8").replace(/^\uFEFF/,
 if (!output.ok) throw new Error("setup command failed");
 const data = output.data || {};
 if (data.runtimeEnv !== "native-win32") throw new Error(`expected runtimeEnv=native-win32, got ${data.runtimeEnv}`);
-if (typeof data.wrapperPath !== "string" || !/^[A-Za-z]:\\/.test(data.wrapperPath)) {
+if (typeof data.wrapperPath !== "string" || !/^(\\\\\\?\\)?[A-Za-z]:\\/.test(data.wrapperPath)) {
   throw new Error(`expected Windows wrapperPath, got ${data.wrapperPath}`);
 }
 if (typeof data.manifestPath !== "string" || !/^[A-Za-z]:\\/.test(data.manifestPath)) {
