@@ -75,22 +75,6 @@ apt_update_once() {
   fi
 }
 
-has_supported_go() {
-  if ! command -v go >/dev/null 2>&1; then
-    return 1
-  fi
-  local go_version major minor
-  go_version="$(go version 2>/dev/null | awk '{print $3}')"
-  if [[ "$go_version" =~ ^go([0-9]+)\.([0-9]+) ]]; then
-    major="${BASH_REMATCH[1]}"
-    minor="${BASH_REMATCH[2]}"
-    if [ "$major" -gt 1 ] || { [ "$major" -eq 1 ] && [ "$minor" -ge 21 ]; }; then
-      return 0
-    fi
-  fi
-  return 1
-}
-
 install_prerequisites() {
   export DEBIAN_FRONTEND=noninteractive
   local missing_packages=()
@@ -101,10 +85,6 @@ install_prerequisites() {
       missing_packages+=("$package")
     fi
   done
-
-  if ! has_supported_go; then
-    missing_packages+=("golang-go")
-  fi
 
   if [ "${#missing_packages[@]}" -gt 0 ]; then
     apt_update_once
@@ -175,7 +155,6 @@ capture_diagnostics() {
     cat /etc/os-release
     echo "node: $(node --version 2>/dev/null || echo missing)"
     echo "npm: $(npm --version 2>/dev/null || echo missing)"
-    echo "go: $(go version 2>/dev/null || echo missing)"
     echo "chrome: $(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || echo missing)"
     echo "windows npm prefix -g (status=${win_npm_prefix_status}):"
     printf '%s\n' "$win_npm_prefix" | tr -d '\r'

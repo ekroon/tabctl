@@ -40,11 +40,9 @@ const MAX_RESPONSE_BYTES: usize = 20 * 1024 * 1024;
 const MAX_NATIVE_MESSAGE_BYTES: usize = 10 * 1024 * 1024;
 const HISTORY_LIMIT_DEFAULT: usize = 20;
 const RETENTION_DAYS: u64 = 30;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 const TCP_PORT_FILENAME: &str = "tcp-port";
-#[cfg(windows)]
 const TCP_PORT_BASE: u16 = 38_000;
-#[cfg(windows)]
 const TCP_PORT_SPAN: u16 = 1_000;
 #[cfg(windows)]
 const TCP_PORT_ATTEMPTS: u16 = 128;
@@ -1166,6 +1164,17 @@ fn main() {
     }
 }
 
+// Compile-time invariants for the TCP port range constants shared by host and CLI.
+const _: () = assert!(
+    TCP_PORT_BASE >= 1024,
+    "port base must be an unprivileged port"
+);
+const _: () = assert!(TCP_PORT_SPAN > 0, "port span must be non-zero");
+const _: () = assert!(
+    (TCP_PORT_BASE as u32) + (TCP_PORT_SPAN as u32) <= 65535,
+    "port range must fit in a u16"
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1550,5 +1559,42 @@ mod tests {
             .expect("version data");
         assert_eq!(data.get("component").and_then(|v| v.as_str()), Some("host"));
         assert!(data.get("version").is_some());
+    }
+
+    // TCP bridge tests — run on all platforms to validate bridge fundamentals
+    // without requiring WSL. The host TCP listener (Windows) and the CLI TCP
+    // discovery path (WSL) both rely on a simple port file + loopback socket.
+
+    #[test]
+    fn tcp_port_file_format_roundtrip() {
+        let tmp = std::env::temp_dir().join(format!("tabctl-host-tcp-{}", now_ms()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let port_file = tmp.join(TCP_PORT_FILENAME);
+        std::fs::write(&port_file, format!("{}\n", 38500u16)).unwrap();
+        let content = std::fs::read_to_string(&port_file).unwrap();
+        let parsed: u16 = content.trim().parse().unwrap();
+        assert_eq!(parsed, 38500);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn tcp_listener_binds_loopback_and_accepts_connection() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback TCP");
+        let port = listener.local_addr().unwrap().port();
+        assert!(port > 0);
+
+        let handle = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).expect("connect");
+            stream.write_all(b"ping").expect("write");
+        });
+
+        let (mut conn, _) = listener.accept().expect("accept connection");
+        let mut buf = Vec::new();
+        conn.read_to_end(&mut buf).expect("read");
+        handle.join().expect("thread join");
+        assert_eq!(buf, b"ping");
     }
 }

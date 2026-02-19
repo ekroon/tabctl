@@ -28,6 +28,9 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
       - run: npm ci
       - run: npm test
 
@@ -50,6 +53,9 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
       - run: npm ci
       - run: npm run build
       - run: npm run test:integration
@@ -67,6 +73,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
       - run: cargo check --manifest-path rust/Cargo.toml --workspace --all-targets
       - if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
@@ -80,6 +89,10 @@ jobs:
     needs: integration
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
       - name: Validate WSL-to-Windows setup and integration
         shell: pwsh
         run: ./scripts/ci/run-wsl-validation.ps1 -Workspace "${{ github.workspace }}"

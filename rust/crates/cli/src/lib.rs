@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
@@ -15,7 +15,7 @@ use tabctl_shared::{ProfileRegistry, RequestEnvelope, ResponseEnvelope, SocketEn
 #[cfg(windows)]
 use sha2::{Digest, Sha256};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 const WSL_TCP_PORT_FILENAME: &str = "tcp-port";
 #[cfg(target_os = "linux")]
 const WSL_TCP_PORT_FALLBACK: u16 = 39_001;
@@ -875,14 +875,14 @@ fn tabctl_relative_suffix(path: &Path) -> Option<PathBuf> {
     found.then_some(relative)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 fn read_tcp_port_file(path: &Path) -> Option<u16> {
     let content = fs::read_to_string(path).ok()?;
     let port = content.trim().parse::<u16>().ok()?;
     (port > 0).then_some(port)
 }
 
-#[cfg(windows)]
+#[cfg(target_os = "linux")]
 fn resolve_windows_pipe_endpoint(data_dir: &str) -> SocketEndpoint {
     let mut hasher = Sha256::new();
     hasher.update(data_dir.as_bytes());
@@ -1398,7 +1398,6 @@ mod tests {
         assert_eq!(port, Some(39001));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn rejects_invalid_wsl_tcp_port_file_values() {
         let temp_root = std::env::temp_dir().join(format!("tabctl-cli-test-{}", request_id()));
