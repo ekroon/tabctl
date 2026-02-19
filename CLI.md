@@ -510,9 +510,38 @@ WSL endpoint resolution order (CLI):
 3. `tcp-port` discovery from resolved data dir and `/mnt/c/Users/*/.../tabctl/.../tcp-port`
 4. Fallback `tcp://127.0.0.1:38000`
 
+### Universal TCP Transport (opt-in)
+
+TCP transport can be enabled on any platform, not just WSL. This is useful for:
+- Remote debugging or headless setups
+- Container-to-host communication
+- Development and testing
+
+**Host side — enable TCP listener:**
+
+```bash
+TABCTL_HOST_TCP=1 tabctl host
+```
+
+This starts a TCP listener on `127.0.0.1` alongside the primary transport (Unix socket or named pipe). The port is written to `<dataDir>/tcp-port`.
+
+**CLI side — use TCP transport:**
+
+```bash
+TABCTL_TRANSPORT=tcp tabctl list --all
+```
+
+The CLI reads the port from the `tcp-port` file in the data directory. You can also specify a port directly:
+
+```bash
+TABCTL_TCP_PORT=38500 TABCTL_TRANSPORT=tcp tabctl ping
+```
+
+All TCP connections require a valid auth token (see TCP Transport Security below).
+
 ### TCP Transport Security
 
-When the host listens on TCP (currently Windows only, used by WSL clients), connections are secured with a shared auth token:
+When the host listens on TCP (Windows always, other platforms via `TABCTL_HOST_TCP=1`), connections are secured with a shared auth token:
 
 - The host generates a random token on startup and writes it to `<dataDir>/auth-token`
 - The CLI reads this token and includes it in every TCP request
@@ -550,6 +579,8 @@ Notes:
 | `TABCTL_SOCKET` | Override socket endpoint (`unix://`, `pipe://`, `tcp://`) |
 | `TABCTL_STATE_DIR` | Override state directory fallback (`$XDG_STATE_HOME/tabctl`) |
 | `TABCTL_SETUP_FETCH_EXTENSION` | Set to `0` to skip setup extension release download |
+| `TABCTL_HOST_TCP` | Set to `1` to enable TCP listener on the host (all platforms) |
+| `TABCTL_TRANSPORT` | Set to `tcp` to use TCP transport in the CLI |
 | `TABCTL_TCP_PORT` | Force localhost TCP endpoint (WSL/Linux clients) |
 | `TABCTL_VERSION_MODE` | `release` or `dev` for version output |
 

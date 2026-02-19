@@ -17,7 +17,6 @@ use tabctl_shared::{
 #[cfg(windows)]
 use sha2::{Digest, Sha256};
 
-#[cfg(any(target_os = "linux", test))]
 const WSL_TCP_PORT_FILENAME: &str = "tcp-port";
 #[cfg(target_os = "linux")]
 const WSL_TCP_PORT_FALLBACK: u16 = 39_001;
@@ -870,6 +869,30 @@ fn resolve_socket_endpoint(profile: Option<&str>) -> Result<SocketEndpoint, Stri
             return Ok(endpoint);
         }
     }
+    // Check TABCTL_TRANSPORT=tcp for explicit TCP transport selection
+    if let Ok(transport) = std::env::var("TABCTL_TRANSPORT") {
+        if transport.trim().eq_ignore_ascii_case("tcp") {
+            if let Ok(port_str) = std::env::var("TABCTL_TCP_PORT") {
+                if let Ok(port) = port_str.trim().parse::<u16>() {
+                    if port > 0 {
+                        return Ok(SocketEndpoint::Tcp {
+                            host: "127.0.0.1".to_string(),
+                            port,
+                        });
+                    }
+                }
+            }
+            let data_dir = resolve_data_dir(profile)?;
+            let port_path = PathBuf::from(&data_dir).join(WSL_TCP_PORT_FILENAME);
+            if let Some(port) = read_tcp_port_file(&port_path) {
+                return Ok(SocketEndpoint::Tcp {
+                    host: "127.0.0.1".to_string(),
+                    port,
+                });
+            }
+            return Err("TABCTL_TRANSPORT=tcp but no tcp-port file found. Is the host running with TABCTL_HOST_TCP=1?".to_string());
+        }
+    }
     #[cfg(target_os = "linux")]
     if is_wsl_environment() {
         if let Some(tcp) = discover_wsl_tcp_endpoint(profile) {
@@ -1002,7 +1025,6 @@ fn tabctl_relative_suffix(path: &Path) -> Option<PathBuf> {
     found.then_some(relative)
 }
 
-#[cfg(any(target_os = "linux", test))]
 fn read_tcp_port_file(path: &Path) -> Option<u16> {
     let content = fs::read_to_string(path).ok()?;
     let port = content.trim().parse::<u16>().ok()?;
@@ -2596,5 +2618,107 @@ mod tests {
     fn test_wsl_file_candidates_includes_auth_token_filename() {
         let candidates = wsl_file_candidates("/tmp/tabctl/data", AUTH_TOKEN_FILENAME);
         assert!(candidates[0].ends_with(AUTH_TOKEN_FILENAME));
+    }
+
+    #[test]
+    fn test_transport_tcp_with_port_env() {
+        with_env_vars(
+            &[
+                ("TABCTL_TRANSPORT", Some("tcp")),
+                ("TABCTL_TCP_PORT", Some("39005")),
+                ("TABCTL_SOCKET", None),
+            ],
+            || {
+                let endpoint = resolve_socket_endpoint(None).expect("resolve endpoint");
+                assert_eq!(
+                    endpoint,
+                    SocketEndpoint::Tcp {
+                        host: "127.0.0.1".to_string(),
+                        port: 39005,
+                    }
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn test_transport_tcp_with_port_file() {
+        let temp_root = std::env::temp_dir().join(format!("tabctl-cli-test-{}", request_id()));
+        std::fs::create_dir_all(&temp_root).expect("create temp directory");
+        let port_file = temp_root.join(WSL_TCP_PORT_FILENAME);
+        std::fs::write(&port_file, "39010\n").expect("write port file");
+        with_env_vars(
+            &[
+                ("TABCTL_TRANSPORT", Some("tcp")),
+                ("TABCTL_TCP_PORT", None),
+                ("TABCTL_SOCKET", None),
+                (
+                    "TABCTL_DATA_DIR",
+                    Some(temp_root.to_str().expect("temp path should be valid utf-8")),
+                ),
+            ],
+            || {
+                let endpoint = resolve_socket_endpoint(None).expect("resolve endpoint");
+                assert_eq!(
+                    endpoint,
+                    SocketEndpoint::Tcp {
+                        host: "127.0.0.1".to_string(),
+                        port: 39010,
+                    }
+                );
+            },
+        );
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn test_transport_tcp_missing_port_returns_error() {
+        let temp_root = std::env::temp_dir().join(format!("tabctl-cli-test-{}", request_id()));
+        std::fs::create_dir_all(&temp_root).expect("create temp directory");
+        with_env_vars(
+            &[
+                ("TABCTL_TRANSPORT", Some("tcp")),
+                ("TABCTL_TCP_PORT", None),
+                ("TABCTL_SOCKET", None),
+                (
+                    "TABCTL_DATA_DIR",
+                    Some(temp_root.to_str().expect("temp path should be valid utf-8")),
+                ),
+            ],
+            || {
+                let err = resolve_socket_endpoint(None).expect_err("should fail without port file");
+                assert!(
+                    err.contains("TABCTL_HOST_TCP"),
+                    "error should mention TABCTL_HOST_TCP, got: {err}"
+                );
+            },
+        );
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_transport_non_tcp_ignored() {
+        let temp_root = std::env::temp_dir().join(format!("tabctl-cli-test-{}", request_id()));
+        std::fs::create_dir_all(&temp_root).expect("create temp directory");
+        with_env_vars(
+            &[
+                ("TABCTL_TRANSPORT", Some("socket")),
+                ("TABCTL_TCP_PORT", None),
+                ("TABCTL_SOCKET", None),
+                (
+                    "TABCTL_DATA_DIR",
+                    Some(temp_root.to_str().expect("temp path should be valid utf-8")),
+                ),
+            ],
+            || {
+                let endpoint = resolve_socket_endpoint(None).expect("resolve endpoint");
+                assert!(
+                    matches!(endpoint, SocketEndpoint::Unix { .. }),
+                    "expected Unix endpoint, got: {endpoint:?}"
+                );
+            },
+        );
+        let _ = std::fs::remove_dir_all(&temp_root);
     }
 }

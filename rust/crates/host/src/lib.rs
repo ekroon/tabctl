@@ -38,15 +38,11 @@ const MAX_RESPONSE_BYTES: usize = 20 * 1024 * 1024;
 const MAX_NATIVE_MESSAGE_BYTES: usize = 10 * 1024 * 1024;
 const HISTORY_LIMIT_DEFAULT: usize = 20;
 const RETENTION_DAYS: u64 = 30;
-#[allow(dead_code)]
 const TCP_PORT_FILENAME: &str = "tcp-port";
-#[allow(dead_code)]
 const AUTH_TOKEN_FILENAME: &str = "auth-token";
-#[allow(dead_code)]
 const AUTH_TOKEN_LENGTH: usize = 32; // 32 hex chars = 128 bits
 const TCP_PORT_BASE: u16 = 38_000;
 const TCP_PORT_SPAN: u16 = 1_000;
-#[allow(dead_code)]
 const TCP_PORT_ATTEMPTS: u16 = 128;
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -937,6 +933,23 @@ fn run_unix() -> io::Result<()> {
 
     start_native_reader(state.clone(), clients.clone(), native_out.clone());
 
+    // Optional TCP listener (opt-in via TABCTL_HOST_TCP=1)
+    let tcp_enabled = std::env::var("TABCTL_HOST_TCP")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+
+    if tcp_enabled {
+        let data_dir = PathBuf::from(&config.data_dir);
+        let (tcp_listener, _tcp_port, auth_token) = setup_tcp_listener(&data_dir)?;
+        spawn_tcp_accept_loop(
+            tcp_listener,
+            state.clone(),
+            clients.clone(),
+            native_out.clone(),
+            auth_token,
+        );
+    }
+
     log_line(&format!("listening on {}", socket_path.display()));
 
     for incoming in listener.incoming() {
@@ -1024,7 +1037,6 @@ fn connect_named_pipe_instance(path: &str) -> io::Result<File> {
     }
 }
 
-#[allow(dead_code)]
 fn deterministic_tcp_start_port(data_dir: &Path) -> u16 {
     let mut hasher = Sha256::new();
     hasher.update(data_dir.to_string_lossy().as_bytes());
@@ -1033,7 +1045,6 @@ fn deterministic_tcp_start_port(data_dir: &Path) -> u16 {
     TCP_PORT_BASE + (seed % TCP_PORT_SPAN)
 }
 
-#[allow(dead_code)]
 fn bind_tcp_listener(data_dir: &Path) -> io::Result<(TcpListener, u16)> {
     if let Ok(port) = std::env::var("TABCTL_TCP_PORT") {
         let parsed = port
@@ -1059,14 +1070,12 @@ fn bind_tcp_listener(data_dir: &Path) -> io::Result<(TcpListener, u16)> {
     ))
 }
 
-#[allow(dead_code)]
 fn write_tcp_port_file(data_dir: &Path, port: u16) -> io::Result<PathBuf> {
     let path = data_dir.join(TCP_PORT_FILENAME);
     fs::write(&path, format!("{port}\n"))?;
     Ok(path)
 }
 
-#[allow(dead_code)]
 fn generate_and_write_auth_token(data_dir: &Path) -> io::Result<String> {
     let mut bytes = [0u8; 16]; // 16 bytes = 128 bits → 32 hex chars
     getrandom::getrandom(&mut bytes).map_err(|e| io::Error::other(e.to_string()))?;
@@ -1075,6 +1084,63 @@ fn generate_and_write_auth_token(data_dir: &Path) -> io::Result<String> {
     let path = data_dir.join(AUTH_TOKEN_FILENAME);
     fs::write(&path, &token)?;
     Ok(token)
+}
+
+fn setup_tcp_listener(data_dir: &Path) -> io::Result<(TcpListener, u16, Arc<String>)> {
+    let (listener, port) = bind_tcp_listener(data_dir)?;
+    let port_file = write_tcp_port_file(data_dir, port)?;
+    let auth_token = Arc::new(generate_and_write_auth_token(data_dir)?);
+    log_line(&format!(
+        "generated auth token in {}",
+        data_dir.join(AUTH_TOKEN_FILENAME).display()
+    ));
+    log_line(&format!("listening on tcp://127.0.0.1:{port}"));
+    log_line(&format!("published tcp port file {}", port_file.display()));
+    Ok((listener, port, auth_token))
+}
+
+fn spawn_tcp_accept_loop(
+    listener: TcpListener,
+    state: Arc<Mutex<HostState>>,
+    clients: Clients,
+    native_out: Arc<Mutex<io::Stdout>>,
+    auth_token: Arc<String>,
+) {
+    thread::spawn(move || {
+        for incoming in listener.incoming() {
+            match incoming {
+                Ok(stream) => {
+                    let client_id = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+                    let writer_stream = match stream.try_clone() {
+                        Ok(clone) => clone,
+                        Err(err) => {
+                            log_line(&format!("tcp clone error: {err}"));
+                            continue;
+                        }
+                    };
+                    let writer: ClientWriter = Arc::new(Mutex::new(Box::new(writer_stream)));
+                    if let Ok(mut map) = clients.lock() {
+                        map.insert(client_id, writer);
+                    }
+                    let state_clone = state.clone();
+                    let clients_clone = clients.clone();
+                    let native_out_clone = native_out.clone();
+                    let token_clone = Some(auth_token.clone());
+                    thread::spawn(move || {
+                        handle_client(
+                            client_id,
+                            Box::new(stream),
+                            state_clone,
+                            clients_clone,
+                            native_out_clone,
+                            token_clone,
+                        )
+                    });
+                }
+                Err(err) => log_line(&format!("tcp accept error: {err}")),
+            }
+        }
+    });
 }
 
 #[cfg(windows)]
@@ -1100,65 +1166,22 @@ fn run_windows() -> io::Result<()> {
 
     let data_dir = PathBuf::from(&config.data_dir);
     fs::create_dir_all(&data_dir)?;
-    let (tcp_listener, tcp_port) = bind_tcp_listener(&data_dir)?;
-    let tcp_port_file = write_tcp_port_file(&data_dir, tcp_port)?;
-    let auth_token = Arc::new(generate_and_write_auth_token(&data_dir)?);
-    log_line(&format!(
-        "generated auth token in {}",
-        data_dir.join(AUTH_TOKEN_FILENAME).display()
-    ));
+    let (tcp_listener, _tcp_port, auth_token) = setup_tcp_listener(&data_dir)?;
 
     let state = Arc::new(Mutex::new(HostState::new(PathBuf::from(config.undo_log))));
     let clients: Clients = Arc::new(Mutex::new(HashMap::new()));
     let native_out = Arc::new(Mutex::new(io::stdout()));
     start_native_reader(state.clone(), clients.clone(), native_out.clone());
 
-    let tcp_state = state.clone();
-    let tcp_clients = clients.clone();
-    let tcp_native_out = native_out.clone();
-    let tcp_auth_token = auth_token.clone();
-    thread::spawn(move || {
-        for incoming in tcp_listener.incoming() {
-            match incoming {
-                Ok(stream) => {
-                    let client_id = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-                    let writer_stream = match stream.try_clone() {
-                        Ok(clone) => clone,
-                        Err(err) => {
-                            log_line(&format!("tcp clone error: {err}"));
-                            continue;
-                        }
-                    };
-                    let writer: ClientWriter = Arc::new(Mutex::new(Box::new(writer_stream)));
-                    if let Ok(mut map) = tcp_clients.lock() {
-                        map.insert(client_id, writer);
-                    }
-                    let state_clone = tcp_state.clone();
-                    let clients_clone = tcp_clients.clone();
-                    let native_out_clone = tcp_native_out.clone();
-                    let token_clone = tcp_auth_token.clone();
-                    thread::spawn(move || {
-                        handle_client(
-                            client_id,
-                            Box::new(stream),
-                            state_clone,
-                            clients_clone,
-                            native_out_clone,
-                            Some(token_clone),
-                        )
-                    });
-                }
-                Err(err) => log_line(&format!("tcp accept error: {err}")),
-            }
-        }
-    });
+    spawn_tcp_accept_loop(
+        tcp_listener,
+        state.clone(),
+        clients.clone(),
+        native_out.clone(),
+        auth_token,
+    );
 
     log_line(&format!("listening on {pipe_path}"));
-    log_line(&format!("listening on tcp://127.0.0.1:{tcp_port}"));
-    log_line(&format!(
-        "published tcp port file {}",
-        tcp_port_file.display()
-    ));
 
     loop {
         match connect_named_pipe_instance(&pipe_path) {
