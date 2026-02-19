@@ -69,6 +69,9 @@ pub struct RequestEnvelope {
     pub action: String,
     #[serde(default)]
     pub params: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "authToken")]
+    pub auth_token: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -510,6 +510,27 @@ WSL endpoint resolution order (CLI):
 3. `tcp-port` discovery from resolved data dir and `/mnt/c/Users/*/.../tabctl/.../tcp-port`
 4. Fallback `tcp://127.0.0.1:38000`
 
+### TCP Transport Security
+
+When the host listens on TCP (currently Windows only, used by WSL clients), connections are secured with a shared auth token:
+
+- The host generates a random token on startup and writes it to `<dataDir>/auth-token`
+- The CLI reads this token and includes it in every TCP request
+- Requests without a valid token are rejected with "Authentication failed"
+- Unix socket and named pipe connections do not require a token (filesystem permissions provide security)
+
+**Environment variable override:**
+
+```bash
+export TABCTL_AUTH_TOKEN=<token>
+```
+
+This overrides file-based token discovery, useful for custom setups.
+
+**WSL path resolution:**
+
+The CLI extracts the Windows username from `$PATH` (matching `/mnt/c/Users/<username>/`) to locate the auth token file in the Windows filesystem, rather than scanning all user directories.
+
 Notes:
 - Use `--group-id -1` or `--ungrouped` to target ungrouped tabs.
 - `screenshot --out` writes per-tab folders into the target directory.
@@ -525,6 +546,7 @@ Notes:
 | `TABCTL_RELEASE_ASSET` | Override setup release asset filename |
 | `TABCTL_RELEASE_REPO` | Override setup release repository (`owner/repo`) |
 | `TABCTL_RELEASE_TAG` | Override setup release tag/version |
+| `TABCTL_AUTH_TOKEN` | Override TCP auth token (skips file-based discovery) |
 | `TABCTL_SOCKET` | Override socket endpoint (`unix://`, `pipe://`, `tcp://`) |
 | `TABCTL_STATE_DIR` | Override state directory fallback (`$XDG_STATE_HOME/tabctl`) |
 | `TABCTL_SETUP_FETCH_EXTENSION` | Set to `0` to skip setup extension release download |

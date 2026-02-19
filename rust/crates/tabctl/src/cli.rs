@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 const WSL_TCP_PORT_FILENAME: &str = "tcp-port";
 #[cfg(target_os = "linux")]
 const WSL_TCP_PORT_FALLBACK: u16 = 39_001;
+const AUTH_TOKEN_FILENAME: &str = "auth-token";
 
 pub fn run<I, T>(args: I) -> Result<(), String>
 where
@@ -928,33 +929,64 @@ fn discover_wsl_tcp_port_from_data_dir(data_dir: &str) -> Option<u16> {
     None
 }
 
-#[cfg(target_os = "linux")]
-fn wsl_tcp_port_candidates(data_dir: &str) -> Vec<PathBuf> {
-    let mut candidates = vec![PathBuf::from(data_dir).join(WSL_TCP_PORT_FILENAME)];
+#[cfg(any(target_os = "linux", test))]
+fn resolve_windows_username_from_path() -> Option<String> {
+    let path_env = std::env::var("PATH").ok()?;
+    for entry in path_env.split(':') {
+        let lower = entry.to_lowercase();
+        if let Some(pos) = lower.find("/mnt/c/users/") {
+            let after_prefix = &entry[pos + "/mnt/c/Users/".len()..];
+            let username = after_prefix.split('/').next()?;
+            if !username.is_empty() {
+                return Some(username.to_string());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn resolve_windows_appdata_local() -> Option<PathBuf> {
+    let username = resolve_windows_username_from_path()?;
+    let path = PathBuf::from(format!("/mnt/c/Users/{username}/AppData/Local"));
+    if path.is_dir() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn wsl_file_candidates(data_dir: &str, filename: &str) -> Vec<PathBuf> {
+    let mut candidates = vec![PathBuf::from(data_dir).join(filename)];
     let Some(relative_suffix) = tabctl_relative_suffix(Path::new(data_dir)) else {
         return candidates;
     };
-    let Ok(entries) = fs::read_dir("/mnt/c/Users") else {
+    let Some(appdata_local) = resolve_windows_appdata_local() else {
         return candidates;
     };
-    for entry in entries.flatten() {
-        let root = entry.path().join("AppData").join("Local");
-        candidates.push(
-            root.join("tabctl")
-                .join(&relative_suffix)
-                .join(WSL_TCP_PORT_FILENAME),
-        );
-        candidates.push(
-            root.join("tabctl-state")
-                .join("tabctl")
-                .join(&relative_suffix)
-                .join(WSL_TCP_PORT_FILENAME),
-        );
-    }
+    candidates.push(
+        appdata_local
+            .join("tabctl")
+            .join(&relative_suffix)
+            .join(filename),
+    );
+    candidates.push(
+        appdata_local
+            .join("tabctl-state")
+            .join("tabctl")
+            .join(&relative_suffix)
+            .join(filename),
+    );
     candidates
 }
 
 #[cfg(target_os = "linux")]
+fn wsl_tcp_port_candidates(data_dir: &str) -> Vec<PathBuf> {
+    wsl_file_candidates(data_dir, WSL_TCP_PORT_FILENAME)
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn tabctl_relative_suffix(path: &Path) -> Option<PathBuf> {
     let mut relative = PathBuf::new();
     let mut found = false;
@@ -1032,6 +1064,40 @@ fn resolve_config_dir() -> Result<String, String> {
     }
     let home = dirs::home_dir().ok_or_else(|| "Unable to resolve home directory".to_string())?;
     Ok(format!("{}/.config/tabctl", home.display()))
+}
+
+fn read_auth_token(profile: Option<&str>) -> Option<String> {
+    if let Ok(token) = std::env::var("TABCTL_AUTH_TOKEN") {
+        let token = token.trim().to_string();
+        if !token.is_empty() {
+            return Some(token);
+        }
+    }
+
+    let data_dir = resolve_data_dir(profile).ok()?;
+
+    #[cfg(target_os = "linux")]
+    if is_wsl_environment() {
+        for path in wsl_file_candidates(&data_dir, AUTH_TOKEN_FILENAME) {
+            if let Ok(content) = fs::read_to_string(&path) {
+                let token = content.trim().to_string();
+                if !token.is_empty() {
+                    return Some(token);
+                }
+            }
+        }
+        return None;
+    }
+
+    let path = PathBuf::from(&data_dir).join(AUTH_TOKEN_FILENAME);
+    fs::read_to_string(&path).ok().and_then(|content| {
+        let token = content.trim().to_string();
+        if token.is_empty() {
+            None
+        } else {
+            Some(token)
+        }
+    })
 }
 
 fn register_profile(
@@ -1248,7 +1314,7 @@ fn send_request(
             {
                 let stream = UnixStream::connect(path)
                     .map_err(|e| format!("Failed to connect to host: {e}"))?;
-                send_request_over_stream(stream, action, params, show_progress)
+                send_request_over_stream(stream, action, params, show_progress, None)
             }
             #[cfg(not(unix))]
             {
@@ -1257,9 +1323,10 @@ fn send_request(
             }
         }
         SocketEndpoint::Tcp { host, port } => {
+            let auth_token = read_auth_token(profile);
             let stream = TcpStream::connect((host.as_str(), port))
                 .map_err(|e| format!("Failed to connect to host: {e}"))?;
-            send_request_over_stream(stream, action, params, show_progress)
+            send_request_over_stream(stream, action, params, show_progress, auth_token)
         }
         SocketEndpoint::Pipe { path } => {
             #[cfg(windows)]
@@ -1269,7 +1336,7 @@ fn send_request(
                     .write(true)
                     .open(path)
                     .map_err(|e| format!("Failed to connect to host: {e}"))?;
-                send_request_over_stream(stream, action, params, show_progress)
+                send_request_over_stream(stream, action, params, show_progress, None)
             }
             #[cfg(not(windows))]
             {
@@ -1285,6 +1352,7 @@ fn send_request_over_stream<S>(
     action: &str,
     params: Value,
     show_progress: bool,
+    auth_token: Option<String>,
 ) -> Result<ResponseEnvelope, String>
 where
     S: std::io::Read + Write,
@@ -1293,6 +1361,7 @@ where
         id: Some(request_id()),
         action: action.to_string(),
         params,
+        auth_token,
     };
     serde_json::to_writer(&mut stream, &request)
         .map_err(|e| format!("Failed to encode request: {e}"))?;
@@ -1698,6 +1767,56 @@ mod tests {
         let port = read_tcp_port_file(&port_file);
         std::fs::remove_dir_all(&temp_root).expect("remove temp directory");
         assert_eq!(port, None);
+    }
+
+    #[test]
+    fn resolves_windows_username_from_path_env() {
+        with_env_vars(
+            &[(
+                "PATH",
+                Some("/usr/bin:/mnt/c/Users/TestUser/AppData/Local/bin:/usr/local/bin"),
+            )],
+            || {
+                let username = resolve_windows_username_from_path();
+                assert_eq!(username, Some("TestUser".to_string()));
+            },
+        );
+    }
+
+    #[test]
+    fn resolves_windows_username_case_insensitive_prefix() {
+        with_env_vars(
+            &[(
+                "PATH",
+                Some("/usr/bin:/mnt/C/Users/MyUser/AppData/Local/bin"),
+            )],
+            || {
+                let username = resolve_windows_username_from_path();
+                assert_eq!(username, Some("MyUser".to_string()));
+            },
+        );
+    }
+
+    #[test]
+    fn returns_none_when_path_has_no_windows_entry() {
+        with_env_vars(&[("PATH", Some("/usr/bin:/usr/local/bin"))], || {
+            let username = resolve_windows_username_from_path();
+            assert_eq!(username, None);
+        });
+    }
+
+    #[test]
+    fn wsl_file_candidates_returns_data_dir_only_without_tabctl_segment() {
+        with_env_vars(
+            &[("PATH", Some("/mnt/c/Users/TestUser/AppData/Local/bin"))],
+            || {
+                let candidates = wsl_file_candidates("/some/path/without/marker", "tcp-port");
+                assert_eq!(
+                    candidates,
+                    vec![PathBuf::from("/some/path/without/marker/tcp-port")]
+                );
+            },
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -2408,5 +2527,74 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_auth_token_from_file() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-auth-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(AUTH_TOKEN_FILENAME), "  secret-token-123\n").unwrap();
+
+        with_env_vars(
+            &[
+                ("TABCTL_AUTH_TOKEN", None),
+                ("TABCTL_DATA_DIR", Some(dir.to_str().unwrap())),
+            ],
+            || {
+                let token = read_auth_token(None);
+                assert_eq!(token.as_deref(), Some("secret-token-123"));
+            },
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_auth_token_env_override() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-auth-env-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(AUTH_TOKEN_FILENAME), "file-token").unwrap();
+
+        with_env_vars(
+            &[
+                ("TABCTL_AUTH_TOKEN", Some("env-token-override")),
+                ("TABCTL_DATA_DIR", Some(dir.to_str().unwrap())),
+            ],
+            || {
+                let token = read_auth_token(None);
+                assert_eq!(token.as_deref(), Some("env-token-override"));
+            },
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_auth_token_missing_file_returns_none() {
+        let dir =
+            std::env::temp_dir().join(format!("tabctl-test-auth-miss-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        with_env_vars(
+            &[
+                ("TABCTL_AUTH_TOKEN", None),
+                ("TABCTL_DATA_DIR", Some(dir.to_str().unwrap())),
+            ],
+            || {
+                let token = read_auth_token(None);
+                assert!(token.is_none());
+            },
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_wsl_file_candidates_includes_auth_token_filename() {
+        let candidates = wsl_file_candidates("/tmp/tabctl/data", AUTH_TOKEN_FILENAME);
+        assert!(candidates[0].ends_with(AUTH_TOKEN_FILENAME));
     }
 }

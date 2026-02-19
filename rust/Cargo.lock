@@ -347,6 +347,7 @@ dependencies = [
 name = "tabctl-host"
 version = "0.6.0-alpha.2"
 dependencies = [
+ "getrandom",
  "serde_json",
  "sha2",
  "tabctl-shared",

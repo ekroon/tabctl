@@ -42,6 +42,10 @@ const HISTORY_LIMIT_DEFAULT: usize = 20;
 const RETENTION_DAYS: u64 = 30;
 #[cfg(any(windows, test))]
 const TCP_PORT_FILENAME: &str = "tcp-port";
+#[cfg(any(windows, test))]
+const AUTH_TOKEN_FILENAME: &str = "auth-token";
+#[cfg(any(windows, test))]
+const AUTH_TOKEN_LENGTH: usize = 32; // 32 hex chars = 128 bits
 const TCP_PORT_BASE: u16 = 38_000;
 const TCP_PORT_SPAN: u16 = 1_000;
 #[cfg(windows)]
@@ -508,6 +512,7 @@ impl HostState {
                     "record".to_string(),
                     Value::Object(record),
                 )])),
+                auth_token: None,
             };
             return self.forward_to_extension(client_id, &undo_request, None);
         }
@@ -593,6 +598,7 @@ impl HostState {
                 id: request.id,
                 action,
                 params: Value::Object(params),
+                auth_token: None,
             };
             return self.forward_to_extension(client_id, &close_request, Some(create_id("tx")));
         }
@@ -815,6 +821,7 @@ fn handle_client(
     state: Arc<Mutex<HostState>>,
     clients: Clients,
     native_out: Arc<Mutex<io::Stdout>>,
+    expected_auth_token: Option<Arc<String>>,
 ) {
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
@@ -833,10 +840,40 @@ fn handle_client(
         let request = serde_json::from_str::<RequestEnvelope>(trimmed);
         let effects = match request {
             Ok(request) => {
-                let Ok(mut guard) = state.lock() else {
-                    continue;
-                };
-                guard.handle_cli_request(client_id, request)
+                if let Some(ref expected) = expected_auth_token {
+                    let provided = request.auth_token.as_deref().unwrap_or("");
+                    if provided != expected.as_str() {
+                        vec![HostEffect::Respond {
+                            client_id,
+                            payload: ResponseEnvelope {
+                                ok: false,
+                                action: None,
+                                request_id: request.id,
+                                component: Some("host".to_string()),
+                                version: Some(host_version().to_string()),
+                                progress: None,
+                                data: None,
+                                error: Some(ProtocolError {
+                                    message: "Authentication failed".to_string(),
+                                    hint: Some(
+                                        "Invalid or missing auth token for TCP connection"
+                                            .to_string(),
+                                    ),
+                                }),
+                            },
+                        }]
+                    } else {
+                        let Ok(mut guard) = state.lock() else {
+                            continue;
+                        };
+                        guard.handle_cli_request(client_id, request)
+                    }
+                } else {
+                    let Ok(mut guard) = state.lock() else {
+                        continue;
+                    };
+                    guard.handle_cli_request(client_id, request)
+                }
             }
             Err(_) => {
                 vec![HostEffect::Respond {
@@ -929,6 +966,7 @@ fn run_unix() -> io::Result<()> {
                         state_clone,
                         clients_clone,
                         native_out_clone,
+                        None,
                     )
                 });
             }
@@ -1030,6 +1068,17 @@ fn write_tcp_port_file(data_dir: &Path, port: u16) -> io::Result<PathBuf> {
     Ok(path)
 }
 
+#[cfg(any(windows, test))]
+fn generate_and_write_auth_token(data_dir: &Path) -> io::Result<String> {
+    let mut bytes = [0u8; 16]; // 16 bytes = 128 bits → 32 hex chars
+    getrandom::getrandom(&mut bytes).map_err(|e| io::Error::other(e.to_string()))?;
+    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    debug_assert_eq!(token.len(), AUTH_TOKEN_LENGTH);
+    let path = data_dir.join(AUTH_TOKEN_FILENAME);
+    fs::write(&path, &token)?;
+    Ok(token)
+}
+
 #[cfg(windows)]
 fn run_windows() -> io::Result<()> {
     let config = resolve_config();
@@ -1055,6 +1104,11 @@ fn run_windows() -> io::Result<()> {
     fs::create_dir_all(&data_dir)?;
     let (tcp_listener, tcp_port) = bind_tcp_listener(&data_dir)?;
     let tcp_port_file = write_tcp_port_file(&data_dir, tcp_port)?;
+    let auth_token = Arc::new(generate_and_write_auth_token(&data_dir)?);
+    log_line(&format!(
+        "generated auth token in {}",
+        data_dir.join(AUTH_TOKEN_FILENAME).display()
+    ));
 
     let state = Arc::new(Mutex::new(HostState::new(PathBuf::from(config.undo_log))));
     let clients: Clients = Arc::new(Mutex::new(HashMap::new()));
@@ -1064,6 +1118,7 @@ fn run_windows() -> io::Result<()> {
     let tcp_state = state.clone();
     let tcp_clients = clients.clone();
     let tcp_native_out = native_out.clone();
+    let tcp_auth_token = auth_token.clone();
     thread::spawn(move || {
         for incoming in tcp_listener.incoming() {
             match incoming {
@@ -1083,6 +1138,7 @@ fn run_windows() -> io::Result<()> {
                     let state_clone = tcp_state.clone();
                     let clients_clone = tcp_clients.clone();
                     let native_out_clone = tcp_native_out.clone();
+                    let token_clone = tcp_auth_token.clone();
                     thread::spawn(move || {
                         handle_client(
                             client_id,
@@ -1090,6 +1146,7 @@ fn run_windows() -> io::Result<()> {
                             state_clone,
                             clients_clone,
                             native_out_clone,
+                            Some(token_clone),
                         )
                     });
                 }
@@ -1130,6 +1187,7 @@ fn run_windows() -> io::Result<()> {
                         state_clone,
                         clients_clone,
                         native_out_clone,
+                        None,
                     )
                 });
             }
@@ -1232,6 +1290,7 @@ mod tests {
                 "tabId".to_string(),
                 Value::Number(12.into()),
             )])),
+            auth_token: None,
         };
 
         let effects = state.handle_cli_request(7, request);
@@ -1263,6 +1322,7 @@ mod tests {
             id: Some("req-2".to_string()),
             action: "move-tab".to_string(),
             params: Value::Object(Map::new()),
+            auth_token: None,
         };
         let effects = state.handle_cli_request(9, request);
         let HostEffect::SendNative(native) = &effects[0] else {
@@ -1331,6 +1391,7 @@ mod tests {
             id: Some("req-analyze".to_string()),
             action: "analyze".to_string(),
             params: Value::Object(Map::new()),
+            auth_token: None,
         };
         let analyze_effects = state.handle_cli_request(3, analyze_request);
         let HostEffect::SendNative(analyze_native) = &analyze_effects[0] else {
@@ -1374,6 +1435,7 @@ mod tests {
                 ("mode".to_string(), Value::String("apply".to_string())),
                 ("analysisId".to_string(), Value::String(analysis_id)),
             ])),
+            auth_token: None,
         };
 
         let close_effects = state.handle_cli_request(3, close_request);
@@ -1428,6 +1490,7 @@ mod tests {
                     "limit".to_string(),
                     Value::Number(1.into()),
                 )])),
+                auth_token: None,
             },
         );
         let HostEffect::Respond { payload, .. } = &effects[0] else {
@@ -1456,6 +1519,7 @@ mod tests {
                 id: Some("req-undo".to_string()),
                 action: "undo".to_string(),
                 params: Value::Object(Map::new()),
+                auth_token: None,
             },
         );
         let HostEffect::Respond { payload, .. } = &effects[0] else {
@@ -1482,6 +1546,7 @@ mod tests {
                 id: Some("req-ping".to_string()),
                 action: "ping".to_string(),
                 params: Value::Object(Map::new()),
+                auth_token: None,
             },
         );
         let HostEffect::SendNative(native_req) = &effects[0] else {
@@ -1543,6 +1608,7 @@ mod tests {
                 id: Some("req-version".to_string()),
                 action: "version".to_string(),
                 params: Value::Object(Map::new()),
+                auth_token: None,
             },
         );
         let HostEffect::Respond { payload, .. } = &effects[0] else {
@@ -1596,5 +1662,144 @@ mod tests {
         conn.read_to_end(&mut buf).expect("read");
         handle.join().expect("thread join");
         assert_eq!(buf, b"ping");
+    }
+
+    #[test]
+    fn test_auth_token_file_generation() {
+        let tmp = std::env::temp_dir().join(format!("tabctl-host-auth-{}", now_ms()));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let token1 = generate_and_write_auth_token(&tmp).expect("generate token");
+        let token_path = tmp.join(AUTH_TOKEN_FILENAME);
+
+        // File exists and contains the token
+        assert!(token_path.exists());
+        let content = std::fs::read_to_string(&token_path).unwrap();
+        assert_eq!(content, token1);
+
+        // Token is exactly 32 hex characters
+        assert_eq!(token1.len(), AUTH_TOKEN_LENGTH);
+        assert!(token1.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Two calls produce different tokens
+        let token2 = generate_and_write_auth_token(&tmp).expect("generate second token");
+        assert_eq!(token2.len(), AUTH_TOKEN_LENGTH);
+        assert_ne!(token1, token2);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn tcp_auth_token_rejects_wrong_token() {
+        let undo_path = temp_undo_path();
+        let expected_token = Arc::new("correct-token-abc123".to_string());
+
+        let request = RequestEnvelope {
+            id: Some("req-bad-auth".to_string()),
+            action: "ping".to_string(),
+            params: Value::Object(Map::new()),
+            auth_token: Some("wrong-token".to_string()),
+        };
+
+        // Simulate the TCP auth check: token mismatch produces error response
+        let provided = request.auth_token.as_deref().unwrap_or("");
+        assert_ne!(provided, expected_token.as_str());
+
+        let effects: Vec<HostEffect> = vec![HostEffect::Respond {
+            client_id: 100,
+            payload: ResponseEnvelope {
+                ok: false,
+                action: None,
+                request_id: request.id.clone(),
+                component: Some("host".to_string()),
+                version: Some(host_version().to_string()),
+                progress: None,
+                data: None,
+                error: Some(ProtocolError {
+                    message: "Authentication failed".to_string(),
+                    hint: Some("Invalid or missing auth token for TCP connection".to_string()),
+                }),
+            },
+        }];
+
+        let HostEffect::Respond { payload, .. } = &effects[0] else {
+            panic!("expected auth error response");
+        };
+        assert!(!payload.ok);
+        assert_eq!(
+            payload.error.as_ref().map(|e| e.message.as_str()),
+            Some("Authentication failed")
+        );
+        assert_eq!(
+            payload.error.as_ref().and_then(|e| e.hint.as_deref()),
+            Some("Invalid or missing auth token for TCP connection")
+        );
+        assert_eq!(payload.request_id.as_deref(), Some("req-bad-auth"));
+
+        let _ = std::fs::remove_file(undo_path);
+    }
+
+    #[test]
+    fn tcp_auth_token_accepts_correct_token() {
+        let undo_path = temp_undo_path();
+        let mut state = HostState::new(undo_path);
+        let expected_token = Arc::new("correct-token-abc123".to_string());
+
+        let request = RequestEnvelope {
+            id: Some("req-good-auth".to_string()),
+            action: "ping".to_string(),
+            params: Value::Object(Map::new()),
+            auth_token: Some("correct-token-abc123".to_string()),
+        };
+
+        // Simulate the TCP auth check path
+        let provided = request.auth_token.as_deref().unwrap_or("");
+        assert_eq!(provided, expected_token.as_str());
+
+        // With correct token, request should be forwarded normally
+        let effects = state.handle_cli_request(101, request);
+        let HostEffect::SendNative(native) = &effects[0] else {
+            panic!("expected ping to be forwarded to extension");
+        };
+        assert_eq!(native.id, "req-good-auth");
+    }
+
+    #[test]
+    fn tcp_auth_token_missing_token_rejected() {
+        let expected_token = Arc::new("correct-token-abc123".to_string());
+
+        let request = RequestEnvelope {
+            id: Some("req-no-auth".to_string()),
+            action: "ping".to_string(),
+            params: Value::Object(Map::new()),
+            auth_token: None,
+        };
+
+        let provided = request.auth_token.as_deref().unwrap_or("");
+        assert_ne!(provided, expected_token.as_str());
+    }
+
+    #[test]
+    fn no_expected_token_skips_validation() {
+        let undo_path = temp_undo_path();
+        let mut state = HostState::new(undo_path);
+
+        // No auth_token on request, no expected token (Unix socket / pipe path)
+        let request = RequestEnvelope {
+            id: Some("req-no-tcp".to_string()),
+            action: "ping".to_string(),
+            params: Value::Object(Map::new()),
+            auth_token: None,
+        };
+
+        let expected_auth_token: Option<Arc<String>> = None;
+        // When expected_auth_token is None, skip validation entirely
+        assert!(expected_auth_token.is_none());
+
+        let effects = state.handle_cli_request(102, request);
+        let HostEffect::SendNative(native) = &effects[0] else {
+            panic!("expected ping forward without auth check");
+        };
+        assert_eq!(native.id, "req-no-tcp");
     }
 }

@@ -294,6 +294,7 @@ Policy is shared across all profiles.
 ## Security
 - The native host is locked to your extension ID.
 - All data stays local; no external API keys are used.
+- TCP connections (used for WSL ↔ Windows communication) are secured with a per-session auth token. The host generates a random token on startup; the CLI reads it automatically. See [CLI.md](CLI.md) for details.
 
 ## Development
 
