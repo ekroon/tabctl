@@ -1101,7 +1101,7 @@ fn resolve_manifest_dir(browser: &str) -> Result<PathBuf, String> {
     #[cfg(target_os = "windows")]
     {
         let data_dir = resolve_data_dir(None)?;
-        return Ok(PathBuf::from(data_dir));
+        Ok(PathBuf::from(data_dir))
     }
 
     #[cfg(target_os = "macos")]
