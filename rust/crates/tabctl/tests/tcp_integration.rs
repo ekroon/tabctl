@@ -46,7 +46,14 @@ fn start_host_tcp() -> (HostGuard, u16, String) {
     let _ = fs::remove_dir_all(&data_dir);
     fs::create_dir_all(&data_dir).expect("create data dir");
 
-    let socket_path = data_dir.join("tabctl-test.sock");
+    // Windows uses named pipes; Unix uses sockets
+    #[cfg(windows)]
+    let socket_path = format!(r"\\.\pipe\tabctl-test-{}-{}", std::process::id(), id);
+    #[cfg(not(windows))]
+    let socket_path = data_dir
+        .join("tabctl-test.sock")
+        .to_string_lossy()
+        .to_string();
 
     let bin = tabctl_bin();
     let child = Command::new(&bin)
@@ -54,7 +61,7 @@ fn start_host_tcp() -> (HostGuard, u16, String) {
         .env("TABCTL_HOST_TCP", "1")
         // XDG_STATE_HOME + /tabctl = data_dir for the host
         .env("XDG_STATE_HOME", &data_dir)
-        .env("TABCTL_SOCKET", socket_path.to_string_lossy().to_string())
+        .env("TABCTL_SOCKET", &socket_path)
         .stdin(Stdio::piped()) // keep stdin open so host doesn't exit
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
