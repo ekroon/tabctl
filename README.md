@@ -8,12 +8,12 @@ A command-line instrument for browser tab orchestration — list, search, group,
 
 ```bash
 mise use -g github:ekroon/tabctl   # install the tabctl binary
-tabctl setup --browser edge         # or: --browser chrome
+tabctl setup --browser edge --extension-id <id>   # or: --browser chrome --extension-id <id>
 # Load the extension: edge://extensions → Developer mode → Load unpacked → paste: ~/.local/state/tabctl/extension/
 tabctl ping
 ```
 
-If it pings back, the wire is live. You're connected.
+Setup writes the wrapper script, native messaging manifest, and registers the profile in one step. Works on macOS, Linux, and Windows. If it pings back, the wire is live. You're connected.
 
 ### Alternative: build from source
 
@@ -86,35 +86,30 @@ npm run build
 
 ### 2. Set up your browser
 
-Run setup — it syncs the extension, tells you where to load it, and auto-derives the extension ID:
+Run setup with your browser's extension ID — it writes the manifest, wrapper script, and registers the profile:
 
 <!-- test: "setup explicit --extension-id overrides auto-derived ID" -->
 ```bash
-tabctl setup --browser chrome
+tabctl setup --browser chrome --extension-id <your-extension-id>
 ```
 
 This will:
-1. Copy the extension to a stable location (`~/.local/state/tabctl/extension/`)
-2. Print the path (and copy it to your clipboard)
-3. Ask you to load it as an unpacked extension in `chrome://extensions`
-4. Auto-derive the extension ID from the installed path
-5. Download the version-pinned release extension asset (`tabctl-extension.zip` + `.sha256`) into the tabctl data directory for offline/manual recovery
+1. Write the native messaging manifest and wrapper script
+2. Register the browser profile in `profiles.json`
+3. Download the version-pinned release extension asset (`tabctl-extension.zip` + `.sha256`) into the tabctl data directory
+4. Copy the extension to a stable location (`~/.local/state/tabctl/extension/`)
+5. Print the path for loading as an unpacked extension in `chrome://extensions`
+
+Without `--extension-id`, setup only downloads the extension and outputs JSON (no manifest or wrapper writes).
+
+> **Edge?** Use `--browser edge` and load from `edge://extensions` instead.
+>
+> **Cross-platform:** setup works on macOS, Linux, and Windows. On Windows, setup verifies connectivity after writing setup artifacts and checks the runtime extension ID reported by the browser. Connectivity failures and runtime extension ID mismatches exit non-zero and print manual recovery steps (including expected vs runtime IDs).
 
 Optional setup release overrides:
 - Flags: `--release-repo`, `--release-tag` (or `--release-version`), `--release-asset`, `--skip-extension-download`
 - Env vars: `TABCTL_RELEASE_REPO`, `TABCTL_RELEASE_TAG`, `TABCTL_RELEASE_ASSET`, `TABCTL_SETUP_FETCH_EXTENSION=0`
 - Precedence: flags override env vars, then built-in defaults; if download fails, setup continues and includes warning details in setup output.
-
-> **Edge?** Use `--browser edge` and load from `edge://extensions` instead.
->
-> **Windows:** setup verifies connectivity after writing setup artifacts and checks the runtime extension ID reported by the browser. Connectivity failures and runtime extension ID mismatches exit non-zero and print manual recovery steps (including expected vs runtime IDs).
-
-If you need to override the auto-derived ID (e.g. for a custom extension path):
-
-<!-- test: "setup writes native host manifest for chrome" -->
-```bash
-tabctl setup --browser chrome --extension-id <your-extension-id>
-```
 
 ### 3. Verify and explore
 
@@ -260,10 +255,10 @@ tabctl supports multiple browser profiles. Each profile connects to a different 
 <!-- test: "setup writes native host manifest", "setup writes native host manifest for chrome", "setup --name creates custom-named profile", "profile-list with multiple profiles shows all", "profile-switch success updates default", "--profile flag overrides active profile" -->
 ```bash
 # Setup for Edge
-tabctl setup --browser edge
+tabctl setup --browser edge --extension-id <edge-extension-id>
 
 # Setup for Chrome (with custom name)
-tabctl setup --browser chrome --name chrome-work
+tabctl setup --browser chrome --name chrome-work --extension-id <chrome-extension-id>
 
 # List profiles
 tabctl profile-list

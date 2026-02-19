@@ -324,17 +324,20 @@ Options:
 - `--confirm`
 
 ### setup
-Install the native host manifest and register a profile.
+Install the native host manifest, wrapper script, and register a profile. Works on macOS, Linux, and Windows.
 Also attempts to download the version-matched release extension asset (`tabctl-extension.zip` + `.sha256`) into the tabctl data directory.
 Options:
 - `--browser edge|chrome` (required)
-- `--extension-id <id>` (optional; auto-derived from installed extension path, or `TABCTL_EXTENSION_ID`)
-- `--name <name>` (optional; defaults to browser name)
+- `--extension-id <id>` (required for full setup; when provided, writes the wrapper script, native messaging manifest, and registers the profile)
+- `--user-data-dir <path>` (optional; write manifest to a custom Chrome/Edge profile directory instead of the system-wide location)
+- `--name <name>` (optional; profile name, defaults to browser name)
 - `--release-repo <owner/repo>` (optional; or `TABCTL_RELEASE_REPO`)
 - `--release-tag <tag>` / `--release-version <version>` (optional; or `TABCTL_RELEASE_TAG`)
 - `--release-asset <name>` (optional; or `TABCTL_RELEASE_ASSET`)
 - `--skip-extension-download` (optional; or `TABCTL_SETUP_FETCH_EXTENSION=0`)
 - `--dev` (coming soon; dev/CI mode via CDP)
+
+When `--extension-id` is provided, setup writes the wrapper script, native messaging manifest, and registers the profile — this is the full setup path. Without `--extension-id`, setup only downloads the extension and outputs JSON (no file writes).
 
 Each run creates or updates a profile in `profiles.json`. The first profile registered becomes the default.
 Release override precedence: CLI flags take precedence over environment variables, then built-in defaults.
@@ -344,8 +347,8 @@ On Windows, setup verifies host connectivity by default after writing setup arti
 
 Run once per browser:
 ```bash
-tabctl setup --browser edge
-tabctl setup --browser chrome --name chrome-work
+tabctl setup --browser edge --extension-id mpglnmehddpkinfhheeahiicfieegcon
+tabctl setup --browser chrome --name chrome-work --extension-id <your-extension-id>
 ```
 
 ### doctor

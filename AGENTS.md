@@ -107,7 +107,7 @@ tabctl dedupe --window 123 --confirm # Execute after review
 ## Preconditions
 - Edge is open.
 - The extension is loaded (`extension/`) and connected to the native host.
-- The native host manifest is installed (use `tabctl setup --browser edge`).
+- The native host manifest is installed (use `tabctl setup --browser edge --extension-id <id>`). Setup writes the wrapper script, native messaging manifest, and registers the profile.
 - For development, use `cargo run -p tabctl --` or a debug build so a stable global `tabctl` can stay installed.
 
 ## Profile awareness

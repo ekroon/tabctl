@@ -1,6 +1,6 @@
 [package]
 name = "tabctl"
-version = "0.6.0-alpha.1"
+version = "0.6.0-alpha.2"
 edition = "2021"
 publish = false
 
@@ -12,3 +12,6 @@ serde_json = "1"
 sha2 = "0.10"
 tabctl-host = { path = "../host" }
 tabctl-shared = { path = "../shared" }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"

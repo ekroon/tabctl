@@ -1,16 +1,18 @@
 use clap::{value_parser, Arg, ArgAction, ArgMatches, Command};
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
-#[cfg(any(target_os = "linux", test))]
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tabctl_shared::{ProfileRegistry, RequestEnvelope, ResponseEnvelope, SocketEndpoint};
+use tabctl_shared::{
+    Browser, ProfileEntry, ProfileRegistry, RequestEnvelope, ResponseEnvelope, SocketEndpoint,
+};
 
 #[cfg(windows)]
 use sha2::{Digest, Sha256};
@@ -279,6 +281,11 @@ fn command_setup() -> Command {
         )
         .arg(Arg::new("node").long("node").value_name("path"))
         .arg(Arg::new("name").long("name").value_name("name"))
+        .arg(
+            Arg::new("user-data-dir")
+                .long("user-data-dir")
+                .value_name("path"),
+        )
 }
 
 fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
@@ -328,20 +335,80 @@ fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
         "native-linux"
     };
     let wrapper_path = resolve_tabctl_binary_path();
+    let extension_id = sub.get_one::<String>("extension-id");
+
+    let mut actual_wrapper_path = wrapper_path.clone();
+    let mut actual_manifest_path = data_dir.clone();
+    let mut is_default_profile = false;
+    let mut profile_registry = None::<Value>;
+
+    #[cfg(windows)]
+    let mut registry_key_value = None::<String>;
+
+    if let Some(ext_id) = extension_id {
+        let profile_name = sub
+            .get_one::<String>("name")
+            .map(|s| s.as_str())
+            .unwrap_or(browser);
+
+        let profile_data_dir = PathBuf::from(&data_dir).join("profiles").join(profile_name);
+
+        let wrapper_file = write_host_wrapper(&wrapper_path, profile_name, &profile_data_dir)?;
+
+        let user_data_dir = sub.get_one::<String>("user-data-dir").map(|s| s.as_str());
+        let manifest_path = write_native_manifest(browser, &wrapper_file, ext_id, user_data_dir)?;
+
+        #[cfg(windows)]
+        {
+            registry_key_value = Some(write_registry_key(browser, &manifest_path)?);
+        }
+
+        actual_wrapper_path = wrapper_file.display().to_string();
+        actual_manifest_path = manifest_path.display().to_string();
+
+        let registry = register_profile(
+            &data_dir,
+            profile_name,
+            browser,
+            ext_id,
+            &wrapper_file,
+            &manifest_path,
+        )?;
+        is_default_profile = registry
+            .get("default")
+            .and_then(|v| v.as_str())
+            .map(|d| d == profile_name)
+            .unwrap_or(false);
+        profile_registry = Some(registry);
+    }
+
+    let mut data = json!({
+        "profileName": browser,
+        "browser": browser,
+        "runtimeEnv": runtime_env,
+        "dataDir": data_dir,
+        "wrapperPath": actual_wrapper_path,
+        "manifestPath": actual_manifest_path,
+        "hostArgs": ["host"],
+        "extensionReleaseAsset": extension_asset,
+        "warnings": setup_warnings
+    });
+    if let Some(id) = extension_id {
+        data["extensionId"] = json!(id);
+        data["allowedOrigins"] = json!([format!("chrome-extension://{id}/")]);
+        data["isDefault"] = json!(is_default_profile);
+        if let Some(ref reg) = profile_registry {
+            data["profileRegistry"] = reg.clone();
+        }
+        #[cfg(windows)]
+        if let Some(ref rk) = registry_key_value {
+            data["registryKey"] = json!(rk);
+        }
+    }
     let setup_payload = json!({
         "ok": true,
         "action": "setup",
-        "data": {
-            "profileName": browser,
-            "browser": browser,
-            "runtimeEnv": runtime_env,
-            "dataDir": data_dir,
-            "wrapperPath": wrapper_path,
-            "manifestPath": data_dir,
-            "hostArgs": ["host"],
-            "extensionReleaseAsset": extension_asset,
-            "warnings": setup_warnings
-        }
+        "data": data
     });
     if matches.get_flag("json") {
         if !matches.get_flag("no-pretty") {
@@ -930,15 +997,7 @@ fn resolve_data_dir(profile: Option<&str>) -> Result<String, String> {
             return Ok(path);
         }
     }
-    let config_dir = if let Ok(path) = std::env::var("TABCTL_CONFIG_DIR") {
-        path
-    } else if let Ok(path) = std::env::var("XDG_CONFIG_HOME") {
-        format!("{path}/tabctl")
-    } else {
-        let home =
-            dirs::home_dir().ok_or_else(|| "Unable to resolve home directory".to_string())?;
-        format!("{}/.config/tabctl", home.display())
-    };
+    let config_dir = resolve_config_dir()?;
     if let Some(profile_name) = profile {
         let profiles_path = PathBuf::from(&config_dir).join("profiles.json");
         if let Ok(contents) = fs::read_to_string(profiles_path) {
@@ -962,6 +1021,210 @@ fn resolve_data_dir(profile: Option<&str>) -> Result<String, String> {
     }
     let home = dirs::home_dir().ok_or_else(|| "Unable to resolve home directory".to_string())?;
     Ok(format!("{}/.local/state/tabctl", home.display()))
+}
+
+fn resolve_config_dir() -> Result<String, String> {
+    if let Ok(path) = std::env::var("TABCTL_CONFIG_DIR") {
+        return Ok(path);
+    }
+    if let Ok(path) = std::env::var("XDG_CONFIG_HOME") {
+        return Ok(format!("{path}/tabctl"));
+    }
+    let home = dirs::home_dir().ok_or_else(|| "Unable to resolve home directory".to_string())?;
+    Ok(format!("{}/.config/tabctl", home.display()))
+}
+
+fn register_profile(
+    data_dir: &str,
+    profile_name: &str,
+    browser: &str,
+    extension_id: &str,
+    wrapper_path: &Path,
+    _manifest_path: &Path,
+) -> Result<Value, String> {
+    let config_dir = resolve_config_dir()?;
+    let profiles_path = PathBuf::from(&config_dir).join("profiles.json");
+
+    let mut registry = if profiles_path.exists() {
+        let contents = fs::read_to_string(&profiles_path)
+            .map_err(|e| format!("failed to read profiles.json: {e}"))?;
+        serde_json::from_str::<ProfileRegistry>(&contents)
+            .map_err(|e| format!("failed to parse profiles.json: {e}"))?
+    } else {
+        ProfileRegistry {
+            default: None,
+            profiles: HashMap::new(),
+        }
+    };
+
+    let browser_enum = match browser {
+        "edge" => Browser::Edge,
+        "chrome" => Browser::Chrome,
+        _ => return Err(format!("unsupported browser: {browser}")),
+    };
+
+    let profile_data_dir = PathBuf::from(data_dir).join("profiles").join(profile_name);
+
+    let entry = ProfileEntry {
+        browser: browser_enum,
+        extension_id: extension_id.to_string(),
+        node_path: resolve_tabctl_binary_path(),
+        host_path: wrapper_path.display().to_string(),
+        data_dir: profile_data_dir.display().to_string(),
+        user_data_dir: None,
+    };
+
+    // First registered profile becomes the default
+    if registry.default.is_none() || registry.profiles.is_empty() {
+        registry.default = Some(profile_name.to_string());
+    }
+
+    registry.profiles.insert(profile_name.to_string(), entry);
+
+    fs::create_dir_all(&config_dir).map_err(|e| format!("failed to create config dir: {e}"))?;
+
+    let content = serde_json::to_string_pretty(&registry).map_err(|e| e.to_string())?;
+    fs::write(&profiles_path, content)
+        .map_err(|e| format!("failed to write profiles.json: {e}"))?;
+
+    serde_json::to_value(&registry).map_err(|e| e.to_string())
+}
+
+const HOST_NAME: &str = "com.erwinkroon.tabctl";
+
+fn resolve_manifest_dir(browser: &str) -> Result<PathBuf, String> {
+    match browser {
+        "edge" | "chrome" => {}
+        _ => return Err(format!("unsupported browser: {browser}")),
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let data_dir = resolve_data_dir(None)?;
+        return Ok(PathBuf::from(data_dir));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let home =
+            dirs::home_dir().ok_or_else(|| "Unable to resolve home directory".to_string())?;
+        let subdir = match browser {
+            "edge" => "Microsoft Edge",
+            _ => "Google/Chrome",
+        };
+        Ok(home
+            .join("Library/Application Support")
+            .join(subdir)
+            .join("NativeMessagingHosts"))
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let home =
+            dirs::home_dir().ok_or_else(|| "Unable to resolve home directory".to_string())?;
+        let subdir = match browser {
+            "edge" => "microsoft-edge",
+            _ => "google-chrome",
+        };
+        Ok(home
+            .join(".config")
+            .join(subdir)
+            .join("NativeMessagingHosts"))
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    Err(format!("unsupported platform"))
+}
+
+fn write_host_wrapper(
+    tabctl_binary_path: &str,
+    profile_name: &str,
+    wrapper_dir: &Path,
+) -> Result<PathBuf, String> {
+    fs::create_dir_all(wrapper_dir).map_err(|e| format!("failed to create wrapper dir: {e}"))?;
+
+    #[cfg(unix)]
+    let (filename, content) = {
+        let script = format!(
+            "#!/usr/bin/env bash\nset -euo pipefail\nexport TABCTL_PROFILE=\"{profile_name}\"\nexec \"{tabctl_binary_path}\" host\n"
+        );
+        ("tabctl-host.sh", script)
+    };
+
+    #[cfg(windows)]
+    let (filename, content) = {
+        let script = format!(
+            "@echo off\r\nset TABCTL_PROFILE={profile_name}\r\n\"{tabctl_binary_path}\" host\r\n"
+        );
+        ("tabctl-host.cmd", script)
+    };
+
+    let wrapper_path = wrapper_dir.join(filename);
+    fs::write(&wrapper_path, &content)
+        .map_err(|e| format!("failed to write wrapper script: {e}"))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&wrapper_path, fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("failed to set wrapper permissions: {e}"))?;
+    }
+
+    Ok(wrapper_path)
+}
+
+#[cfg(windows)]
+fn write_registry_key(browser: &str, manifest_path: &Path) -> Result<String, String> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    let subkey = match browser {
+        "edge" => format!("Software\\Microsoft\\Edge\\NativeMessagingHosts\\{HOST_NAME}"),
+        "chrome" => format!("Software\\Google\\Chrome\\NativeMessagingHosts\\{HOST_NAME}"),
+        _ => return Err(format!("Unsupported browser for registry: {browser}")),
+    };
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let (key, _) = hkcu
+        .create_subkey(&subkey)
+        .map_err(|e| format!("Failed to create registry key: {e}"))?;
+
+    key.set_value("", &manifest_path.display().to_string())
+        .map_err(|e| format!("Failed to set registry value: {e}"))?;
+
+    Ok(format!("HKCU\\{subkey}"))
+}
+
+fn write_native_manifest(
+    browser: &str,
+    wrapper_path: &Path,
+    extension_id: &str,
+    user_data_dir: Option<&str>,
+) -> Result<PathBuf, String> {
+    let manifest_dir = if let Some(udd) = user_data_dir {
+        PathBuf::from(udd).join("NativeMessagingHosts")
+    } else {
+        resolve_manifest_dir(browser)?
+    };
+    fs::create_dir_all(&manifest_dir).map_err(|e| format!("failed to create manifest dir: {e}"))?;
+
+    let abs_wrapper =
+        dunce::canonicalize(wrapper_path).unwrap_or_else(|_| wrapper_path.to_path_buf());
+
+    let manifest = json!({
+        "name": HOST_NAME,
+        "description": "tabctl native host",
+        "path": abs_wrapper.display().to_string(),
+        "type": "stdio",
+        "allowed_origins": [format!("chrome-extension://{extension_id}/")]
+    });
+
+    let manifest_path = manifest_dir.join(format!("{HOST_NAME}.json"));
+    let content = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
+    fs::write(&manifest_path, content)
+        .map_err(|e| format!("failed to write native manifest: {e}"))?;
+
+    Ok(manifest_path)
 }
 
 fn request_id() -> String {
@@ -1540,5 +1803,610 @@ mod tests {
                 path: r"\\.\pipe\tabctl-f9bd75adcc15".to_string()
             }
         );
+    }
+
+    #[test]
+    fn resolve_manifest_dir_rejects_invalid_browser() {
+        let result = resolve_manifest_dir("firefox");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unsupported browser"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn resolve_manifest_dir_edge_macos() {
+        let path = resolve_manifest_dir("edge").expect("should resolve");
+        let path_str = path.to_string_lossy();
+        assert!(
+            path_str.ends_with("Library/Application Support/Microsoft Edge/NativeMessagingHosts"),
+            "unexpected path: {path_str}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn resolve_manifest_dir_chrome_macos() {
+        let path = resolve_manifest_dir("chrome").expect("should resolve");
+        let path_str = path.to_string_lossy();
+        assert!(
+            path_str.ends_with("Library/Application Support/Google/Chrome/NativeMessagingHosts"),
+            "unexpected path: {path_str}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolve_manifest_dir_edge_linux() {
+        let path = resolve_manifest_dir("edge").expect("should resolve");
+        let path_str = path.to_string_lossy();
+        assert!(
+            path_str.ends_with(".config/microsoft-edge/NativeMessagingHosts"),
+            "unexpected path: {path_str}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolve_manifest_dir_chrome_linux() {
+        let path = resolve_manifest_dir("chrome").expect("should resolve");
+        let path_str = path.to_string_lossy();
+        assert!(
+            path_str.ends_with(".config/google-chrome/NativeMessagingHosts"),
+            "unexpected path: {path_str}"
+        );
+    }
+
+    #[test]
+    fn host_name_constant_is_correct() {
+        assert_eq!(HOST_NAME, "com.erwinkroon.tabctl");
+    }
+
+    #[test]
+    fn write_host_wrapper_creates_file_in_dir() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-wrapper-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+
+        let result = write_host_wrapper("/usr/local/bin/tabctl", "default", &dir);
+        assert!(
+            result.is_ok(),
+            "write_host_wrapper failed: {:?}",
+            result.err()
+        );
+
+        let path = result.unwrap();
+        assert!(path.exists(), "wrapper file should exist");
+        assert_eq!(path.parent().unwrap(), dir);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_host_wrapper_unix_filename_and_content() {
+        let dir =
+            std::env::temp_dir().join(format!("tabctl-test-wrapper-unix-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+
+        let path = write_host_wrapper("/opt/bin/tabctl", "work", &dir).unwrap();
+        assert!(path.to_string_lossy().ends_with("tabctl-host.sh"));
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("TABCTL_PROFILE=\"work\""),
+            "should contain profile name"
+        );
+        assert!(
+            content.contains("\"/opt/bin/tabctl\" host"),
+            "should contain binary path"
+        );
+        assert!(
+            content.starts_with("#!/usr/bin/env bash\n"),
+            "should have shebang"
+        );
+        assert!(
+            !content.contains("\r\n"),
+            "unix wrapper should use LF line endings"
+        );
+
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "wrapper should be executable owner-only");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn write_host_wrapper_windows_filename_and_content() {
+        let dir =
+            std::env::temp_dir().join(format!("tabctl-test-wrapper-win-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+
+        let path =
+            write_host_wrapper("C:\\Program Files\\tabctl\\tabctl.exe", "personal", &dir).unwrap();
+        assert!(path.to_string_lossy().ends_with("tabctl-host.cmd"));
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("TABCTL_PROFILE=personal"),
+            "should contain profile name"
+        );
+        assert!(
+            content.contains("\"C:\\Program Files\\tabctl\\tabctl.exe\" host"),
+            "should contain binary path"
+        );
+        assert!(
+            content.starts_with("@echo off\r\n"),
+            "should start with @echo off"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_native_manifest_creates_valid_json() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-manifest-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // Create a dummy wrapper file so canonicalize can resolve it
+        let wrapper = dir.join("tabctl-host.sh");
+        fs::write(&wrapper, "#!/bin/bash\n").unwrap();
+
+        let result = write_native_manifest(
+            "chrome",
+            &wrapper,
+            "abcdefghijklmnopqrstuvwxyz012345",
+            Some(dir.to_str().unwrap()),
+        );
+        assert!(
+            result.is_ok(),
+            "write_native_manifest failed: {:?}",
+            result.err()
+        );
+
+        let manifest_path = result.unwrap();
+        assert!(manifest_path.exists(), "manifest file should exist");
+        assert!(
+            manifest_path
+                .to_string_lossy()
+                .ends_with(&format!("{HOST_NAME}.json")),
+            "unexpected manifest filename: {}",
+            manifest_path.display()
+        );
+
+        let content = fs::read_to_string(&manifest_path).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&content).expect("manifest should be valid JSON");
+
+        assert_eq!(parsed["name"], HOST_NAME);
+        assert_eq!(parsed["description"], "tabctl native host");
+        assert_eq!(parsed["type"], "stdio");
+
+        let origins = parsed["allowed_origins"]
+            .as_array()
+            .expect("allowed_origins should be array");
+        assert_eq!(origins.len(), 1);
+        assert_eq!(
+            origins[0],
+            "chrome-extension://abcdefghijklmnopqrstuvwxyz012345/"
+        );
+
+        assert!(
+            parsed["path"].as_str().unwrap().contains("tabctl-host.sh"),
+            "path should reference wrapper script"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn write_registry_key_creates_and_reads_back() {
+        use winreg::enums::*;
+        use winreg::RegKey;
+
+        let test_subkey = format!("Software\\tabctl-test\\NativeMessagingHosts\\{}", HOST_NAME);
+        let manifest_path = std::path::PathBuf::from("C:\\test\\com.erwinkroon.tabctl.json");
+
+        // Write via our function is browser-specific, so test directly with registry
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let (key, _) = hkcu.create_subkey(&test_subkey).expect("create test key");
+        key.set_value("", &manifest_path.display().to_string())
+            .expect("set test value");
+
+        let readback: String = key.get_value("").expect("read test value");
+        assert_eq!(readback, manifest_path.display().to_string());
+
+        // Cleanup
+        let _ = hkcu.delete_subkey_all("Software\\tabctl-test");
+    }
+
+    #[test]
+    fn register_profile_creates_new_profiles_json() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-reg-new-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let config_dir = dir.join("config");
+        let data_dir = dir.join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+
+        let wrapper = data_dir.join("tabctl-host.sh");
+        fs::write(&wrapper, "#!/bin/bash\n").unwrap();
+        let manifest = data_dir.join("com.erwinkroon.tabctl.json");
+        fs::write(&manifest, "{}").unwrap();
+
+        with_env_vars(
+            &[("TABCTL_CONFIG_DIR", Some(config_dir.to_str().unwrap()))],
+            || {
+                let result = register_profile(
+                    data_dir.to_str().unwrap(),
+                    "edge",
+                    "edge",
+                    "mpglnmehddpkinfhheeahiicfieegcon",
+                    &wrapper,
+                    &manifest,
+                );
+                assert!(
+                    result.is_ok(),
+                    "register_profile failed: {:?}",
+                    result.err()
+                );
+                let registry = result.unwrap();
+                assert_eq!(registry["default"], "edge");
+                assert!(registry["profiles"]["edge"].is_object());
+                assert_eq!(registry["profiles"]["edge"]["browser"], "edge");
+                assert_eq!(
+                    registry["profiles"]["edge"]["extensionId"],
+                    "mpglnmehddpkinfhheeahiicfieegcon"
+                );
+
+                let profiles_path = config_dir.join("profiles.json");
+                assert!(profiles_path.exists(), "profiles.json should be created");
+                let on_disk: serde_json::Value =
+                    serde_json::from_str(&fs::read_to_string(&profiles_path).unwrap()).unwrap();
+                assert_eq!(on_disk["default"], "edge");
+            },
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn register_profile_preserves_existing_profiles() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-reg-add-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let config_dir = dir.join("config");
+        let data_dir = dir.join("data");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::create_dir_all(&data_dir).unwrap();
+
+        // Seed with an existing profile
+        let seed = json!({
+            "default": "edge",
+            "profiles": {
+                "edge": {
+                    "browser": "edge",
+                    "extensionId": "aaaa",
+                    "nodePath": "/bin/tabctl",
+                    "hostPath": "/tmp/host.sh",
+                    "dataDir": "/tmp/data/profiles/edge"
+                }
+            }
+        });
+        fs::write(
+            config_dir.join("profiles.json"),
+            serde_json::to_string_pretty(&seed).unwrap(),
+        )
+        .unwrap();
+
+        let wrapper = data_dir.join("tabctl-host.sh");
+        fs::write(&wrapper, "#!/bin/bash\n").unwrap();
+        let manifest = data_dir.join("manifest.json");
+        fs::write(&manifest, "{}").unwrap();
+
+        with_env_vars(
+            &[("TABCTL_CONFIG_DIR", Some(config_dir.to_str().unwrap()))],
+            || {
+                let result = register_profile(
+                    data_dir.to_str().unwrap(),
+                    "chrome-work",
+                    "chrome",
+                    "bbbbbbbb",
+                    &wrapper,
+                    &manifest,
+                );
+                assert!(
+                    result.is_ok(),
+                    "register_profile failed: {:?}",
+                    result.err()
+                );
+                let registry = result.unwrap();
+                // Default should still be edge (first registered)
+                assert_eq!(registry["default"], "edge");
+                // Both profiles should exist
+                assert!(registry["profiles"]["edge"].is_object());
+                assert!(registry["profiles"]["chrome-work"].is_object());
+                assert_eq!(registry["profiles"]["chrome-work"]["browser"], "chrome");
+            },
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn register_profile_updates_existing_entry() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-reg-upd-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let config_dir = dir.join("config");
+        let data_dir = dir.join("data");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::create_dir_all(&data_dir).unwrap();
+
+        // Seed with an existing profile
+        let seed = json!({
+            "default": "edge",
+            "profiles": {
+                "edge": {
+                    "browser": "edge",
+                    "extensionId": "old-ext-id",
+                    "nodePath": "/old/bin/tabctl",
+                    "hostPath": "/old/host.sh",
+                    "dataDir": "/old/data/profiles/edge"
+                }
+            }
+        });
+        fs::write(
+            config_dir.join("profiles.json"),
+            serde_json::to_string_pretty(&seed).unwrap(),
+        )
+        .unwrap();
+
+        let wrapper = data_dir.join("tabctl-host.sh");
+        fs::write(&wrapper, "#!/bin/bash\n").unwrap();
+        let manifest = data_dir.join("manifest.json");
+        fs::write(&manifest, "{}").unwrap();
+
+        with_env_vars(
+            &[("TABCTL_CONFIG_DIR", Some(config_dir.to_str().unwrap()))],
+            || {
+                let result = register_profile(
+                    data_dir.to_str().unwrap(),
+                    "edge",
+                    "edge",
+                    "new-ext-id",
+                    &wrapper,
+                    &manifest,
+                );
+                assert!(
+                    result.is_ok(),
+                    "register_profile failed: {:?}",
+                    result.err()
+                );
+                let registry = result.unwrap();
+                // Should still be one profile, updated
+                assert_eq!(registry["profiles"].as_object().unwrap().len(), 1);
+                assert_eq!(registry["profiles"]["edge"]["extensionId"], "new-ext-id");
+                // Default preserved
+                assert_eq!(registry["default"], "edge");
+            },
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_host_wrapper_creates_nested_dirs() {
+        let dir = std::env::temp_dir()
+            .join(format!("tabctl-test-nested-{}", std::process::id()))
+            .join("a")
+            .join("b")
+            .join("c");
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+
+        let result = write_host_wrapper("/usr/bin/tabctl", "deep", &dir);
+        assert!(
+            result.is_ok(),
+            "should create nested dirs: {:?}",
+            result.err()
+        );
+        assert!(dir.exists(), "nested wrapper dir should exist");
+
+        let _ = fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn write_native_manifest_creates_nmh_subdir() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-nmh-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let wrapper = dir.join("tabctl-host.sh");
+        fs::write(&wrapper, "#!/bin/bash\n").unwrap();
+
+        let udd = dir.join("fake-user-data");
+        // udd and its NativeMessagingHosts child should not exist yet
+        assert!(!udd.exists());
+
+        let result =
+            write_native_manifest("edge", &wrapper, "extid123", Some(udd.to_str().unwrap()));
+        assert!(
+            result.is_ok(),
+            "should create NMH subdir: {:?}",
+            result.err()
+        );
+
+        let nmh = udd.join("NativeMessagingHosts");
+        assert!(
+            nmh.exists(),
+            "NativeMessagingHosts subdir should be created"
+        );
+        assert!(nmh.join(format!("{HOST_NAME}.json")).exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_native_manifest_wrapper_path_is_absolute() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-abs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let wrapper = dir.join("tabctl-host.sh");
+        fs::write(&wrapper, "#!/bin/bash\n").unwrap();
+
+        let manifest_path =
+            write_native_manifest("chrome", &wrapper, "testextid", Some(dir.to_str().unwrap()))
+                .unwrap();
+
+        let content: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        let path_in_manifest = content["path"].as_str().unwrap();
+        assert!(
+            PathBuf::from(path_in_manifest).is_absolute(),
+            "manifest path should be absolute, got: {path_in_manifest}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn register_profile_rejects_unsupported_browser() {
+        let dir =
+            std::env::temp_dir().join(format!("tabctl-test-badbrowser-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let config_dir = dir.join("config");
+        let data_dir = dir.join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+
+        let wrapper = data_dir.join("tabctl-host.sh");
+        fs::write(&wrapper, "#!/bin/bash\n").unwrap();
+        let manifest = data_dir.join("manifest.json");
+        fs::write(&manifest, "{}").unwrap();
+
+        with_env_vars(
+            &[("TABCTL_CONFIG_DIR", Some(config_dir.to_str().unwrap()))],
+            || {
+                let result = register_profile(
+                    data_dir.to_str().unwrap(),
+                    "firefox-profile",
+                    "firefox",
+                    "extid",
+                    &wrapper,
+                    &manifest,
+                );
+                assert!(result.is_err());
+                assert!(result.unwrap_err().contains("unsupported browser"));
+            },
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn register_profile_data_dir_includes_profile_name() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-datadir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let config_dir = dir.join("config");
+        let data_dir = dir.join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+
+        let wrapper = data_dir.join("tabctl-host.sh");
+        fs::write(&wrapper, "#!/bin/bash\n").unwrap();
+        let manifest = data_dir.join("manifest.json");
+        fs::write(&manifest, "{}").unwrap();
+
+        with_env_vars(
+            &[("TABCTL_CONFIG_DIR", Some(config_dir.to_str().unwrap()))],
+            || {
+                let registry = register_profile(
+                    data_dir.to_str().unwrap(),
+                    "my-profile",
+                    "chrome",
+                    "extid",
+                    &wrapper,
+                    &manifest,
+                )
+                .unwrap();
+
+                let data_dir_val = registry["profiles"]["my-profile"]["dataDir"]
+                    .as_str()
+                    .unwrap();
+                assert!(
+                    data_dir_val.ends_with("profiles/my-profile")
+                        || data_dir_val.ends_with("profiles\\my-profile"),
+                    "dataDir should end with profiles/<name>, got: {data_dir_val}"
+                );
+            },
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_setup_end_to_end_writes_all_files() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-e2e-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let config_dir = dir.join("config");
+        let data_dir = dir.join("data");
+        let udd = dir.join("user-data");
+
+        with_env_vars(
+            &[
+                ("TABCTL_CONFIG_DIR", Some(config_dir.to_str().unwrap())),
+                ("TABCTL_DATA_DIR", Some(data_dir.to_str().unwrap())),
+                ("TABCTL_SETUP_FETCH_EXTENSION", Some("0")),
+            ],
+            || {
+                let matches = build_cli()
+                    .try_get_matches_from([
+                        "tabctl",
+                        "--json",
+                        "setup",
+                        "--browser",
+                        "edge",
+                        "--skip-extension-download",
+                        "--extension-id",
+                        "testextensionid1234567890abcde",
+                        "--user-data-dir",
+                        udd.to_str().unwrap(),
+                    ])
+                    .expect("parse args");
+
+                let (_, sub) = matches.subcommand().expect("subcommand");
+                let result = run_setup(&matches, sub);
+                assert!(result.is_ok(), "run_setup failed: {:?}", result.err());
+
+                // Wrapper script should exist under data/profiles/edge/
+                let wrapper = data_dir
+                    .join("profiles")
+                    .join("edge")
+                    .join(if cfg!(windows) {
+                        "tabctl-host.cmd"
+                    } else {
+                        "tabctl-host.sh"
+                    });
+                assert!(wrapper.exists(), "wrapper script should be created");
+
+                // Native manifest in user-data-dir/NativeMessagingHosts/
+                let manifest = udd
+                    .join("NativeMessagingHosts")
+                    .join(format!("{HOST_NAME}.json"));
+                assert!(manifest.exists(), "native manifest should be created");
+
+                // profiles.json should exist
+                let profiles = config_dir.join("profiles.json");
+                assert!(profiles.exists(), "profiles.json should be created");
+
+                let reg: serde_json::Value =
+                    serde_json::from_str(&fs::read_to_string(&profiles).unwrap()).unwrap();
+                assert_eq!(reg["default"], "edge");
+                assert_eq!(
+                    reg["profiles"]["edge"]["extensionId"],
+                    "testextensionid1234567890abcde"
+                );
+            },
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
