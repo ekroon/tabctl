@@ -272,6 +272,13 @@ fn command_setup() -> Command {
                 .long("release-asset")
                 .value_name("name"),
         )
+        .arg(
+            Arg::new("extension-id")
+                .long("extension-id")
+                .value_name("id"),
+        )
+        .arg(Arg::new("node").long("node").value_name("path"))
+        .arg(Arg::new("name").long("name").value_name("name"))
 }
 
 fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
