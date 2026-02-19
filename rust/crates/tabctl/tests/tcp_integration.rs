@@ -15,7 +15,11 @@ fn tabctl_bin() -> PathBuf {
     let mut bin = env::current_exe().expect("current_exe");
     bin.pop(); // remove test binary name
     bin.pop(); // remove `deps/`
-    bin.push("tabctl");
+    if cfg!(windows) {
+        bin.push("tabctl.exe");
+    } else {
+        bin.push("tabctl");
+    }
     assert!(bin.exists(), "tabctl binary not found at {}", bin.display());
     bin
 }
