@@ -2643,10 +2643,18 @@ mod tests {
 
     #[test]
     fn test_transport_tcp_with_port_file() {
-        let temp_root = std::env::temp_dir().join(format!("tabctl-cli-test-{}", request_id()));
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp_root = std::env::temp_dir().join(format!(
+            "tabctl-tcp-port-test-{}-{}",
+            std::process::id(),
+            id
+        ));
+        let _ = std::fs::remove_dir_all(&temp_root);
         std::fs::create_dir_all(&temp_root).expect("create temp directory");
         let port_file = temp_root.join(WSL_TCP_PORT_FILENAME);
         std::fs::write(&port_file, "39010\n").expect("write port file");
+        assert!(port_file.exists(), "port file must exist before test");
         with_env_vars(
             &[
                 ("TABCTL_TRANSPORT", Some("tcp")),
@@ -2673,7 +2681,14 @@ mod tests {
 
     #[test]
     fn test_transport_tcp_missing_port_returns_error() {
-        let temp_root = std::env::temp_dir().join(format!("tabctl-cli-test-{}", request_id()));
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp_root = std::env::temp_dir().join(format!(
+            "tabctl-tcp-noport-test-{}-{}",
+            std::process::id(),
+            id
+        ));
+        let _ = std::fs::remove_dir_all(&temp_root);
         std::fs::create_dir_all(&temp_root).expect("create temp directory");
         with_env_vars(
             &[
