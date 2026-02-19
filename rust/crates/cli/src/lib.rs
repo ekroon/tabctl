@@ -8,7 +8,7 @@ use std::os::unix::net::UnixStream;
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command as ProcessCommand;
+use std::process::{Command as ProcessCommand, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tabctl_shared::{ProfileRegistry, RequestEnvelope, ResponseEnvelope, SocketEndpoint};
 
@@ -224,10 +224,10 @@ fn download_extension_asset(source: &ExtensionReleaseSource) -> Result<Value, St
         .arg("--fail")
         .arg("--location")
         .arg("--silent")
-        .arg("--show-error")
         .arg("--output")
         .arg(&source.path)
         .arg(&source.url)
+        .stderr(Stdio::null())
         .status()
         .map_err(|e| format!("Failed to execute curl: {e}"))?;
     if !status.success() {
