@@ -7,13 +7,21 @@ A command-line instrument for browser tab orchestration — list, search, group,
 ## Install
 
 ```bash
-npm install -g tabctl
-tabctl setup --browser chrome
-# Load the extension: chrome://extensions → Developer mode → Load unpacked → paste: ~/.local/state/tabctl/extension/
+mise use -g github:ekroon/tabctl   # install the tabctl binary
+tabctl setup --browser edge         # or: --browser chrome
+# Load the extension: edge://extensions → Developer mode → Load unpacked → paste: ~/.local/state/tabctl/extension/
 tabctl ping
 ```
 
 If it pings back, the wire is live. You're connected.
+
+### Alternative: build from source
+
+```bash
+cargo install --path rust/crates/tabctl
+```
+
+> **Legacy:** `npm install -g tabctl` still works for the Node.js-based distribution but is no longer the primary install method. No Node.js or Go is required at runtime — the single `tabctl` binary handles everything.
 
 ## Agent Skill
 
@@ -54,24 +62,27 @@ When tabctl is installed as a skill, your agent sees what you see. Just talk to 
 
 ---
 
-`tabctl` works through a lightweight local stack: the CLI talks to a native messaging host, which proxies requests to a browser extension. The host only runs while the browser is open and the extension is connected.
+`tabctl` is a single Rust binary that serves as both the CLI and the native messaging host. The CLI sends commands over a Unix socket (or named pipe on Windows) to the host, which proxies them to the browser extension via native messaging. The `tabctl host` subcommand is the native messaging entry point — invoked automatically by the browser, not manually.
 
 This repo contains:
-- Chrome/Edge extension (`src/extension`, TypeScript boundary)
-- Rust workspace (`rust/crates/*`) for CLI, host, launcher, and shared runtime
-- Node packaging/build scripts for distribution
+- Chrome/Edge extension (`src/extension/`, the only TypeScript component)
+- Rust workspace (`rust/crates/*`) — single `tabctl` binary for CLI + host + shared runtime
+- Node packaging/build scripts for distribution (legacy)
 
 ## Quick Start
 
 ### 1. Build and install
 
 ```bash
-npm install
-npm run build
-npm link          # puts tabctl on your PATH
+cargo install --path rust/crates/tabctl   # puts tabctl on your PATH
 ```
 
-If you haven't run `npm link`, you can always use `node ./cli/tabctl.js` instead of `tabctl`.
+For development with the full build pipeline (extension + Rust):
+
+```bash
+npm install
+npm run build
+```
 
 ### 2. Set up your browser
 
@@ -292,14 +303,14 @@ Policy is shared across all profiles.
 ## Development
 
 ### Build workflow
-Cargo is the primary build path for runtime components (`rust/` workspace), while TypeScript is limited to the browser extension boundary (`src/extension/`).
+The single `tabctl` binary is built from the Rust workspace (`rust/`). TypeScript is limited to the browser extension boundary (`src/extension/`). No Node.js or Go is required at runtime.
 
 Build and verify:
 
 ```bash
-npm install
-npm run build
-npm test
+cargo build --release -p tabctl   # build the binary
+npm install && npm run build      # full pipeline (extension + Rust)
+npm test                          # unit tests
 ```
 
 Rust-only validation:
@@ -335,7 +346,7 @@ Pre-release staging flow:
 Release publishing (`.github/workflows/publish.yml`) enforces:
 - Git tag must match `package.json` version (`v<version>`)
 - prerelease tags publish to `alpha`/`rc`; stable publishes to `latest`
-- `npm run build`, `npm run build:launcher`, and `npm test` must pass before publish
+- `npm run build` and `npm test` must pass before publish
 - release assets include `tabctl-extension.zip` plus `tabctl-extension.zip.sha256`
 
 Fetch the extension asset from a release with:

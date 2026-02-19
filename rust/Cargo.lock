@@ -324,19 +324,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "tabctl-cli"
-version = "0.1.0"
+name = "tabctl"
+version = "0.5.3"
 dependencies = [
  "clap",
  "dirs",
  "serde_json",
  "sha2",
+ "tabctl-host",
  "tabctl-shared",
 ]
 
 [[package]]
 name = "tabctl-host"
-version = "0.1.0"
+version = "0.5.3"
 dependencies = [
  "serde_json",
  "sha2",
@@ -345,12 +346,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "tabctl-launcher"
-version = "0.1.0"
-
-[[package]]
 name = "tabctl-shared"
-version = "0.1.0"
+version = "0.5.3"
 dependencies = [
  "serde",
  "serde_json",

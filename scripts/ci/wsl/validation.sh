@@ -240,8 +240,8 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $Workspace
 $tabctlCommand = @()
-if (Test-Path -LiteralPath "rust\\target\\debug\\tabctl-cli.exe") {
-  $tabctlCommand = @((Resolve-Path -LiteralPath "rust\\target\\debug\\tabctl-cli.exe").Path)
+if (Test-Path -LiteralPath "rust\\target\\debug\\tabctl.exe") {
+  $tabctlCommand = @((Resolve-Path -LiteralPath "rust\\target\\debug\\tabctl.exe").Path)
 }
 if ($tabctlCommand.Count -eq 0 -and (Test-Path -LiteralPath "dist\\cli\\tabctl.js")) {
   $workspaceScript = (Resolve-Path -LiteralPath "dist\\cli\\tabctl.js").Path
@@ -267,7 +267,7 @@ if ($tabctlCommand.Count -eq 0) {
 }
 if ($tabctlCommand.Count -eq 0) {
   $workspaceScriptExists = Test-Path -LiteralPath "dist\\cli\\tabctl.js"
-  $workspaceRustCliExists = Test-Path -LiteralPath "rust\\target\\debug\\tabctl-cli.exe"
+  $workspaceRustCliExists = Test-Path -LiteralPath "rust\\target\\debug\\tabctl.exe"
   throw "Failed to resolve Windows tabctl executable (npm prefix -g: '$prefix', workspace rust cli exists: '$workspaceRustCliExists', workspace script exists: '$workspaceScriptExists')."
 }
 $command = $tabctlCommand[0]
@@ -288,8 +288,8 @@ if ($exitCode -ne 0) {
       ok = $true
       data = @{
         runtimeEnv = "native-win32"
-        wrapperPath = (Join-Path $Workspace "rust\\target\\debug\\tabctl-cli.exe")
-        manifestPath = (Join-Path $Workspace "rust\\target\\debug\\tabctl-host.exe")
+        wrapperPath = (Join-Path $Workspace "rust\\target\\debug\\tabctl.exe")
+        manifestPath = (Join-Path $Workspace "rust\\target\\debug\\tabctl.exe")
       }
     } | ConvertTo-Json -Compress
     $compat | Out-File -LiteralPath $OutputPath -Encoding utf8
@@ -351,7 +351,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 
-$cliPath = Join-Path $Workspace "rust\\target\\debug\\tabctl-cli.exe"
+$cliPath = Join-Path $Workspace "rust\\target\\debug\\tabctl.exe"
 if (Test-Path -LiteralPath $cliPath) {
   $tabctlVersion = (& $cliPath --version).Trim()
 } else {
@@ -361,12 +361,12 @@ if (-not $tabctlVersion) {
   throw "tabctl version command returned empty output"
 }
 
-$hostPath = Join-Path $Workspace "rust\\target\\debug\\tabctl-host.exe"
+$hostPath = Join-Path $Workspace "rust\\target\\debug\\tabctl.exe"
 if (-not (Test-Path -LiteralPath $hostPath)) {
-  $hostPath = (Get-Command tabctl-host.exe -CommandType Application -ErrorAction Stop).Source
+  $hostPath = (Get-Command tabctl.exe -CommandType Application -ErrorAction Stop).Source
 }
 if (-not (Test-Path -LiteralPath $hostPath)) {
-  throw "tabctl-host.exe was resolved but path does not exist: $hostPath"
+  throw "tabctl.exe was resolved but path does not exist: $hostPath"
 }
 POWERSHELL
 
@@ -376,7 +376,7 @@ POWERSHELL
   set -e
   rm -f "$ps_runner"
   if [ "$ps_status" -ne 0 ]; then
-    echo "Windows invocation check failed: PowerShell bridge validation for tabctl-host.exe failed." >&2
+    echo "Windows invocation check failed: PowerShell bridge validation for tabctl.exe failed." >&2
     return "$ps_status"
   fi
 }

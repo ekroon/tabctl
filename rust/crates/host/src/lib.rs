@@ -1156,7 +1156,7 @@ fn run_host() -> io::Result<()> {
     run_windows()
 }
 
-fn main() {
+pub fn run() {
     let _ = REQUEST_TIMEOUT_MS;
     if let Err(err) = run_host() {
         log_line(&format!("fatal: {err}"));

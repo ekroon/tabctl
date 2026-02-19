@@ -13,12 +13,12 @@ const manifestPath = path.join(rustDir, "Cargo.toml");
 const target = process.env.TABCTL_WINDOWS_RUST_TARGET
   || (process.platform === "win32" ? "x86_64-pc-windows-msvc" : "x86_64-pc-windows-gnu");
 const outPath = path.join(root, "packages", "win32-x64", "tabctl-host.exe");
-const builtPath = path.join(rustDir, "target", target, "release", "tabctl-launcher.exe");
+const builtPath = path.join(rustDir, "target", target, "release", "tabctl.exe");
 
 fs.mkdirSync(path.dirname(outPath), { recursive: true });
 
 try {
-  execFileSync("cargo", ["build", "--manifest-path", manifestPath, "-p", "tabctl-launcher", "--release", "--target", target], {
+  execFileSync("cargo", ["build", "--manifest-path", manifestPath, "-p", "tabctl", "--release", "--target", target], {
     cwd: root,
     stdio: "pipe",
     env: { ...process.env },

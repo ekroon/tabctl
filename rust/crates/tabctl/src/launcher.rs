@@ -10,7 +10,7 @@ fn fail(message: &str) -> ! {
     process::exit(1);
 }
 
-fn main() {
+pub fn run() {
     let exe_path = env::current_exe().unwrap_or_else(|err| {
         fail(&format!("tabctl-host: cannot resolve exe path: {err}"));
     });

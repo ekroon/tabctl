@@ -327,6 +327,7 @@ fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
     } else {
         "native-linux"
     };
+    let wrapper_path = resolve_tabctl_binary_path();
     let setup_payload = json!({
         "ok": true,
         "action": "setup",
@@ -335,8 +336,9 @@ fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
             "browser": browser,
             "runtimeEnv": runtime_env,
             "dataDir": data_dir,
-            "wrapperPath": data_dir,
+            "wrapperPath": wrapper_path,
             "manifestPath": data_dir,
+            "hostArgs": ["host"],
             "extensionReleaseAsset": extension_asset,
             "warnings": setup_warnings
         }
@@ -360,6 +362,30 @@ fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// Resolve the path to the `tabctl` binary.
+/// Prefers the current running executable; falls back to searching PATH.
+fn resolve_tabctl_binary_path() -> String {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Ok(canonical) = exe.canonicalize() {
+            return canonical.display().to_string();
+        }
+        return exe.display().to_string();
+    }
+    // Fallback: look up "tabctl" in PATH
+    let cmd = if cfg!(windows) { "where" } else { "which" };
+    if let Ok(output) = ProcessCommand::new(cmd).arg("tabctl").output() {
+        if output.status.success() {
+            if let Ok(path) = String::from_utf8(output.stdout) {
+                let trimmed = path.trim().to_string();
+                if !trimmed.is_empty() {
+                    return trimmed;
+                }
+            }
+        }
+    }
+    "tabctl".to_string()
 }
 
 #[derive(Clone, Debug)]

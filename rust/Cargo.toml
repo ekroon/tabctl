@@ -1,8 +1,7 @@
 [workspace]
 members = [
-  "crates/cli",
-  "crates/host",
   "crates/shared",
-  "crates/launcher",
+  "crates/host",
+  "crates/tabctl",
 ]
 resolver = "2"

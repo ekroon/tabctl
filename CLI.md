@@ -2,16 +2,14 @@
 
 ## Quick start
 ```bash
-npm install
-npm run build
-npm link
+mise use -g github:ekroon/tabctl   # or: cargo install --path rust/crates/tabctl
 tabctl --help
 tabctl help --json
 tabctl policy --init
 tabctl skill
 ```
 
-Runtime architecture: Rust-first workspace (`rust/crates/*`) for CLI/host/runtime, with TypeScript limited to the extension boundary (`src/extension`).
+Runtime architecture: single `tabctl` Rust binary for CLI and native messaging host (`rust/crates/*`), with TypeScript limited to the extension boundary (`src/extension`).
 
 ## Configuration
 
@@ -331,7 +329,6 @@ Also attempts to download the version-matched release extension asset (`tabctl-e
 Options:
 - `--browser edge|chrome` (required)
 - `--extension-id <id>` (optional; auto-derived from installed extension path, or `TABCTL_EXTENSION_ID`)
-- `--node <path>` (optional; or `TABCTL_NODE`)
 - `--name <name>` (optional; defaults to browser name)
 - `--release-repo <owner/repo>` (optional; or `TABCTL_RELEASE_REPO`)
 - `--release-tag <tag>` / `--release-version <version>` (optional; or `TABCTL_RELEASE_TAG`)
@@ -352,16 +349,16 @@ tabctl setup --browser chrome --name chrome-work
 ```
 
 ### doctor
-Diagnose and repair profile health. Checks each profile's wrapper for valid Node and host paths.
+Diagnose and repair profile health. Checks each profile's native host manifest and binary path.
 Options:
-- `--fix` auto-repair broken wrappers using the current Node path
+- `--fix` auto-repair broken profiles
 
 ```bash
 tabctl doctor              # show health status
 tabctl doctor --fix        # auto-repair broken profiles
 ```
 
-Wrapper auto-repair also runs automatically when a version mismatch is detected during normal CLI usage.
+Auto-repair also runs automatically when a version mismatch is detected during normal CLI usage.
 
 ### policy
 Show the current policy summary and path, or create a default policy file.
@@ -487,6 +484,15 @@ Check host/extension connectivity.
 tabctl ping
 ```
 
+### host
+Run as native messaging host (stdio mode). This subcommand is invoked automatically by the browser via the native messaging manifest — it is not typically run manually.
+
+```bash
+tabctl host
+```
+
+The browser launches `tabctl host` when the extension connects. It communicates over stdin/stdout using the Chrome native messaging protocol and listens on a Unix socket (or named pipe on Windows) for CLI commands.
+
 ## Windows + WSL endpoint model
 
 Windows host runtime listens on both:
@@ -512,7 +518,6 @@ Notes:
 | `TABCTL_CONFIG_DIR` | Override config directory (default: `$XDG_CONFIG_HOME/tabctl`) |
 | `TABCTL_DATA_DIR` | Override resolved data directory |
 | `TABCTL_EXTENSION_ID` | Extension ID for `setup` command |
-| `TABCTL_NODE` | Node binary path for `setup` command |
 | `TABCTL_PROFILE` | Override active profile (same as `--profile` flag) |
 | `TABCTL_RELEASE_ASSET` | Override setup release asset filename |
 | `TABCTL_RELEASE_REPO` | Override setup release repository (`owner/repo`) |
@@ -548,9 +553,9 @@ Each profile gets its own data directory with a separate socket and undo log. Po
 See [Configuration](#configuration) for how the data directory is resolved.
 
 ## Build and release
-- `npm run build`: generates version metadata, compiles TypeScript artifacts, bundles the extension, and builds the Rust workspace.
+- `npm run build`: generates version metadata, bundles the extension, and builds the Rust workspace (single `tabctl` binary).
 - `npm test`: runs build + Rust formatting/lint/tests (`npm run rust:verify`).
-- `npm run test:integration`: currently runs the Rust integration-equivalent suite (`npm run rust:test`).
+- `npm run test:integration`: runs the Rust integration-equivalent suite (`npm run rust:test`).
 
 Release channel mapping:
 - `x.y.z-alpha.N` → npm `alpha`
