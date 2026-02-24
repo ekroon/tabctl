@@ -153,11 +153,17 @@ git push origin "v${NEW}"
 ### Step 11: Create GitHub Release
 
 ```bash
-GH_PAGER="" gh release create "v${NEW}" --generate-notes --title "v${NEW}"
+if [[ "$NEW" == *-* ]]; then
+  GH_PAGER="" gh release create "v${NEW}" --prerelease --generate-notes --title "v${NEW}"
+else
+  GH_PAGER="" gh release create "v${NEW}" --generate-notes --title "v${NEW}"
+fi
 ```
 
+For prerelease semver (for example `-alpha.N` or `-rc.N`), always pass `--prerelease` so release validation does not treat it as stable.
+
 The `--generate-notes` flag auto-generates release notes from merged PRs and commits.
-The existing `publish.yml` workflow will trigger on the release and publish to npm.
+The existing `release.yml` workflow will trigger on the release and publish to npm.
 
 After creation, display the release URL so the user can review and edit the notes if desired.
 
