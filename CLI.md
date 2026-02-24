@@ -42,9 +42,12 @@ tabctl policy --init
 ```
 
 ## Global flags
-- `--help`: command-specific help
+- `--help` / `-h`: command-specific help
+- `--version` / `-v`: show version and exit
 - `--json`: JSON output
 - `--pretty`: pretty-print JSON (default: true)
+- `--no-pretty`: disable pretty-printing JSON
+- `--progress`: enable progress reporting for commands that support progress events
 - `--profile <name>`: override active profile for this command
 - `--format` is only supported by `report` (use `--json` elsewhere)
 
@@ -195,6 +198,12 @@ tabctl focus --tab <id>
 Refresh a tab by id.
 ```bash
 tabctl refresh --tab <id>
+```
+
+### reload
+Reload the extension's background service worker. Useful during development.
+```bash
+tabctl reload
 ```
 
 ### open

@@ -34,11 +34,38 @@ where
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    if let Some(("help", sub)) = matches.subcommand() {
+        return run_help(&matches, sub);
+    }
+    if let Some(("version", sub)) = matches.subcommand() {
+        return run_version(&matches, sub);
+    }
     if let Some(("setup", sub)) = matches.subcommand() {
         return run_setup(&matches, sub);
     }
     if let Some(("extension-fetch", sub)) = matches.subcommand() {
         return run_extension_fetch(&matches, sub);
+    }
+    if let Some(("doctor", sub)) = matches.subcommand() {
+        return run_doctor(&matches, sub);
+    }
+    if let Some(("policy", sub)) = matches.subcommand() {
+        return run_policy(&matches, sub);
+    }
+    if let Some(("skill", sub)) = matches.subcommand() {
+        return run_skill(&matches, sub);
+    }
+    if let Some(("profile-list", sub)) = matches.subcommand() {
+        return run_profile_list(&matches, sub);
+    }
+    if let Some(("profile-show", sub)) = matches.subcommand() {
+        return run_profile_show(&matches, sub);
+    }
+    if let Some(("profile-switch", sub)) = matches.subcommand() {
+        return run_profile_switch(&matches, sub);
+    }
+    if let Some(("profile-remove", sub)) = matches.subcommand() {
+        return run_profile_remove(&matches, sub);
     }
     let routed = route_command(&matches)?;
     let response = send_request(
@@ -101,15 +128,15 @@ fn build_cli() -> Command {
                 .global(true),
         )
         .subcommand(command_with_scope("ping"))
-        .subcommand(command_with_scope("list"))
+        .subcommand(command_list())
         .subcommand(
             command_with_scope("group-list")
                 .visible_alias("groups")
                 .visible_alias("group"),
         )
-        .subcommand(command_with_scope("analyze"))
-        .subcommand(command_with_scope("dedupe"))
-        .subcommand(command_with_scope("inspect"))
+        .subcommand(command_analyze())
+        .subcommand(command_dedupe())
+        .subcommand(command_inspect())
         .subcommand(command_with_scope("focus"))
         .subcommand(command_with_scope("refresh"))
         .subcommand(command_open())
@@ -117,14 +144,23 @@ fn build_cli() -> Command {
         .subcommand(command_group_ungroup())
         .subcommand(command_group_assign())
         .subcommand(command_with_scope("group-gather"))
-        .subcommand(command_with_scope("move-tab"))
-        .subcommand(command_with_scope("move-group"))
+        .subcommand(command_move_tab())
+        .subcommand(command_move_group())
         .subcommand(command_merge_window())
         .subcommand(command_with_scope("archive"))
         .subcommand(command_close())
         .subcommand(command_report())
         .subcommand(command_setup())
-        .subcommand(command_with_scope("screenshot"))
+        .subcommand(command_doctor())
+        .subcommand(command_policy())
+        .subcommand(command_skill())
+        .subcommand(command_profile_list())
+        .subcommand(command_profile_show())
+        .subcommand(command_profile_switch())
+        .subcommand(command_profile_remove())
+        .subcommand(command_help())
+        .subcommand(command_version())
+        .subcommand(command_screenshot())
         .subcommand(command_undo())
         .subcommand(
             Command::new("history").arg(
@@ -182,6 +218,88 @@ fn run_extension_fetch(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), Str
         println!("{path}");
     }
     Ok(())
+}
+
+fn render_local_command(matches: &ArgMatches, action: &str, data: Value) -> Result<(), String> {
+    let payload = json!({
+        "ok": true,
+        "action": action,
+        "data": data
+    });
+    if matches.get_flag("json") {
+        if !matches.get_flag("no-pretty") {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+            );
+        } else {
+            println!(
+                "{}",
+                serde_json::to_string(&payload).map_err(|e| e.to_string())?
+            );
+        }
+        return Ok(());
+    }
+
+    if !matches.get_flag("no-pretty") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string(&data).map_err(|e| e.to_string())?
+        );
+    }
+    Ok(())
+}
+
+fn command_list() -> Command {
+    command_with_scope("list").arg(Arg::new("groups").long("groups").action(ArgAction::SetTrue))
+}
+
+fn command_help() -> Command {
+    Command::new("help").arg(Arg::new("command").value_name("command").index(1))
+}
+
+fn command_version() -> Command {
+    Command::new("version")
+}
+
+fn command_doctor() -> Command {
+    Command::new("doctor").arg(Arg::new("fix").long("fix").action(ArgAction::SetTrue))
+}
+
+fn command_policy() -> Command {
+    Command::new("policy").arg(Arg::new("init").long("init").action(ArgAction::SetTrue))
+}
+
+fn command_skill() -> Command {
+    Command::new("skill")
+        .arg(
+            Arg::new("agent")
+                .long("agent")
+                .action(ArgAction::Append)
+                .value_name("name"),
+        )
+        .arg(Arg::new("global").long("global").action(ArgAction::SetTrue))
+}
+
+fn command_profile_list() -> Command {
+    Command::new("profile-list")
+}
+
+fn command_profile_show() -> Command {
+    Command::new("profile-show")
+}
+
+fn command_profile_switch() -> Command {
+    Command::new("profile-switch").arg(Arg::new("name").value_name("name").required(true))
+}
+
+fn command_profile_remove() -> Command {
+    Command::new("profile-remove").arg(Arg::new("name").value_name("name").required(true))
 }
 
 fn resolve_extension_release_source(
@@ -286,6 +404,476 @@ fn command_setup() -> Command {
                 .long("user-data-dir")
                 .value_name("path"),
         )
+}
+
+fn run_help(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
+    let mut cli = build_cli();
+    let help_text = if let Some(command) = sub.get_one::<String>("command") {
+        let cmd = cli
+            .find_subcommand_mut(command)
+            .ok_or_else(|| format!("Unknown command: {command}"))?;
+        let mut buf = Vec::new();
+        cmd.write_long_help(&mut buf).map_err(|e| e.to_string())?;
+        String::from_utf8(buf).map_err(|e| e.to_string())?
+    } else {
+        let mut buf = Vec::new();
+        cli.write_long_help(&mut buf).map_err(|e| e.to_string())?;
+        String::from_utf8(buf).map_err(|e| e.to_string())?
+    };
+
+    if matches.get_flag("json") {
+        let data = json!({
+            "command": sub.get_one::<String>("command"),
+            "text": help_text
+        });
+        return render_local_command(matches, "help", data);
+    }
+    println!("{help_text}");
+    Ok(())
+}
+
+fn run_version(matches: &ArgMatches, _sub: &ArgMatches) -> Result<(), String> {
+    let version = env!("CARGO_PKG_VERSION");
+    if matches.get_flag("json") {
+        return render_local_command(
+            matches,
+            "version",
+            json!({
+                "version": version,
+                "mode": std::env::var("TABCTL_VERSION_MODE").ok()
+            }),
+        );
+    }
+    println!("{version}");
+    Ok(())
+}
+
+fn load_profile_registry(
+    allow_missing: bool,
+) -> Result<(String, PathBuf, ProfileRegistry), String> {
+    let config_dir = resolve_config_dir()?;
+    let profiles_path = PathBuf::from(&config_dir).join("profiles.json");
+    if !profiles_path.exists() {
+        if allow_missing {
+            return Ok((
+                config_dir,
+                profiles_path,
+                ProfileRegistry {
+                    default: None,
+                    profiles: HashMap::new(),
+                },
+            ));
+        }
+        return Err("profiles.json not found. Run `tabctl setup --browser <edge|chrome> --extension-id <id>` first.".to_string());
+    }
+    let content = fs::read_to_string(&profiles_path)
+        .map_err(|e| format!("failed to read profiles.json: {e}"))?;
+    let registry = serde_json::from_str::<ProfileRegistry>(&content)
+        .map_err(|e| format!("failed to parse profiles.json: {e}"))?;
+    Ok((config_dir, profiles_path, registry))
+}
+
+fn save_profile_registry(
+    config_dir: &str,
+    profiles_path: &Path,
+    registry: &ProfileRegistry,
+) -> Result<(), String> {
+    fs::create_dir_all(config_dir).map_err(|e| format!("failed to create config dir: {e}"))?;
+    let content = serde_json::to_string_pretty(registry).map_err(|e| e.to_string())?;
+    fs::write(profiles_path, content).map_err(|e| format!("failed to write profiles.json: {e}"))
+}
+
+fn run_profile_list(matches: &ArgMatches, _sub: &ArgMatches) -> Result<(), String> {
+    let (config_dir, profiles_path, registry) = load_profile_registry(true)?;
+    let mut names = registry.profiles.keys().cloned().collect::<Vec<_>>();
+    names.sort();
+    let profiles = names
+        .iter()
+        .filter_map(|name| registry.profiles.get(name).map(|entry| (name, entry)))
+        .map(|(name, entry)| {
+            json!({
+                "name": name,
+                "browser": browser_name(&entry.browser),
+                "extensionId": entry.extension_id,
+                "dataDir": entry.data_dir,
+                "hostPath": entry.host_path
+            })
+        })
+        .collect::<Vec<_>>();
+    render_local_command(
+        matches,
+        "profile-list",
+        json!({
+            "configDir": config_dir,
+            "profilesPath": profiles_path.display().to_string(),
+            "default": registry.default,
+            "profiles": profiles
+        }),
+    )
+}
+
+fn run_profile_show(matches: &ArgMatches, _sub: &ArgMatches) -> Result<(), String> {
+    let (_config_dir, profiles_path, registry) = load_profile_registry(false)?;
+    let selected_name = matches
+        .get_one::<String>("profile")
+        .cloned()
+        .or_else(|| registry.default.clone())
+        .ok_or_else(|| {
+            "No active profile. Use `tabctl profile-list` or `tabctl setup` first.".to_string()
+        })?;
+    let entry = registry
+        .profiles
+        .get(&selected_name)
+        .ok_or_else(|| format!("Profile \"{selected_name}\" not found in profiles.json"))?;
+    let socket = resolve_socket_endpoint(Some(&selected_name))
+        .map(|endpoint| endpoint.as_uri())
+        .ok();
+    render_local_command(
+        matches,
+        "profile-show",
+        json!({
+            "name": selected_name,
+            "default": registry.default,
+            "profilesPath": profiles_path.display().to_string(),
+            "browser": browser_name(&entry.browser),
+            "extensionId": entry.extension_id,
+            "dataDir": entry.data_dir,
+            "hostPath": entry.host_path,
+            "socket": socket
+        }),
+    )
+}
+
+fn run_profile_switch(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
+    let profile_name = sub
+        .get_one::<String>("name")
+        .ok_or_else(|| "Missing profile name".to_string())?;
+    let (config_dir, profiles_path, mut registry) = load_profile_registry(false)?;
+    if !registry.profiles.contains_key(profile_name) {
+        return Err(format!(
+            "Profile \"{profile_name}\" not found in profiles.json"
+        ));
+    }
+    registry.default = Some(profile_name.to_string());
+    save_profile_registry(&config_dir, &profiles_path, &registry)?;
+    render_local_command(
+        matches,
+        "profile-switch",
+        json!({
+            "default": profile_name,
+            "profilesPath": profiles_path.display().to_string()
+        }),
+    )
+}
+
+fn run_profile_remove(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
+    let profile_name = sub
+        .get_one::<String>("name")
+        .ok_or_else(|| "Missing profile name".to_string())?;
+    let (config_dir, profiles_path, mut registry) = load_profile_registry(false)?;
+    if registry.profiles.remove(profile_name).is_none() {
+        return Err(format!(
+            "Profile \"{profile_name}\" not found in profiles.json"
+        ));
+    }
+    if registry.default.as_deref() == Some(profile_name) {
+        let mut remaining = registry.profiles.keys().cloned().collect::<Vec<_>>();
+        remaining.sort();
+        registry.default = remaining.first().cloned();
+    }
+    let default_profile = registry.default.clone();
+    let remaining_count = registry.profiles.len();
+    save_profile_registry(&config_dir, &profiles_path, &registry)?;
+    render_local_command(
+        matches,
+        "profile-remove",
+        json!({
+            "removed": profile_name,
+            "default": default_profile,
+            "remaining": remaining_count,
+            "profilesPath": profiles_path.display().to_string()
+        }),
+    )
+}
+
+fn run_doctor(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
+    let fix = sub.get_flag("fix");
+    let config_dir = resolve_config_dir()?;
+    let profiles_path = PathBuf::from(&config_dir).join("profiles.json");
+    let registry = if profiles_path.exists() {
+        let content = fs::read_to_string(&profiles_path)
+            .map_err(|e| format!("failed to read profiles.json: {e}"))?;
+        serde_json::from_str::<ProfileRegistry>(&content)
+            .map_err(|e| format!("failed to parse profiles.json: {e}"))?
+    } else {
+        ProfileRegistry {
+            default: None,
+            profiles: HashMap::new(),
+        }
+    };
+
+    let mut profile_names = registry.profiles.keys().cloned().collect::<Vec<_>>();
+    profile_names.sort();
+
+    let mut reports = Vec::new();
+    let mut healthy_count = 0usize;
+    let mut repaired_count = 0usize;
+    for profile_name in profile_names {
+        let Some(entry) = registry.profiles.get(&profile_name).cloned() else {
+            continue;
+        };
+        let mut report = profile_health_report(&profile_name, &entry)?;
+        let mut healthy = report
+            .get("healthy")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if fix && !healthy {
+            let repair = attempt_profile_repair(&profile_name, &entry);
+            report["repair"] = match repair {
+                Ok(details) => {
+                    repaired_count += 1;
+                    json!({ "attempted": true, "ok": true, "details": details })
+                }
+                Err(error) => json!({ "attempted": true, "ok": false, "error": error }),
+            };
+            let repaired_report = profile_health_report(&profile_name, &entry)?;
+            healthy = repaired_report
+                .get("healthy")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            report["healthy"] = Value::Bool(healthy);
+            if let Some(checks) = repaired_report.get("checks") {
+                report["checks"] = checks.clone();
+            }
+        }
+        if healthy {
+            healthy_count += 1;
+        }
+        reports.push(report);
+    }
+
+    let total = reports.len();
+    let data = json!({
+        "configDir": config_dir,
+        "profilesPath": profiles_path.display().to_string(),
+        "fixApplied": fix,
+        "summary": {
+            "total": total,
+            "healthy": healthy_count,
+            "unhealthy": total.saturating_sub(healthy_count),
+            "repaired": repaired_count
+        },
+        "profiles": reports
+    });
+    render_local_command(matches, "doctor", data)
+}
+
+fn run_policy(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
+    let config_dir = resolve_config_dir()?;
+    let policy_path = PathBuf::from(&config_dir).join("policy.json");
+    let mut created = false;
+
+    if sub.get_flag("init") {
+        fs::create_dir_all(&config_dir).map_err(|e| format!("failed to create config dir: {e}"))?;
+        let payload = json!({
+            "protect": {
+                "pinned": true,
+                "groupTitles": ["🔒"]
+            }
+        });
+        let content = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
+        fs::write(&policy_path, content)
+            .map_err(|e| format!("failed to write policy.json: {e}"))?;
+        created = true;
+    }
+
+    let exists = policy_path.exists();
+    let mut policy = Value::Null;
+    if exists {
+        let content = fs::read_to_string(&policy_path)
+            .map_err(|e| format!("failed to read policy.json: {e}"))?;
+        policy = serde_json::from_str(&content).map_err(|e| format!("invalid policy.json: {e}"))?;
+    }
+
+    let summary = policy
+        .get("protect")
+        .and_then(Value::as_object)
+        .map(|protect| {
+            json!({
+                "pinned": protect.get("pinned").and_then(Value::as_bool).unwrap_or(false),
+                "groupTitles": protect.get("groupTitles").cloned().unwrap_or_else(|| json!([]))
+            })
+        })
+        .unwrap_or_else(|| json!({}));
+
+    let data = json!({
+        "policyPath": policy_path.display().to_string(),
+        "exists": exists,
+        "initialized": sub.get_flag("init"),
+        "created": created,
+        "summary": summary,
+        "policy": policy
+    });
+    render_local_command(matches, "policy", data)
+}
+
+fn run_skill(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
+    let mut args = vec![
+        "skills".to_string(),
+        "add".to_string(),
+        "https://github.com/ekroon/tabctl".to_string(),
+        "--skill".to_string(),
+        "tabctl".to_string(),
+    ];
+    if sub.get_flag("global") {
+        args.push("--global".to_string());
+    }
+    if let Some(agents) = sub.get_many::<String>("agent") {
+        for agent in agents {
+            args.push("-a".to_string());
+            args.push(agent.to_string());
+        }
+    }
+
+    let mut command = ProcessCommand::new("npx");
+    for arg in &args {
+        command.arg(arg);
+    }
+    let output = command
+        .output()
+        .map_err(|e| format!("failed to execute npx skills installer: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !output.status.success() {
+        if !stderr.is_empty() {
+            return Err(format!("skill install failed: {stderr}"));
+        }
+        return Err(format!(
+            "skill install failed with status {}",
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        ));
+    }
+
+    let data = json!({
+        "global": sub.get_flag("global"),
+        "agents": sub
+            .get_many::<String>("agent")
+            .map(|vals| vals.map(|v| v.to_string()).collect::<Vec<_>>())
+            .unwrap_or_default(),
+        "command": format!("npx {}", args.join(" ")),
+        "stdout": stdout,
+        "stderr": stderr
+    });
+    render_local_command(matches, "skill", data)
+}
+
+fn browser_name(browser: &Browser) -> &'static str {
+    match browser {
+        Browser::Edge => "edge",
+        Browser::Chrome => "chrome",
+    }
+}
+
+fn command_path_healthy(path: &str) -> bool {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if Path::new(trimmed).is_absolute() {
+        return Path::new(trimmed).exists();
+    }
+    let command_name = if cfg!(windows) { "where" } else { "which" };
+    ProcessCommand::new(command_name)
+        .arg(trimmed)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn profile_health_report(profile_name: &str, entry: &ProfileEntry) -> Result<Value, String> {
+    let host_path_exists = Path::new(&entry.host_path).exists();
+    let binary_path_exists = command_path_healthy(&entry.node_path);
+    let manifest_path =
+        resolve_manifest_dir(browser_name(&entry.browser))?.join(format!("{HOST_NAME}.json"));
+    let manifest_exists = manifest_path.exists();
+
+    let mut manifest_path_matches = false;
+    let mut manifest_origin_matches = false;
+    if manifest_exists {
+        let manifest_content = fs::read_to_string(&manifest_path)
+            .map_err(|e| format!("failed to read native host manifest: {e}"))?;
+        let manifest_json: Value = serde_json::from_str(&manifest_content)
+            .map_err(|e| format!("invalid native host manifest: {e}"))?;
+        manifest_path_matches = manifest_json
+            .get("path")
+            .and_then(Value::as_str)
+            .map(|path| path == entry.host_path)
+            .unwrap_or(false);
+        let expected_origin = format!("chrome-extension://{}/", entry.extension_id);
+        manifest_origin_matches = manifest_json
+            .get("allowed_origins")
+            .and_then(Value::as_array)
+            .map(|origins| {
+                origins
+                    .iter()
+                    .any(|origin| origin.as_str() == Some(&expected_origin))
+            })
+            .unwrap_or(false);
+    }
+
+    let healthy = host_path_exists
+        && binary_path_exists
+        && manifest_exists
+        && manifest_path_matches
+        && manifest_origin_matches;
+    Ok(json!({
+        "name": profile_name,
+        "browser": browser_name(&entry.browser),
+        "extensionId": entry.extension_id,
+        "hostPath": entry.host_path,
+        "binaryPath": entry.node_path,
+        "manifestPath": manifest_path.display().to_string(),
+        "healthy": healthy,
+        "checks": {
+            "hostPathExists": host_path_exists,
+            "binaryPathExists": binary_path_exists,
+            "manifestExists": manifest_exists,
+            "manifestPathMatchesProfile": manifest_path_matches,
+            "manifestAllowedOriginMatchesProfile": manifest_origin_matches
+        }
+    }))
+}
+
+fn attempt_profile_repair(profile_name: &str, entry: &ProfileEntry) -> Result<Value, String> {
+    let data_dir = resolve_data_dir(None)?;
+    let wrapper_dir = PathBuf::from(&data_dir).join("profiles").join(profile_name);
+    let tabctl_binary_path = resolve_tabctl_binary_path();
+    let wrapper_path = write_host_wrapper(&tabctl_binary_path, profile_name, &wrapper_dir)?;
+    let manifest_path = write_native_manifest(
+        browser_name(&entry.browser),
+        &wrapper_path,
+        &entry.extension_id,
+        entry.user_data_dir.as_deref(),
+    )?;
+    register_profile(
+        &data_dir,
+        profile_name,
+        browser_name(&entry.browser),
+        &entry.extension_id,
+        &wrapper_path,
+        &manifest_path,
+    )?;
+    Ok(json!({
+        "wrapperPath": wrapper_path.display().to_string(),
+        "manifestPath": manifest_path.display().to_string()
+    }))
 }
 
 fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
@@ -556,6 +1144,50 @@ fn command_with_scope(name: &'static str) -> Command {
         )
 }
 
+fn command_with_scope_no_all(name: &'static str) -> Command {
+    Command::new(name)
+        .arg(
+            Arg::new("tab")
+                .long("tab")
+                .action(ArgAction::Append)
+                .value_name("id"),
+        )
+        .arg(Arg::new("group").long("group").value_name("name"))
+        .arg(
+            Arg::new("group-id")
+                .long("group-id")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("ungrouped")
+                .long("ungrouped")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("window")
+                .long("window")
+                .value_name("id|active|last-focused|new"),
+        )
+        .arg(
+            Arg::new("limit")
+                .long("limit")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("offset")
+                .long("offset")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("no-page")
+                .long("no-page")
+                .action(ArgAction::SetTrue),
+        )
+}
+
 fn command_open() -> Command {
     command_with_scope("open")
         .arg(
@@ -678,7 +1310,7 @@ fn command_merge_window() -> Command {
 }
 
 fn command_close() -> Command {
-    command_with_scope("close")
+    command_with_scope_no_all("close")
         .arg(Arg::new("apply").long("apply").value_name("analysisId"))
         .arg(
             Arg::new("confirm")
@@ -696,6 +1328,193 @@ fn command_report() -> Command {
     command_with_scope("report")
         .arg(Arg::new("format").long("format").value_name("json|md|csv"))
         .arg(Arg::new("out").long("out").value_name("path"))
+}
+
+fn command_analyze() -> Command {
+    command_with_scope("analyze")
+        .arg(
+            Arg::new("stale-days")
+                .long("stale-days")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("window-title")
+                .long("window-title")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+fn command_dedupe() -> Command {
+    command_with_scope("dedupe")
+        .arg(
+            Arg::new("stale-days")
+                .long("stale-days")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("include-stale")
+                .long("include-stale")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("window-title")
+                .long("window-title")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("confirm")
+                .long("confirm")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+fn command_inspect() -> Command {
+    command_with_scope("inspect")
+        .arg(
+            Arg::new("signal-config")
+                .long("signal-config")
+                .value_name("path"),
+        )
+        .arg(
+            Arg::new("signal")
+                .long("signal")
+                .action(ArgAction::Append)
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("selector")
+                .long("selector")
+                .action(ArgAction::Append)
+                .value_name("name=css|json"),
+        )
+        .arg(
+            Arg::new("selector-attr")
+                .long("selector-attr")
+                .value_name("attr"),
+        )
+        .arg(
+            Arg::new("signal-concurrency")
+                .long("signal-concurrency")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("signal-timeout-ms")
+                .long("signal-timeout-ms")
+                .value_parser(value_parser!(u64))
+                .value_name("ms"),
+        )
+        .arg(
+            Arg::new("wait-for")
+                .long("wait-for")
+                .value_name("load|dom|settle|none"),
+        )
+        .arg(
+            Arg::new("wait-timeout-ms")
+                .long("wait-timeout-ms")
+                .value_parser(value_parser!(u64))
+                .value_name("ms"),
+        )
+}
+
+fn command_screenshot() -> Command {
+    command_with_scope("screenshot")
+        .arg(Arg::new("mode").long("mode").value_name("viewport|full"))
+        .arg(Arg::new("format").long("format").value_name("png|jpeg"))
+        .arg(
+            Arg::new("quality")
+                .long("quality")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("tile-max-dim")
+                .long("tile-max-dim")
+                .value_parser(value_parser!(u64))
+                .value_name("px"),
+        )
+        .arg(
+            Arg::new("max-bytes")
+                .long("max-bytes")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("wait-for")
+                .long("wait-for")
+                .value_name("load|dom|settle|none"),
+        )
+        .arg(
+            Arg::new("wait-timeout-ms")
+                .long("wait-timeout-ms")
+                .value_parser(value_parser!(u64))
+                .value_name("ms"),
+        )
+        .arg(Arg::new("out").long("out").value_name("dir"))
+}
+
+fn command_move_tab() -> Command {
+    command_with_scope("move-tab")
+        .arg(
+            Arg::new("before-tab")
+                .long("before-tab")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("after-tab")
+                .long("after-tab")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("before-group")
+                .long("before-group")
+                .value_name("name"),
+        )
+        .arg(
+            Arg::new("after-group")
+                .long("after-group")
+                .value_name("name"),
+        )
+        .arg(
+            Arg::new("new-window")
+                .long("new-window")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+fn command_move_group() -> Command {
+    command_with_scope("move-group")
+        .arg(
+            Arg::new("before-tab")
+                .long("before-tab")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("after-tab")
+                .long("after-tab")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("before-group")
+                .long("before-group")
+                .value_name("name"),
+        )
+        .arg(
+            Arg::new("after-group")
+                .long("after-group")
+                .value_name("name"),
+        )
+        .arg(
+            Arg::new("new-window")
+                .long("new-window")
+                .action(ArgAction::SetTrue),
+        )
 }
 
 fn command_undo() -> Command {
@@ -721,6 +1540,7 @@ fn route_command(matches: &ArgMatches) -> Result<RoutedCommand, String> {
     let action = match command {
         "dedupe" => "analyze".to_string(),
         "groups" | "group" => "group-list".to_string(),
+        "list" if sub.get_flag("groups") => "group-list".to_string(),
         name => name.to_string(),
     };
 
@@ -729,6 +1549,13 @@ fn route_command(matches: &ArgMatches) -> Result<RoutedCommand, String> {
         "analyze" | "dedupe" => {
             if command == "dedupe" {
                 params.insert("dedupe".to_string(), Value::Bool(true));
+                copy_opt_bool(sub, "include-stale", &mut params, "includeStale");
+                copy_opt_bool(sub, "confirm", &mut params, "confirmed");
+            }
+            copy_opt_u64(sub, "stale-days", &mut params, "staleDays");
+            copy_opt_bool(sub, "window-title", &mut params, "windowTitle");
+            if progress {
+                params.insert("progress".to_string(), Value::Bool(true));
             }
         }
         "open" => {
@@ -780,6 +1607,54 @@ fn route_command(matches: &ArgMatches) -> Result<RoutedCommand, String> {
             copy_opt_bool(sub, "latest", &mut params, "latest");
         }
         "history" => copy_opt_u64(sub, "limit", &mut params, "limit"),
+        "inspect" => {
+            copy_many_strings(sub, "signal", &mut params, "signals");
+            copy_opt_string(sub, "selector-attr", &mut params, "selectorAttr");
+            copy_opt_u64(sub, "signal-concurrency", &mut params, "signalConcurrency");
+            copy_opt_u64(sub, "signal-timeout-ms", &mut params, "signalTimeoutMs");
+            copy_opt_string(sub, "wait-for", &mut params, "waitFor");
+            copy_opt_u64(sub, "wait-timeout-ms", &mut params, "waitTimeoutMs");
+            if let Some(path) = sub.get_one::<String>("signal-config") {
+                let content = fs::read_to_string(path)
+                    .map_err(|e| format!("Failed to read signal config {path}: {e}"))?;
+                let config: Value = serde_json::from_str(&content)
+                    .map_err(|e| format!("Invalid JSON in signal config {path}: {e}"))?;
+                params.insert("signalConfig".to_string(), config);
+            }
+            if let Some(values) = sub.get_many::<String>("selector") {
+                let default_attr = sub
+                    .get_one::<String>("selector-attr")
+                    .map(|s| s.as_str())
+                    .unwrap_or("text");
+                let specs = parse_selector_args(values, default_attr)?;
+                if !specs.is_empty() {
+                    params.insert("selectorSpecs".to_string(), Value::Array(specs));
+                }
+            }
+            if progress {
+                params.insert("progress".to_string(), Value::Bool(true));
+            }
+        }
+        "screenshot" => {
+            copy_opt_string(sub, "mode", &mut params, "mode");
+            copy_opt_string(sub, "format", &mut params, "format");
+            copy_opt_u64(sub, "quality", &mut params, "quality");
+            copy_opt_u64(sub, "tile-max-dim", &mut params, "tileMaxDim");
+            copy_opt_u64(sub, "max-bytes", &mut params, "maxBytes");
+            copy_opt_string(sub, "wait-for", &mut params, "waitFor");
+            copy_opt_u64(sub, "wait-timeout-ms", &mut params, "waitTimeoutMs");
+            copy_opt_string(sub, "out", &mut params, "out");
+            if progress {
+                params.insert("progress".to_string(), Value::Bool(true));
+            }
+        }
+        "move-tab" | "move-group" => {
+            copy_opt_i64(sub, "before-tab", &mut params, "beforeTabId");
+            copy_opt_i64(sub, "after-tab", &mut params, "afterTabId");
+            copy_opt_string(sub, "before-group", &mut params, "beforeGroupTitle");
+            copy_opt_string(sub, "after-group", &mut params, "afterGroupTitle");
+            copy_opt_bool(sub, "new-window", &mut params, "newWindow");
+        }
         _ => {}
     }
 
@@ -800,7 +1675,11 @@ fn collect_scope_params(sub: &ArgMatches) -> Map<String, Value> {
     copy_opt_i64(sub, "group-id", &mut params, "groupId");
     copy_opt_bool(sub, "ungrouped", &mut params, "ungrouped");
     copy_opt_string(sub, "window", &mut params, "windowId");
-    copy_opt_bool(sub, "all", &mut params, "all");
+    if let Ok(Some(value)) = sub.try_get_one::<bool>("all") {
+        if *value {
+            params.insert("all".to_string(), Value::Bool(true));
+        }
+    }
     copy_opt_u64(sub, "limit", &mut params, "limit");
     copy_opt_u64(sub, "offset", &mut params, "offset");
     if sub.get_flag("no-page") {
@@ -828,8 +1707,10 @@ fn copy_opt_u64(sub: &ArgMatches, src: &str, out: &mut Map<String, Value>, key: 
 }
 
 fn copy_opt_bool(sub: &ArgMatches, src: &str, out: &mut Map<String, Value>, key: &str) {
-    if sub.get_flag(src) {
-        out.insert(key.to_string(), Value::Bool(true));
+    if let Ok(Some(value)) = sub.try_get_one::<bool>(src) {
+        if *value {
+            out.insert(key.to_string(), Value::Bool(true));
+        }
     }
 }
 
@@ -854,6 +1735,41 @@ fn copy_many_i64(sub: &ArgMatches, src: &str, out: &mut Map<String, Value>, key:
             out.insert(key.to_string(), Value::Array(ids));
         }
     }
+}
+
+/// Parse `--selector` arguments into selectorSpecs array.
+/// Accepts two formats:
+///   name=css-selector   (shorthand)
+///   {"name":"x","selector":".cls","attr":"href",...}  (JSON object)
+fn parse_selector_args<'a>(
+    values: impl Iterator<Item = &'a String>,
+    default_attr: &str,
+) -> Result<Vec<Value>, String> {
+    let mut specs = Vec::new();
+    for raw in values {
+        let trimmed = raw.trim();
+        if trimmed.starts_with('{') {
+            let obj: Value = serde_json::from_str(trimmed)
+                .map_err(|e| format!("Invalid JSON in --selector '{trimmed}': {e}"))?;
+            specs.push(obj);
+        } else if let Some(eq_pos) = trimmed.find('=') {
+            let name = &trimmed[..eq_pos];
+            let selector = &trimmed[eq_pos + 1..];
+            if selector.is_empty() {
+                return Err(format!("Empty CSS selector in --selector '{trimmed}'"));
+            }
+            let mut m = Map::new();
+            m.insert("name".to_string(), Value::String(name.to_string()));
+            m.insert("selector".to_string(), Value::String(selector.to_string()));
+            m.insert("attr".to_string(), Value::String(default_attr.to_string()));
+            specs.push(Value::Object(m));
+        } else {
+            return Err(format!(
+                "Invalid --selector format '{trimmed}'. Expected name=css or JSON object."
+            ));
+        }
+    }
+    Ok(specs)
 }
 
 fn resolve_socket_endpoint(profile: Option<&str>) -> Result<SocketEndpoint, String> {
@@ -1534,6 +2450,18 @@ mod tests {
     }
 
     #[test]
+    fn close_rejects_all_scope_flag() {
+        let err = build_cli()
+            .try_get_matches_from(["tabctl", "close", "--all", "--confirm"])
+            .unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("--all"),
+            "expected error mentioning --all, got: {message}"
+        );
+    }
+
+    #[test]
     fn supports_dedupe_alias_with_analyze_action() {
         let matches = build_cli()
             .try_get_matches_from(["tabctl", "dedupe", "--window", "active"])
@@ -1581,6 +2509,238 @@ mod tests {
         let routed = route_command(&matches).expect("route command");
         assert_eq!(routed.params["tabIds"], json!([11, 14]));
         assert_eq!(routed.params["page"], json!(false));
+    }
+
+    #[test]
+    fn list_groups_flag_routes_to_group_list_action() {
+        let matches = build_cli()
+            .try_get_matches_from(["tabctl", "list", "--groups", "--window", "12"])
+            .expect("parse command");
+        let routed = route_command(&matches).expect("route command");
+        assert_eq!(routed.action, "group-list");
+        assert_eq!(routed.params["windowId"], "12");
+    }
+
+    #[test]
+    fn parses_doctor_fix_flag() {
+        let matches = build_cli()
+            .try_get_matches_from(["tabctl", "doctor", "--fix"])
+            .expect("parse command");
+        let (command, sub) = matches.subcommand().expect("subcommand");
+        assert_eq!(command, "doctor");
+        assert!(sub.get_flag("fix"));
+    }
+
+    #[test]
+    fn parses_policy_init_flag() {
+        let matches = build_cli()
+            .try_get_matches_from(["tabctl", "policy", "--init"])
+            .expect("parse command");
+        let (command, sub) = matches.subcommand().expect("subcommand");
+        assert_eq!(command, "policy");
+        assert!(sub.get_flag("init"));
+    }
+
+    #[test]
+    fn parses_skill_flags() {
+        let matches = build_cli()
+            .try_get_matches_from([
+                "tabctl",
+                "skill",
+                "--global",
+                "--agent",
+                "opencode",
+                "--agent",
+                "github-copilot",
+            ])
+            .expect("parse command");
+        let (command, sub) = matches.subcommand().expect("subcommand");
+        assert_eq!(command, "skill");
+        assert!(sub.get_flag("global"));
+        let agents = sub
+            .get_many::<String>("agent")
+            .expect("agents")
+            .map(|v| v.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(agents, vec!["opencode", "github-copilot"]);
+    }
+
+    #[test]
+    fn policy_init_creates_default_file() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-policy-init-{}", request_id()));
+        let config_dir = dir.join("config");
+        with_env_vars(
+            &[("TABCTL_CONFIG_DIR", Some(config_dir.to_str().unwrap()))],
+            || {
+                let matches = build_cli()
+                    .try_get_matches_from(["tabctl", "policy", "--init"])
+                    .expect("parse command");
+                let (_, sub) = matches.subcommand().expect("subcommand");
+                run_policy(&matches, sub).expect("run policy");
+
+                let policy_path = config_dir.join("policy.json");
+                assert!(policy_path.exists(), "policy.json should be created");
+                let content = fs::read_to_string(policy_path).expect("read policy");
+                let policy: Value = serde_json::from_str(&content).expect("parse policy");
+                assert_eq!(policy["protect"]["pinned"], json!(true));
+                assert_eq!(policy["protect"]["groupTitles"], json!(["🔒"]));
+            },
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parses_help_and_version_subcommands() {
+        let matches = build_cli()
+            .try_get_matches_from(["tabctl", "help", "open"])
+            .expect("parse command");
+        let (command, sub) = matches.subcommand().expect("subcommand");
+        assert_eq!(command, "help");
+        assert_eq!(
+            sub.get_one::<String>("command").map(String::as_str),
+            Some("open")
+        );
+
+        let matches = build_cli()
+            .try_get_matches_from(["tabctl", "version"])
+            .expect("parse command");
+        let (command, _) = matches.subcommand().expect("subcommand");
+        assert_eq!(command, "version");
+    }
+
+    #[test]
+    fn parses_profile_management_subcommands() {
+        let matches = build_cli()
+            .try_get_matches_from(["tabctl", "profile-list"])
+            .expect("parse command");
+        assert_eq!(matches.subcommand().expect("subcommand").0, "profile-list");
+
+        let matches = build_cli()
+            .try_get_matches_from(["tabctl", "profile-show"])
+            .expect("parse command");
+        assert_eq!(matches.subcommand().expect("subcommand").0, "profile-show");
+
+        let matches = build_cli()
+            .try_get_matches_from(["tabctl", "profile-switch", "work"])
+            .expect("parse command");
+        let (command, sub) = matches.subcommand().expect("subcommand");
+        assert_eq!(command, "profile-switch");
+        assert_eq!(
+            sub.get_one::<String>("name").map(String::as_str),
+            Some("work")
+        );
+
+        let matches = build_cli()
+            .try_get_matches_from(["tabctl", "profile-remove", "work"])
+            .expect("parse command");
+        let (command, sub) = matches.subcommand().expect("subcommand");
+        assert_eq!(command, "profile-remove");
+        assert_eq!(
+            sub.get_one::<String>("name").map(String::as_str),
+            Some("work")
+        );
+    }
+
+    #[test]
+    fn profile_switch_updates_default_profile() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-profile-switch-{}", request_id()));
+        let config_dir = dir.join("config");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        let profiles_path = config_dir.join("profiles.json");
+        fs::write(
+            &profiles_path,
+            serde_json::to_string_pretty(&json!({
+                "default": "edge",
+                "profiles": {
+                    "edge": {
+                        "browser": "edge",
+                        "extensionId": "ext-edge",
+                        "nodePath": "/usr/bin/tabctl",
+                        "hostPath": "/tmp/tabctl-edge-host.sh",
+                        "dataDir": "/tmp/tabctl/profiles/edge"
+                    },
+                    "chrome": {
+                        "browser": "chrome",
+                        "extensionId": "ext-chrome",
+                        "nodePath": "/usr/bin/tabctl",
+                        "hostPath": "/tmp/tabctl-chrome-host.sh",
+                        "dataDir": "/tmp/tabctl/profiles/chrome"
+                    }
+                }
+            }))
+            .expect("serialize profiles"),
+        )
+        .expect("write profiles");
+
+        with_env_vars(
+            &[("TABCTL_CONFIG_DIR", Some(config_dir.to_str().unwrap()))],
+            || {
+                let matches = build_cli()
+                    .try_get_matches_from(["tabctl", "profile-switch", "chrome"])
+                    .expect("parse command");
+                let (_, sub) = matches.subcommand().expect("subcommand");
+                run_profile_switch(&matches, sub).expect("run profile-switch");
+            },
+        );
+
+        let updated: Value = serde_json::from_str(
+            &fs::read_to_string(&profiles_path).expect("read updated profiles"),
+        )
+        .expect("parse updated profiles");
+        assert_eq!(updated["default"], json!("chrome"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn profile_remove_reassigns_default_profile() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-profile-remove-{}", request_id()));
+        let config_dir = dir.join("config");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        let profiles_path = config_dir.join("profiles.json");
+        fs::write(
+            &profiles_path,
+            serde_json::to_string_pretty(&json!({
+                "default": "edge",
+                "profiles": {
+                    "edge": {
+                        "browser": "edge",
+                        "extensionId": "ext-edge",
+                        "nodePath": "/usr/bin/tabctl",
+                        "hostPath": "/tmp/tabctl-edge-host.sh",
+                        "dataDir": "/tmp/tabctl/profiles/edge"
+                    },
+                    "chrome": {
+                        "browser": "chrome",
+                        "extensionId": "ext-chrome",
+                        "nodePath": "/usr/bin/tabctl",
+                        "hostPath": "/tmp/tabctl-chrome-host.sh",
+                        "dataDir": "/tmp/tabctl/profiles/chrome"
+                    }
+                }
+            }))
+            .expect("serialize profiles"),
+        )
+        .expect("write profiles");
+
+        with_env_vars(
+            &[("TABCTL_CONFIG_DIR", Some(config_dir.to_str().unwrap()))],
+            || {
+                let matches = build_cli()
+                    .try_get_matches_from(["tabctl", "profile-remove", "edge"])
+                    .expect("parse command");
+                let (_, sub) = matches.subcommand().expect("subcommand");
+                run_profile_remove(&matches, sub).expect("run profile-remove");
+            },
+        );
+
+        let updated: Value = serde_json::from_str(
+            &fs::read_to_string(&profiles_path).expect("read updated profiles"),
+        )
+        .expect("parse updated profiles");
+        assert_eq!(updated["default"], json!("chrome"));
+        assert!(updated["profiles"].get("edge").is_none());
+        assert!(updated["profiles"].get("chrome").is_some());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2735,5 +3895,212 @@ mod tests {
             },
         );
         let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn maps_inspect_flags_to_host_params() {
+        let matches = build_cli()
+            .try_get_matches_from([
+                "tabctl",
+                "--progress",
+                "inspect",
+                "--tab",
+                "42",
+                "--signal",
+                "page-meta",
+                "--signal",
+                "selector",
+                "--selector",
+                "links=a[href]",
+                "--selector-attr",
+                "href-url",
+                "--signal-concurrency",
+                "4",
+                "--signal-timeout-ms",
+                "5000",
+                "--wait-for",
+                "settle",
+                "--wait-timeout-ms",
+                "3000",
+            ])
+            .expect("parse command");
+        let routed = route_command(&matches).expect("route command");
+        assert_eq!(routed.action, "inspect");
+        assert_eq!(routed.params["tabIds"], json!([42]));
+        assert_eq!(routed.params["signals"], json!(["page-meta", "selector"]));
+        assert_eq!(routed.params["selectorAttr"], json!("href-url"));
+        assert_eq!(routed.params["signalConcurrency"], json!(4));
+        assert_eq!(routed.params["signalTimeoutMs"], json!(5000));
+        assert_eq!(routed.params["waitFor"], json!("settle"));
+        assert_eq!(routed.params["waitTimeoutMs"], json!(3000));
+        assert_eq!(routed.params["progress"], json!(true));
+        // selectorSpecs should contain one entry with default attr from --selector-attr
+        let specs = routed.params["selectorSpecs"].as_array().unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0]["name"], json!("links"));
+        assert_eq!(specs[0]["selector"], json!("a[href]"));
+        assert_eq!(specs[0]["attr"], json!("href-url"));
+    }
+
+    #[test]
+    fn inspect_selector_json_format() {
+        let matches = build_cli()
+            .try_get_matches_from([
+                "tabctl",
+                "inspect",
+                "--tab",
+                "1",
+                "--selector",
+                r#"{"name":"price","selector":".amount","attr":"text","all":true}"#,
+            ])
+            .expect("parse command");
+        let routed = route_command(&matches).expect("route command");
+        let specs = routed.params["selectorSpecs"].as_array().unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0]["name"], json!("price"));
+        assert_eq!(specs[0]["selector"], json!(".amount"));
+        assert_eq!(specs[0]["attr"], json!("text"));
+        assert_eq!(specs[0]["all"], json!(true));
+    }
+
+    #[test]
+    fn inspect_selector_invalid_format_rejected() {
+        let matches = build_cli()
+            .try_get_matches_from([
+                "tabctl",
+                "inspect",
+                "--tab",
+                "1",
+                "--selector",
+                "noequalssign",
+            ])
+            .expect("parse command");
+        let err = route_command(&matches).unwrap_err();
+        assert!(err.contains("Invalid --selector format"), "got: {err}");
+    }
+
+    #[test]
+    fn maps_screenshot_flags_to_host_params() {
+        let matches = build_cli()
+            .try_get_matches_from([
+                "tabctl",
+                "--progress",
+                "screenshot",
+                "--tab",
+                "7",
+                "--mode",
+                "full",
+                "--format",
+                "jpeg",
+                "--quality",
+                "80",
+                "--tile-max-dim",
+                "4096",
+                "--max-bytes",
+                "500000",
+                "--wait-for",
+                "load",
+                "--wait-timeout-ms",
+                "2000",
+                "--out",
+                "/tmp/shots",
+            ])
+            .expect("parse command");
+        let routed = route_command(&matches).expect("route command");
+        assert_eq!(routed.action, "screenshot");
+        assert_eq!(routed.params["tabIds"], json!([7]));
+        assert_eq!(routed.params["mode"], json!("full"));
+        assert_eq!(routed.params["format"], json!("jpeg"));
+        assert_eq!(routed.params["quality"], json!(80));
+        assert_eq!(routed.params["tileMaxDim"], json!(4096));
+        assert_eq!(routed.params["maxBytes"], json!(500000));
+        assert_eq!(routed.params["waitFor"], json!("load"));
+        assert_eq!(routed.params["waitTimeoutMs"], json!(2000));
+        assert_eq!(routed.params["out"], json!("/tmp/shots"));
+        assert_eq!(routed.params["progress"], json!(true));
+    }
+
+    #[test]
+    fn maps_analyze_flags_to_host_params() {
+        let matches = build_cli()
+            .try_get_matches_from([
+                "tabctl",
+                "analyze",
+                "--window",
+                "active",
+                "--stale-days",
+                "14",
+                "--window-title",
+            ])
+            .expect("parse command");
+        let routed = route_command(&matches).expect("route command");
+        assert_eq!(routed.action, "analyze");
+        assert_eq!(routed.params["staleDays"], json!(14));
+        assert_eq!(routed.params["windowTitle"], json!(true));
+        assert!(routed.params.get("dedupe").is_none());
+    }
+
+    #[test]
+    fn maps_dedupe_flags_to_host_params() {
+        let matches = build_cli()
+            .try_get_matches_from([
+                "tabctl",
+                "dedupe",
+                "--all",
+                "--stale-days",
+                "7",
+                "--include-stale",
+                "--window-title",
+                "--confirm",
+            ])
+            .expect("parse command");
+        let routed = route_command(&matches).expect("route command");
+        assert_eq!(routed.action, "analyze");
+        assert_eq!(routed.params["dedupe"], json!(true));
+        assert_eq!(routed.params["staleDays"], json!(7));
+        assert_eq!(routed.params["includeStale"], json!(true));
+        assert_eq!(routed.params["windowTitle"], json!(true));
+        assert_eq!(routed.params["confirmed"], json!(true));
+    }
+
+    #[test]
+    fn maps_move_tab_flags_to_host_params() {
+        let matches = build_cli()
+            .try_get_matches_from([
+                "tabctl",
+                "move-tab",
+                "--tab",
+                "5",
+                "--after-tab",
+                "10",
+                "--before-group",
+                "Work",
+            ])
+            .expect("parse command");
+        let routed = route_command(&matches).expect("route command");
+        assert_eq!(routed.action, "move-tab");
+        assert_eq!(routed.params["tabIds"], json!([5]));
+        assert_eq!(routed.params["afterTabId"], json!(10));
+        assert_eq!(routed.params["beforeGroupTitle"], json!("Work"));
+    }
+
+    #[test]
+    fn maps_move_group_flags_to_host_params() {
+        let matches = build_cli()
+            .try_get_matches_from([
+                "tabctl",
+                "move-group",
+                "--group",
+                "Research",
+                "--new-window",
+                "--after-group",
+                "Archive",
+            ])
+            .expect("parse command");
+        let routed = route_command(&matches).expect("route command");
+        assert_eq!(routed.action, "move-group");
+        assert_eq!(routed.params["groupTitle"], json!("Research"));
+        assert_eq!(routed.params["newWindow"], json!(true));
+        assert_eq!(routed.params["afterGroupTitle"], json!("Archive"));
     }
 }
