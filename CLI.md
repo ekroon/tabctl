@@ -361,7 +361,7 @@ tabctl setup --browser chrome --name chrome-work --extension-id <your-extension-
 ```
 
 ### doctor
-Diagnose and repair profile health. Checks each profile's native host manifest and binary path.
+Diagnose and repair profile health. Checks each profile's native host artifacts and live `ping` connectivity.
 Options:
 - `--fix` auto-repair broken profiles
 
@@ -370,7 +370,7 @@ tabctl doctor              # show health status
 tabctl doctor --fix        # auto-repair broken profiles
 ```
 
-Auto-repair also runs automatically when a version mismatch is detected during normal CLI usage.
+`--fix` repairs local profile artifacts, then re-runs connectivity checks. If ping is still unhealthy, doctor returns manual remediation steps under each profile's `connectivity.manualSteps`.
 
 ### policy
 Show the current policy summary and path, or create a default policy file.
@@ -599,6 +599,7 @@ Notes:
 - For `extension-id-mismatch`, rerun setup with the runtime extension ID shown by the browser:
   - `tabctl setup --browser <edge|chrome> --extension-id <runtime-id>`
 - `tabctl ping` connect failures (`ENOENT`/`ECONNREFUSED`/timeout) usually mean host/extension disconnect; reload extension, rerun setup, and in WSL confirm `<dataDir>/tcp-port` or `TABCTL_TCP_PORT` matches a listening `127.0.0.1` port.
+- For profile-targeted diagnostics and remediation hints, run `tabctl doctor --fix --json` and inspect `data.profiles[].connectivity`.
 
 ## Profiles
 Each `tabctl setup` run registers a profile in `<configDir>/profiles.json`. A profile stores the browser type, extension ID, and data directory. The first profile registered becomes the default.

@@ -618,38 +618,22 @@ fn run_doctor(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
     let mut reports = Vec::new();
     let mut healthy_count = 0usize;
     let mut repaired_count = 0usize;
+    let mut connectivity_unhealthy_count = 0usize;
     for profile_name in profile_names {
         let Some(entry) = registry.profiles.get(&profile_name).cloned() else {
             continue;
         };
-        let mut report = profile_health_report(&profile_name, &entry)?;
-        let mut healthy = report
-            .get("healthy")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        if fix && !healthy {
-            let repair = attempt_profile_repair(&profile_name, &entry);
-            report["repair"] = match repair {
-                Ok(details) => {
-                    repaired_count += 1;
-                    json!({ "attempted": true, "ok": true, "details": details })
-                }
-                Err(error) => json!({ "attempted": true, "ok": false, "error": error }),
-            };
-            let repaired_report = profile_health_report(&profile_name, &entry)?;
-            healthy = repaired_report
-                .get("healthy")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            report["healthy"] = Value::Bool(healthy);
-            if let Some(checks) = repaired_report.get("checks") {
-                report["checks"] = checks.clone();
-            }
-        }
-        if healthy {
+        let evaluation = evaluate_doctor_profile(&profile_name, &entry, fix)?;
+        if evaluation.healthy {
             healthy_count += 1;
         }
-        reports.push(report);
+        if evaluation.repaired {
+            repaired_count += 1;
+        }
+        if !evaluation.connectivity_healthy {
+            connectivity_unhealthy_count += 1;
+        }
+        reports.push(evaluation.report);
     }
 
     let total = reports.len();
@@ -661,11 +645,81 @@ fn run_doctor(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
             "total": total,
             "healthy": healthy_count,
             "unhealthy": total.saturating_sub(healthy_count),
-            "repaired": repaired_count
+            "repaired": repaired_count,
+            "connectivityUnhealthy": connectivity_unhealthy_count
         },
         "profiles": reports
     });
     render_local_command(matches, "doctor", data)
+}
+
+struct DoctorProfileEvaluation {
+    report: Value,
+    healthy: bool,
+    repaired: bool,
+    connectivity_healthy: bool,
+}
+
+fn evaluate_doctor_profile(
+    profile_name: &str,
+    entry: &ProfileEntry,
+    fix: bool,
+) -> Result<DoctorProfileEvaluation, String> {
+    let mut report = profile_health_report(profile_name, entry)?;
+    let mut static_healthy = report
+        .get("healthy")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let mut connectivity = profile_connectivity_report(profile_name, entry);
+    let mut connectivity_healthy = connectivity
+        .get("healthy")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    report["staticHealthy"] = Value::Bool(static_healthy);
+    report["connectivity"] = connectivity;
+
+    let mut repaired = false;
+    if fix && !static_healthy {
+        let repair = attempt_profile_repair(profile_name, entry);
+        report["repair"] = match repair {
+            Ok(details) => {
+                repaired = true;
+                json!({ "attempted": true, "ok": true, "details": details })
+            }
+            Err(error) => json!({ "attempted": true, "ok": false, "error": error }),
+        };
+        let repaired_report = profile_health_report(profile_name, entry)?;
+        static_healthy = repaired_report
+            .get("healthy")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if let Some(checks) = repaired_report.get("checks") {
+            report["checks"] = checks.clone();
+        }
+        report["staticHealthy"] = Value::Bool(static_healthy);
+        connectivity = profile_connectivity_report(profile_name, entry);
+        connectivity_healthy = connectivity
+            .get("healthy")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        report["connectivity"] = connectivity;
+    } else if fix && !connectivity_healthy {
+        report["repair"] = json!({
+            "attempted": false,
+            "ok": false,
+            "reason": "No local profile artifact issue detected; follow manualSteps under connectivity."
+        });
+    }
+
+    let healthy = static_healthy && connectivity_healthy;
+    report["healthy"] = Value::Bool(healthy);
+    Ok(DoctorProfileEvaluation {
+        report,
+        healthy,
+        repaired,
+        connectivity_healthy,
+    })
 }
 
 fn run_policy(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
@@ -797,8 +851,72 @@ fn command_path_healthy(path: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn profile_connectivity_report(profile_name: &str, entry: &ProfileEntry) -> Value {
+    match send_request("ping", Value::Object(Map::new()), Some(profile_name), false) {
+        Ok(response) => {
+            if response.ok {
+                json!({
+                    "healthy": true,
+                    "checks": {
+                        "pingOk": true
+                    },
+                    "data": response.data
+                })
+            } else {
+                json!({
+                    "healthy": false,
+                    "checks": {
+                        "pingOk": false
+                    },
+                    "error": response.error.as_ref().map(|error| {
+                        json!({
+                            "message": error.message,
+                            "hint": error.hint
+                        })
+                    }),
+                    "manualSteps": connectivity_manual_steps(profile_name, entry)
+                })
+            }
+        }
+        Err(error) => json!({
+            "healthy": false,
+            "checks": {
+                "pingOk": false
+            },
+            "error": {
+                "message": error
+            },
+            "manualSteps": connectivity_manual_steps(profile_name, entry)
+        }),
+    }
+}
+
+fn connectivity_manual_steps(profile_name: &str, entry: &ProfileEntry) -> Vec<String> {
+    vec![
+        format!("Verify connection: tabctl --profile {profile_name} ping"),
+        "Ensure the browser extension is loaded and active for this profile.".to_string(),
+        format!(
+            "Rerun setup for this profile: tabctl setup --browser {} --name {profile_name} --extension-id {}",
+            browser_name(&entry.browser),
+            entry.extension_id
+        ),
+    ]
+}
+
 fn profile_health_report(profile_name: &str, entry: &ProfileEntry) -> Result<Value, String> {
     let host_path_exists = Path::new(&entry.host_path).exists();
+    let (wrapper_exports_profile, wrapper_exports_config_dir, wrapper_exports_data_dir) =
+        if host_path_exists {
+            let content = fs::read_to_string(&entry.host_path)
+                .map_err(|e| format!("failed to read host wrapper script: {e}"))?;
+            (
+                content.contains("TABCTL_PROFILE"),
+                content.contains("TABCTL_CONFIG_DIR"),
+                content.contains("TABCTL_DATA_DIR"),
+            )
+        } else {
+            (false, false, false)
+        };
     let binary_path_exists = command_path_healthy(&entry.node_path);
     let manifest_path =
         resolve_manifest_dir(browser_name(&entry.browser))?.join(format!("{HOST_NAME}.json"));
@@ -829,6 +947,9 @@ fn profile_health_report(profile_name: &str, entry: &ProfileEntry) -> Result<Val
     }
 
     let healthy = host_path_exists
+        && wrapper_exports_profile
+        && wrapper_exports_config_dir
+        && wrapper_exports_data_dir
         && binary_path_exists
         && manifest_exists
         && manifest_path_matches
@@ -843,6 +964,9 @@ fn profile_health_report(profile_name: &str, entry: &ProfileEntry) -> Result<Val
         "healthy": healthy,
         "checks": {
             "hostPathExists": host_path_exists,
+            "hostWrapperExportsProfile": wrapper_exports_profile,
+            "hostWrapperExportsConfigDir": wrapper_exports_config_dir,
+            "hostWrapperExportsDataDir": wrapper_exports_data_dir,
             "binaryPathExists": binary_path_exists,
             "manifestExists": manifest_exists,
             "manifestPathMatchesProfile": manifest_path_matches,
@@ -2004,6 +2128,19 @@ fn resolve_config_dir() -> Result<String, String> {
     Ok(format!("{}/.config/tabctl", home.display()))
 }
 
+fn resolve_effective_profile(profile: Option<&str>) -> Option<String> {
+    if let Some(name) = profile {
+        return Some(name.to_string());
+    }
+    let config_dir = resolve_config_dir().ok()?;
+    let profiles_path = PathBuf::from(config_dir).join("profiles.json");
+    let contents = fs::read_to_string(profiles_path).ok()?;
+    let registry = serde_json::from_str::<ProfileRegistry>(&contents).ok()?;
+    registry
+        .default
+        .or_else(|| registry.profiles.keys().next().cloned())
+}
+
 fn read_auth_token(profile: Option<&str>) -> Option<String> {
     if let Ok(token) = std::env::var("TABCTL_AUTH_TOKEN") {
         let token = token.trim().to_string();
@@ -2146,11 +2283,13 @@ fn write_host_wrapper(
     wrapper_dir: &Path,
 ) -> Result<PathBuf, String> {
     fs::create_dir_all(wrapper_dir).map_err(|e| format!("failed to create wrapper dir: {e}"))?;
+    let config_dir = resolve_config_dir()?;
+    let data_dir = resolve_data_dir(None)?;
 
     #[cfg(unix)]
     let (filename, content) = {
         let script = format!(
-            "#!/usr/bin/env bash\nset -euo pipefail\nexport TABCTL_PROFILE=\"{profile_name}\"\nexec \"{tabctl_binary_path}\" host\n"
+            "#!/usr/bin/env bash\nset -euo pipefail\nexport TABCTL_PROFILE=\"{profile_name}\"\nexport TABCTL_CONFIG_DIR=\"{config_dir}\"\nexport TABCTL_DATA_DIR=\"{data_dir}\"\nexec \"{tabctl_binary_path}\" host\n"
         );
         ("tabctl-host.sh", script)
     };
@@ -2158,7 +2297,7 @@ fn write_host_wrapper(
     #[cfg(windows)]
     let (filename, content) = {
         let script = format!(
-            "@echo off\r\nset TABCTL_PROFILE={profile_name}\r\n\"{tabctl_binary_path}\" host\r\n"
+            "@echo off\r\nset TABCTL_PROFILE={profile_name}\r\nset TABCTL_CONFIG_DIR={config_dir}\r\nset TABCTL_DATA_DIR={data_dir}\r\n\"{tabctl_binary_path}\" host\r\n"
         );
         ("tabctl-host.cmd", script)
     };
@@ -2245,7 +2384,9 @@ fn send_request(
     profile: Option<&str>,
     show_progress: bool,
 ) -> Result<ResponseEnvelope, String> {
-    let endpoint = resolve_socket_endpoint(profile)?;
+    let effective_profile = resolve_effective_profile(profile);
+    let resolved_profile = effective_profile.as_deref();
+    let endpoint = resolve_socket_endpoint(resolved_profile)?;
     match endpoint {
         SocketEndpoint::Unix { path } => {
             #[cfg(unix)]
@@ -2261,7 +2402,7 @@ fn send_request(
             }
         }
         SocketEndpoint::Tcp { host, port } => {
-            let auth_token = read_auth_token(profile);
+            let auth_token = read_auth_token(resolved_profile);
             let stream = TcpStream::connect((host.as_str(), port))
                 .map_err(|e| format!("Failed to connect to host: {e}"))?;
             send_request_over_stream(stream, action, params, show_progress, auth_token)
@@ -2425,6 +2566,54 @@ mod tests {
         if let Err(payload) = result {
             std::panic::resume_unwind(payload);
         }
+    }
+
+    #[test]
+    fn resolve_effective_profile_prefers_explicit_profile() {
+        assert_eq!(
+            resolve_effective_profile(Some("edge-smoke")),
+            Some("edge-smoke".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_effective_profile_uses_registry_default() {
+        let dir =
+            std::env::temp_dir().join(format!("tabctl-test-effective-profile-{}", request_id()));
+        let config_dir = dir.join("config");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+        let profiles = json!({
+            "default": "edge",
+            "profiles": {
+                "edge": {
+                    "browser": "edge",
+                    "extensionId": "mpglnmehddpkinfhheeahiicfieegcon",
+                    "nodePath": "/tmp/tabctl",
+                    "hostPath": "/tmp/tabctl-host.sh",
+                    "dataDir": "/tmp/tabctl/profiles/edge"
+                }
+            }
+        });
+        fs::write(
+            config_dir.join("profiles.json"),
+            serde_json::to_string_pretty(&profiles).expect("serialize profiles"),
+        )
+        .expect("write profiles.json");
+
+        with_env_vars(
+            &[
+                (
+                    "TABCTL_CONFIG_DIR",
+                    Some(config_dir.to_str().expect("config dir path")),
+                ),
+                ("XDG_CONFIG_HOME", None),
+            ],
+            || {
+                assert_eq!(resolve_effective_profile(None), Some("edge".to_string()));
+            },
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3195,6 +3384,14 @@ mod tests {
         assert!(
             content.contains("TABCTL_PROFILE=\"work\""),
             "should contain profile name"
+        );
+        assert!(
+            content.contains("TABCTL_CONFIG_DIR=\""),
+            "should export config dir"
+        );
+        assert!(
+            content.contains("TABCTL_DATA_DIR=\""),
+            "should export data dir"
         );
         assert!(
             content.contains("\"/opt/bin/tabctl\" host"),
@@ -4102,5 +4299,135 @@ mod tests {
         assert_eq!(routed.params["groupTitle"], json!("Research"));
         assert_eq!(routed.params["newWindow"], json!(true));
         assert_eq!(routed.params["afterGroupTitle"], json!("Archive"));
+    }
+
+    #[test]
+    fn connectivity_report_includes_manual_steps_when_ping_fails() {
+        let entry = ProfileEntry {
+            browser: Browser::Edge,
+            extension_id: "mpglnmehddpkinfhheeahiicfieegcon".to_string(),
+            node_path: std::env::current_exe()
+                .expect("resolve current exe")
+                .display()
+                .to_string(),
+            host_path: "/tmp/tabctl-host.sh".to_string(),
+            data_dir: "/tmp/tabctl/profiles/edge".to_string(),
+            user_data_dir: None,
+        };
+
+        with_env_vars(&[("TABCTL_SOCKET", Some("tcp://127.0.0.1"))], || {
+            let report = profile_connectivity_report("edge", &entry);
+            assert_eq!(report["healthy"], json!(false));
+            assert_eq!(report["checks"]["pingOk"], json!(false));
+            let steps = report["manualSteps"]
+                .as_array()
+                .expect("manualSteps should be an array");
+            assert!(
+                steps.iter().any(|step| {
+                    step.as_str() == Some("Verify connection: tabctl --profile edge ping")
+                }),
+                "manual steps should include profile-scoped ping verification"
+            );
+            assert!(
+                steps.iter().any(|step| {
+                    step.as_str().map(|value| {
+                        value.contains(
+                            "tabctl setup --browser edge --name edge --extension-id mpglnmehddpkinfhheeahiicfieegcon",
+                        )
+                    }) == Some(true)
+                }),
+                "manual steps should include setup remediation with extension id"
+            );
+        });
+    }
+
+    #[test]
+    fn doctor_fix_reports_manual_remediation_for_connectivity_only_issue() {
+        let dir =
+            std::env::temp_dir().join(format!("tabctl-test-doctor-connectivity-{}", request_id()));
+        let home_dir = dir.join("home");
+        let config_dir = dir.join("config");
+        let data_dir = dir.join("data");
+        let profile_dir = data_dir.join("profiles").join("edge");
+        fs::create_dir_all(&profile_dir).expect("create profile dir");
+        let wrapper = profile_dir.join(if cfg!(windows) {
+            "tabctl-host.cmd"
+        } else {
+            "tabctl-host.sh"
+        });
+        fs::write(&wrapper, "echo ok\n").expect("write wrapper");
+
+        with_env_vars(
+            &[
+                ("TABCTL_SOCKET", Some("tcp://127.0.0.1")),
+                (
+                    "TABCTL_CONFIG_DIR",
+                    Some(config_dir.to_str().expect("config path")),
+                ),
+                (
+                    "TABCTL_DATA_DIR",
+                    Some(data_dir.to_str().expect("data path")),
+                ),
+                ("HOME", Some(home_dir.to_str().expect("home path"))),
+                ("XDG_CONFIG_HOME", None),
+                ("XDG_STATE_HOME", None),
+            ],
+            || {
+                let extension_id = "mpglnmehddpkinfhheeahiicfieegcon";
+                let manifest_dir = resolve_manifest_dir("edge").expect("resolve manifest dir");
+                fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+                let manifest = json!({
+                    "name": HOST_NAME,
+                    "description": "tabctl native host",
+                    "path": wrapper.display().to_string(),
+                    "type": "stdio",
+                    "allowed_origins": [format!("chrome-extension://{extension_id}/")]
+                });
+                fs::write(
+                    manifest_dir.join(format!("{HOST_NAME}.json")),
+                    serde_json::to_string_pretty(&manifest).expect("serialize manifest"),
+                )
+                .expect("write manifest");
+
+                let entry = ProfileEntry {
+                    browser: Browser::Edge,
+                    extension_id: extension_id.to_string(),
+                    node_path: std::env::current_exe()
+                        .expect("resolve current exe")
+                        .display()
+                        .to_string(),
+                    host_path: wrapper.display().to_string(),
+                    data_dir: profile_dir.display().to_string(),
+                    user_data_dir: None,
+                };
+
+                let evaluation =
+                    evaluate_doctor_profile("edge", &entry, true).expect("evaluate doctor profile");
+                assert!(
+                    !evaluation.healthy,
+                    "connectivity failure should remain unhealthy"
+                );
+                assert!(
+                    !evaluation.connectivity_healthy,
+                    "connectivity should be marked unhealthy"
+                );
+                assert_eq!(evaluation.report["repair"]["attempted"], json!(true));
+                assert_eq!(
+                    evaluation.report["connectivity"]["checks"]["pingOk"],
+                    json!(false)
+                );
+                let steps = evaluation.report["connectivity"]["manualSteps"]
+                    .as_array()
+                    .expect("manualSteps should exist for connectivity failure");
+                assert!(
+                    steps.iter().any(|step| {
+                        step.as_str() == Some("Verify connection: tabctl --profile edge ping")
+                    }),
+                    "manual steps should include ping verification"
+                );
+            },
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

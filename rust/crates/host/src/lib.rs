@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tabctl_shared::{
-    ClientInfo, NativeMessage, ProtocolError, RequestEnvelope, ResponseEnvelope, SocketEndpoint,
-    TabctlConfig, VersionInfo,
+    ClientInfo, NativeMessage, ProfileRegistry, ProtocolError, RequestEnvelope, ResponseEnvelope,
+    SocketEndpoint, TabctlConfig, VersionInfo,
 };
 
 use sha2::{Digest, Sha256};
@@ -180,6 +180,40 @@ fn resolve_socket_path(data_dir: &Path) -> String {
     }
 }
 
+fn resolve_base_data_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("TABCTL_DATA_DIR") {
+        if !path.trim().is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+    if let Ok(path) = std::env::var("TABCTL_STATE_DIR") {
+        if !path.trim().is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+    if let Ok(state_home) = std::env::var("XDG_STATE_HOME") {
+        return PathBuf::from(state_home).join("tabctl");
+    }
+    default_state_base().join("tabctl")
+}
+
+fn resolve_active_profile_name() -> Option<String> {
+    std::env::var("TABCTL_PROFILE")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn resolve_profile_data_dir(config_dir: &Path, profile_name: &str) -> Option<PathBuf> {
+    let profiles_path = config_dir.join("profiles.json");
+    let content = fs::read_to_string(&profiles_path).ok()?;
+    let registry = serde_json::from_str::<ProfileRegistry>(&content).ok()?;
+    registry
+        .profiles
+        .get(profile_name)
+        .map(|entry| PathBuf::from(&entry.data_dir))
+}
+
 fn resolve_config() -> TabctlConfig {
     let config_dir = std::env::var("TABCTL_CONFIG_DIR")
         .map(PathBuf::from)
@@ -190,11 +224,12 @@ fn resolve_config() -> TabctlConfig {
                 .join("tabctl")
         });
 
-    let data_dir = if let Ok(state_home) = std::env::var("XDG_STATE_HOME") {
-        PathBuf::from(state_home).join("tabctl")
-    } else {
-        default_state_base().join("tabctl")
-    };
+    let base_data_dir = resolve_base_data_dir();
+    let active_profile_name = resolve_active_profile_name();
+    let data_dir = active_profile_name
+        .as_deref()
+        .and_then(|profile_name| resolve_profile_data_dir(&config_dir, profile_name))
+        .unwrap_or_else(|| base_data_dir.clone());
 
     let socket_path =
         std::env::var("TABCTL_SOCKET").unwrap_or_else(|_| resolve_socket_path(&data_dir));
@@ -202,12 +237,12 @@ fn resolve_config() -> TabctlConfig {
     TabctlConfig {
         config_dir: config_dir.to_string_lossy().to_string(),
         data_dir: data_dir.to_string_lossy().to_string(),
-        base_data_dir: data_dir.to_string_lossy().to_string(),
+        base_data_dir: base_data_dir.to_string_lossy().to_string(),
         socket_path,
         undo_log: data_dir.join("undo.jsonl").to_string_lossy().to_string(),
         wrapper_dir: data_dir.to_string_lossy().to_string(),
         policy_path: config_dir.join("policy.json").to_string_lossy().to_string(),
-        active_profile_name: None,
+        active_profile_name,
     }
 }
 
@@ -1257,6 +1292,46 @@ const _: () = assert!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn with_env_vars<F>(vars: &[(&str, Option<&str>)], run: F)
+    where
+        F: FnOnce(),
+    {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let saved: Vec<(String, Option<OsString>)> = vars
+            .iter()
+            .map(|(key, _)| ((*key).to_string(), std::env::var_os(key)))
+            .collect();
+        for (key, value) in vars {
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+        for (key, value) in saved {
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(&key, value),
+                    None => std::env::remove_var(&key),
+                }
+            }
+        }
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
+        }
+    }
 
     fn temp_undo_path() -> PathBuf {
         let name = format!("tabctl-rust-host-{}-{}.jsonl", now_ms(), create_id("test"));
@@ -1822,5 +1897,66 @@ mod tests {
             panic!("expected ping forward without auth check");
         };
         assert_eq!(native.id, "req-no-tcp");
+    }
+
+    #[test]
+    fn resolve_config_uses_profile_data_dir_when_tabctl_profile_set() {
+        let root = std::env::temp_dir().join(format!("tabctl-host-profile-cfg-{}", now_ms()));
+        let config_dir = root.join("config");
+        let base_data_dir = root.join("state").join("tabctl");
+        let profile_data_dir = root
+            .join("state")
+            .join("tabctl")
+            .join("profiles")
+            .join("edge");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        std::fs::create_dir_all(&profile_data_dir).expect("create profile data dir");
+        let profiles_path = config_dir.join("profiles.json");
+        std::fs::write(
+            &profiles_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "default": "edge",
+                "profiles": {
+                    "edge": {
+                        "browser": "edge",
+                        "extensionId": "ext",
+                        "nodePath": "/usr/bin/tabctl",
+                        "hostPath": "/tmp/tabctl-host.sh",
+                        "dataDir": profile_data_dir.display().to_string()
+                    }
+                }
+            }))
+            .expect("serialize profiles"),
+        )
+        .expect("write profiles");
+
+        with_env_vars(
+            &[
+                (
+                    "TABCTL_CONFIG_DIR",
+                    Some(config_dir.to_str().expect("config dir")),
+                ),
+                (
+                    "TABCTL_DATA_DIR",
+                    Some(base_data_dir.to_str().expect("base data dir")),
+                ),
+                ("TABCTL_PROFILE", Some("edge")),
+                ("TABCTL_SOCKET", None),
+                ("TABCTL_STATE_DIR", None),
+                ("XDG_STATE_HOME", None),
+            ],
+            || {
+                let config = resolve_config();
+                assert_eq!(config.active_profile_name.as_deref(), Some("edge"));
+                assert_eq!(config.data_dir, profile_data_dir.display().to_string());
+                assert_eq!(config.base_data_dir, base_data_dir.display().to_string());
+                assert!(
+                    config.socket_path.ends_with("profiles/edge/tabctl.sock")
+                        || config.socket_path.ends_with("profiles\\edge\\tabctl.sock")
+                );
+            },
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

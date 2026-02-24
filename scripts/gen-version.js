@@ -39,6 +39,19 @@ function isDirty() {
   }
 }
 
+function toExtensionVersion(version) {
+  const base = String(version || "0.0.0")
+    .split("-")[0]
+    .split("+")[0]
+    .trim();
+  const parts = base.split(".").map((part) => {
+    const n = Number.parseInt(part, 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  });
+  while (parts.length < 3) parts.push(0);
+  return parts.slice(0, 4).join(".");
+}
+
 const baseVersion = readPackageVersion();
 const mode = (() => {
   if (process.env.TABCTL_VERSION_MODE) {
@@ -65,7 +78,7 @@ fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
 try {
   const templateRaw = fs.readFileSync(manifestTemplatePath, "utf8");
   const manifest = JSON.parse(templateRaw);
-  manifest.version = baseVersion;
+  manifest.version = toExtensionVersion(baseVersion);
   manifest.version_name = version;
   const nextManifest = JSON.stringify(manifest, null, 2) + "\n";
   const currentManifest = fs.existsSync(manifestPath) ? fs.readFileSync(manifestPath, "utf8") : "";
