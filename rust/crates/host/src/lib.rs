@@ -365,17 +365,19 @@ fn value_object(input: Option<Value>) -> Map<String, Value> {
         .unwrap_or_default()
 }
 
-fn add_host_metadata(
-    mut data: Map<String, Value>,
-    ext_version: Option<String>,
-    ext_component: Option<String>,
-) -> Map<String, Value> {
-    if let Some(v) = ext_version {
-        data.insert("extensionVersion".to_string(), Value::String(v));
-    }
-    if let Some(c) = ext_component {
-        data.insert("extensionComponent".to_string(), Value::String(c));
-    }
+fn add_ping_metadata(mut data: Map<String, Value>) -> Map<String, Value> {
+    let extension_base_version = data
+        .get("baseVersion")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let extension_version = data
+        .get("version")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    data.insert(
+        "hostVersion".to_string(),
+        Value::String(host_version().to_string()),
+    );
     data.insert(
         "hostBaseVersion".to_string(),
         Value::String(base_version().to_string()),
@@ -385,6 +387,12 @@ fn add_host_metadata(
         Value::String(git_sha().to_string()),
     );
     data.insert("hostDirty".to_string(), Value::Bool(is_dirty()));
+    let versions_in_sync = extension_base_version
+        .as_deref()
+        .map(|v| v == base_version())
+        .or_else(|| extension_version.as_deref().map(|v| v == host_version()))
+        .unwrap_or(false);
+    data.insert("versionsInSync".to_string(), Value::Bool(versions_in_sync));
     data
 }
 
@@ -686,14 +694,16 @@ impl HostState {
         }
 
         let message_data = value_object(message.data.clone());
-        let extension_version = message_data
-            .get("version")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
-        let extension_component = message_data
-            .get("component")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
+
+        if pending.action == "ping" {
+            let data = add_ping_metadata(message_data);
+            let mut resp = base_response(true, Some("ping".to_string()), Some(message_id));
+            resp.data = Some(Value::Object(data));
+            return vec![HostEffect::Respond {
+                client_id: pending.client_id,
+                payload: resp,
+            }];
+        }
 
         if pending.action == "analyze" {
             let analysis_id = create_id("analysis");
@@ -703,7 +713,7 @@ impl HostState {
                     data: message_data.clone(),
                 },
             );
-            let mut data = add_host_metadata(message_data, extension_version, extension_component);
+            let mut data = message_data;
             data.insert("analysisId".to_string(), Value::String(analysis_id));
             let mut resp = base_response(true, Some("analyze".to_string()), Some(message_id));
             resp.data = Some(Value::Object(data));
@@ -738,7 +748,7 @@ impl HostState {
                 append_undo_record(&self.undo_log, &record);
             }
 
-            let mut data = add_host_metadata(message_data, extension_version, extension_component);
+            let mut data = message_data;
             if let Some(txid) = pending.txid {
                 data.insert("txid".to_string(), Value::String(txid));
             } else {
@@ -752,9 +762,8 @@ impl HostState {
             }];
         }
 
-        let data = add_host_metadata(message_data, extension_version, extension_component);
         let mut resp = base_response(true, Some(pending.action), Some(message_id));
-        resp.data = Some(Value::Object(data));
+        resp.data = Some(Value::Object(message_data));
         vec![HostEffect::Respond {
             client_id: pending.client_id,
             payload: resp,
@@ -1663,6 +1672,10 @@ mod tests {
                 ),
                 ("version".to_string(), Value::String("1.2.3".to_string())),
                 (
+                    "baseVersion".to_string(),
+                    Value::String("1.2.3".to_string()),
+                ),
+                (
                     "component".to_string(),
                     Value::String("extension".to_string()),
                 ),
@@ -1683,15 +1696,22 @@ mod tests {
             data.get("runtimeId").and_then(|v| v.as_str()),
             Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
         );
+        assert_eq!(data.get("version").and_then(|v| v.as_str()), Some("1.2.3"));
         assert_eq!(
-            data.get("extensionVersion").and_then(|v| v.as_str()),
-            Some("1.2.3")
-        );
-        assert_eq!(
-            data.get("extensionComponent").and_then(|v| v.as_str()),
+            data.get("component").and_then(|v| v.as_str()),
             Some("extension")
         );
+        assert_eq!(
+            data.get("hostVersion").and_then(|v| v.as_str()),
+            Some(host_version())
+        );
         assert!(data.get("hostBaseVersion").is_some());
+        assert_eq!(
+            data.get("versionsInSync").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert!(data.get("extensionVersion").is_none());
+        assert!(data.get("extensionComponent").is_none());
         assert!(payload.ok);
     }
 
@@ -1721,6 +1741,51 @@ mod tests {
             .expect("version data");
         assert_eq!(data.get("component").and_then(|v| v.as_str()), Some("host"));
         assert!(data.get("version").is_some());
+    }
+
+    #[test]
+    fn non_ping_response_does_not_include_host_version_metadata() {
+        let mut state = HostState::new(temp_undo_path());
+        let effects = state.handle_cli_request(
+            12,
+            RequestEnvelope {
+                id: Some("req-list".to_string()),
+                action: "list".to_string(),
+                params: Value::Object(Map::new()),
+                auth_token: None,
+            },
+        );
+        let HostEffect::SendNative(native_req) = &effects[0] else {
+            panic!("expected list forward");
+        };
+        assert_eq!(native_req.id, "req-list");
+
+        let native_resp = NativeMessage {
+            id: native_req.id.clone(),
+            action: None,
+            ok: Some(true),
+            progress: None,
+            params: Some(Value::Object(Map::new())),
+            data: Some(Value::Object(Map::from_iter([(
+                "windows".to_string(),
+                Value::Array(Vec::new()),
+            )]))),
+            error: None,
+        };
+        let effects = state.handle_native_message(native_resp);
+        let HostEffect::Respond { payload, .. } = &effects[0] else {
+            panic!("expected list response");
+        };
+        let data = payload
+            .data
+            .as_ref()
+            .and_then(|v| v.as_object())
+            .expect("list response data");
+        assert!(data.get("hostVersion").is_none());
+        assert!(data.get("hostBaseVersion").is_none());
+        assert!(data.get("hostGitSha").is_none());
+        assert!(data.get("hostDirty").is_none());
+        assert!(data.get("versionsInSync").is_none());
     }
 
     // TCP bridge tests — run on all platforms to validate bridge fundamentals

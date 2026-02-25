@@ -57,8 +57,8 @@ function sendResponse(id: string, ok: boolean, payload: unknown) {
 
   if (ok) {
     const data = typeof payload === "object" && payload !== null
-      ? { ...(payload as Record<string, unknown>), component: "extension", version: VERSION_INFO.version, baseVersion: VERSION_INFO.baseVersion }
-      : { payload, component: "extension", version: VERSION_INFO.version, baseVersion: VERSION_INFO.baseVersion };
+      ? payload
+      : { payload };
     state.port.postMessage({ id, ok: true, data });
     return;
   }

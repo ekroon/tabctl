@@ -84,38 +84,55 @@ npm install
 npm run build
 ```
 
+Local development shortcuts are available via `Makefile`:
+
+```bash
+make dev-up BROWSER=edge PROFILE=edge
+make dev-run PROFILE=edge CMD="list --all --json"
+make dev-run-release-like PROFILE=edge CMD="list --all --json"
+```
+
+If `npm` is not on PATH in your shell, override it per command:
+```bash
+make dev-build NPM=~/.local/share/mise/shims/npm
+```
+
 ### 2. Set up your browser
 
-Run setup with your browser's extension ID — it writes the manifest, wrapper script, and registers the profile:
+Run setup to write the manifest, wrapper script, and profile registration:
 
 <!-- test: "setup explicit --extension-id overrides auto-derived ID" -->
 ```bash
-tabctl setup --browser chrome --extension-id <your-extension-id>
+tabctl setup --browser chrome
 ```
 
 This will:
 1. Write the native messaging manifest and wrapper script
 2. Register the browser profile in `profiles.json`
 3. Download the version-pinned release extension asset (`tabctl-extension.zip` + `.sha256`) into the tabctl data directory
-4. Copy the extension to a stable location (`~/.local/state/tabctl/extension/`)
-5. Print the path for loading as an unpacked extension in `chrome://extensions`
+4. Sync the managed unpacked extension directory to the tabctl version (`~/.local/state/tabctl/extension/`)
+5. Derive the extension ID from the managed extension path (or use explicit `--extension-id`)
+6. Print the path for loading as an unpacked extension in `chrome://extensions`
 
-Without `--extension-id`, setup only downloads the extension and outputs JSON (no manifest or wrapper writes).
+For local dev builds (no GitHub download), point setup at an unpacked directory:
+```bash
+tabctl setup --browser chrome --extension-dir dist/extension
+```
 
 > **Edge?** Use `--browser edge` and load from `edge://extensions` instead.
 >
 > **Cross-platform:** setup works on macOS, Linux, and Windows. On Windows, setup verifies connectivity after writing setup artifacts and checks the runtime extension ID reported by the browser. Connectivity failures and runtime extension ID mismatches exit non-zero and print manual recovery steps (including expected vs runtime IDs).
 
 Optional setup release overrides:
-- Flags: `--release-repo`, `--release-tag` (or `--release-version`), `--release-asset`, `--skip-extension-download`
-- Env vars: `TABCTL_RELEASE_REPO`, `TABCTL_RELEASE_TAG`, `TABCTL_RELEASE_ASSET`, `TABCTL_SETUP_FETCH_EXTENSION=0`
+- Flags: `--extension-dir`, `--release-repo`, `--release-tag` (or `--release-version`), `--release-asset`, `--skip-extension-download`
+- Env vars: `TABCTL_SETUP_EXTENSION_DIR`, `TABCTL_RELEASE_REPO`, `TABCTL_RELEASE_TAG`, `TABCTL_RELEASE_ASSET`, `TABCTL_SETUP_FETCH_EXTENSION=0`
 - Precedence: flags override env vars, then built-in defaults; if download fails, setup continues and includes warning details in setup output.
 
 ### 3. Verify and explore
 
 <!-- test: "ping sends ping action", "list sends list action" -->
 ```bash
-tabctl ping       # check the connection
+tabctl ping       # check connection + runtime version sync
 tabctl list       # see your open tabs
 ```
 
@@ -244,8 +261,25 @@ Relevant knobs: `TABCTL_SOCKET`, `TABCTL_TCP_PORT`, `TABCTL_PROFILE`, `TABCTL_DA
 - `tabctl setup` fails with `Windows setup verification failed`: check `data.verification.reason` in JSON output (`ping-timeout`, `socket-not-found`, `socket-refused`, `ping-not-ok`, `extension-id-mismatch`), then follow printed manual steps.
 - Runtime ID mismatch (`extension-id-mismatch`): compare expected vs runtime IDs from setup output, then rerun setup with the runtime ID shown by `edge://extensions` / `chrome://extensions`:
   - `tabctl setup --browser <edge|chrome> --extension-id <runtime-id>`
+- Runtime command runs can auto-sync extension files when host/extension versions drift; rerun `tabctl reload` if the browser does not pick up changes immediately.
+- For local release-like testing while developing, force runtime sync behavior with `TABCTL_AUTO_SYNC_MODE=release-like`.
+- Disable runtime sync entirely with `TABCTL_AUTO_SYNC_MODE=off`.
+- `tabctl ping --json` is the canonical runtime version check (`data.versionsInSync`, `data.hostBaseVersion`, `data.baseVersion`).
+- Version metadata is intentionally health-only: regular command payloads (`open`, `list`, etc.) do not include version fields.
 - `tabctl ping` returns connect errors (`ENOENT`, `ECONNREFUSED`, timeout): ensure extension is loaded and active, rerun `tabctl setup`, and in WSL verify `TABCTL_TCP_PORT` or `<dataDir>/tcp-port` matches a listening localhost port.
 - `tabctl doctor --fix --json` includes per-profile connectivity diagnostics in `data.profiles[].connectivity`; if ping remains unhealthy after local repairs, follow `manualSteps`.
+
+Local release-like sync test recipe:
+```bash
+# 1) Install an older extension release into managed extension path
+tabctl setup --browser edge --extension-id <extension-id> --release-tag v0.5.2
+
+# 2) Run the current binary with forced release-like auto-sync
+TABCTL_AUTO_SYNC_MODE=release-like cargo run --manifest-path rust/Cargo.toml -p tabctl -- list --all
+
+# 3) Verify host/extension base versions are back in sync
+tabctl ping --json
+```
 
 ## Multi-Browser Setup
 

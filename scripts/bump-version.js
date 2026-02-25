@@ -6,6 +6,12 @@ const path = require("path");
 
 const root = path.resolve(__dirname, "..");
 const pkgPath = path.join(root, "package.json");
+const winPkgPath = path.join(root, "packages", "win32-x64", "package.json");
+const cargoPackagePaths = [
+  path.join(root, "rust", "crates", "shared", "Cargo.toml"),
+  path.join(root, "rust", "crates", "host", "Cargo.toml"),
+  path.join(root, "rust", "crates", "tabctl", "Cargo.toml"),
+];
 
 function readPackage() {
   const raw = fs.readFileSync(pkgPath, "utf8");
@@ -14,6 +20,25 @@ function readPackage() {
 
 function writePackage(pkg) {
   fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf8");
+}
+
+function syncJsonPackageVersion(filePath, version) {
+  const raw = fs.readFileSync(filePath, "utf8");
+  const parsed = JSON.parse(raw);
+  parsed.version = version;
+  fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2) + "\n", "utf8");
+}
+
+function syncCargoPackageVersion(filePath, version) {
+  const raw = fs.readFileSync(filePath, "utf8");
+  const next = raw.replace(
+    /(\[package\][\s\S]*?\nversion\s*=\s*")([^"]+)(")/m,
+    `$1${version}$3`,
+  );
+  if (next === raw) {
+    throw new Error(`Could not update [package].version in ${filePath}`);
+  }
+  fs.writeFileSync(filePath, next, "utf8");
 }
 
 function parseVersion(version) {
@@ -90,4 +115,8 @@ const current = parseVersion(pkg.version || "0.0.0");
 const next = bump(current, kind);
 pkg.version = formatVersion(next);
 writePackage(pkg);
+syncJsonPackageVersion(winPkgPath, pkg.version);
+for (const cargoPath of cargoPackagePaths) {
+  syncCargoPackageVersion(cargoPath, pkg.version);
+}
 process.stdout.write(`${pkg.version}\n`);

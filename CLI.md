@@ -335,9 +335,11 @@ Options:
 ### setup
 Install the native host manifest, wrapper script, and register a profile. Works on macOS, Linux, and Windows.
 Also attempts to download the version-matched release extension asset (`tabctl-extension.zip` + `.sha256`) into the tabctl data directory.
+Setup can also sync from a local unpacked extension directory with `--extension-dir` (or `TABCTL_SETUP_EXTENSION_DIR`) for local development.
 Options:
 - `--browser edge|chrome` (required)
-- `--extension-id <id>` (required for full setup; when provided, writes the wrapper script, native messaging manifest, and registers the profile)
+- `--extension-id <id>` (optional; explicit override of the derived extension ID)
+- `--extension-dir <path>` (optional; local unpacked extension directory, e.g. `dist/extension`)
 - `--user-data-dir <path>` (optional; write manifest to a custom Chrome/Edge profile directory instead of the system-wide location)
 - `--name <name>` (optional; profile name, defaults to browser name)
 - `--release-repo <owner/repo>` (optional; or `TABCTL_RELEASE_REPO`)
@@ -346,11 +348,17 @@ Options:
 - `--skip-extension-download` (optional; or `TABCTL_SETUP_FETCH_EXTENSION=0`)
 - `--dev` (coming soon; dev/CI mode via CDP)
 
-When `--extension-id` is provided, setup writes the wrapper script, native messaging manifest, and registers the profile — this is the full setup path. Without `--extension-id`, setup only downloads the extension and outputs JSON (no file writes).
+By default, setup derives the extension ID from the managed extension path and runs the full setup path. Use `--extension-id` to override the derived ID.
+Managed extension path for load-unpacked workflows: `<dataDir>/extension/`.
 
 Each run creates or updates a profile in `profiles.json`. The first profile registered becomes the default.
 Release override precedence: CLI flags take precedence over environment variables, then built-in defaults.
 If extension release download fails, setup continues and reports `extension_download_failed` in `data.warnings` with fallback path details.
+
+Local dev example (no release download):
+```bash
+tabctl setup --browser edge --extension-dir dist/extension
+```
 
 On Windows, setup verifies host connectivity by default after writing setup artifacts and compares the browser-reported runtime extension ID with the expected ID. Connectivity failures and runtime extension ID mismatches exit non-zero with manual recovery steps (including expected vs runtime IDs).
 
@@ -370,7 +378,7 @@ tabctl doctor              # show health status
 tabctl doctor --fix        # auto-repair broken profiles
 ```
 
-`--fix` repairs local profile artifacts, then re-runs connectivity checks. If ping is still unhealthy, doctor returns manual remediation steps under each profile's `connectivity.manualSteps`.
+`--fix` repairs local profile artifacts, attempts extension sync to the current tabctl version, then re-runs connectivity checks. If ping is still unhealthy, doctor returns manual remediation steps under each profile's `connectivity.manualSteps`.
 
 ### policy
 Show the current policy summary and path, or create a default policy file.
@@ -464,6 +472,7 @@ tabctl version
 Environment:
 - `TABCTL_VERSION_MODE=release` (force release version without git sha)
 - `TABCTL_VERSION_MODE=dev` (force dev version with git sha)
+- `TABCTL_AUTO_SYNC_MODE=auto|release-like|off` (runtime extension auto-sync mode)
 
 ### profile-list
 List configured profiles.
@@ -491,10 +500,12 @@ tabctl profile-remove <name>
 ```
 
 ### ping
-Check host/extension connectivity.
+Check host/extension connectivity and runtime version sync status.
 ```bash
 tabctl ping
 ```
+Use `tabctl ping --json` as the canonical runtime version surface (`data.versionsInSync`, `data.hostBaseVersion`, `data.baseVersion`).
+Non-health command outputs (`open`, `list`, etc.) intentionally do not include version metadata.
 
 ### host
 Run as native messaging host (stdio mode). This subcommand is invoked automatically by the browser via the native messaging manifest — it is not typically run manually.
@@ -584,10 +595,12 @@ Notes:
 | `TABCTL_RELEASE_ASSET` | Override setup release asset filename |
 | `TABCTL_RELEASE_REPO` | Override setup release repository (`owner/repo`) |
 | `TABCTL_RELEASE_TAG` | Override setup release tag/version |
+| `TABCTL_SETUP_EXTENSION_DIR` | Local unpacked extension directory for setup sync |
 | `TABCTL_AUTH_TOKEN` | Override TCP auth token (skips file-based discovery) |
 | `TABCTL_SOCKET` | Override socket endpoint (`unix://`, `pipe://`, `tcp://`) |
 | `TABCTL_STATE_DIR` | Override state directory fallback (`$XDG_STATE_HOME/tabctl`) |
 | `TABCTL_SETUP_FETCH_EXTENSION` | Set to `0` to skip setup extension release download |
+| `TABCTL_AUTO_SYNC_MODE` | Runtime extension sync mode: `auto` (default), `release-like`, or `off` |
 | `TABCTL_HOST_TCP` | Set to `1` to enable TCP listener on the host (all platforms) |
 | `TABCTL_TRANSPORT` | Set to `tcp` to use TCP transport in the CLI |
 | `TABCTL_TCP_PORT` | Force localhost TCP endpoint (WSL/Linux clients) |
@@ -599,6 +612,8 @@ Notes:
 - For `extension-id-mismatch`, rerun setup with the runtime extension ID shown by the browser:
   - `tabctl setup --browser <edge|chrome> --extension-id <runtime-id>`
 - `tabctl ping` connect failures (`ENOENT`/`ECONNREFUSED`/timeout) usually mean host/extension disconnect; reload extension, rerun setup, and in WSL confirm `<dataDir>/tcp-port` or `TABCTL_TCP_PORT` matches a listening `127.0.0.1` port.
+- For local release-like sync testing while developing, force runtime behavior with `TABCTL_AUTO_SYNC_MODE=release-like` on a non-ping command (example: `TABCTL_AUTO_SYNC_MODE=release-like tabctl list --all`).
+- Disable runtime sync checks with `TABCTL_AUTO_SYNC_MODE=off`.
 - For profile-targeted diagnostics and remediation hints, run `tabctl doctor --fix --json` and inspect `data.profiles[].connectivity`.
 
 ## Profiles

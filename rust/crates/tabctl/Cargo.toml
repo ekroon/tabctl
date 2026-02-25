@@ -1,6 +1,6 @@
 [package]
 name = "tabctl"
-version = "0.6.0-alpha.4"
+version = "0.6.0-alpha.5"
 edition = "2021"
 publish = false
 
@@ -10,6 +10,7 @@ dirs = "5"
 dunce = "1"
 serde_json = "1"
 sha2 = "0.10"
+zip = "2"
 tabctl-host = { path = "../host" }
 tabctl-shared = { path = "../shared" }
 

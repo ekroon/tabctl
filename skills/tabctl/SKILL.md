@@ -51,8 +51,10 @@ If scope is unclear, ask for it before running mutating commands.
 ## Troubleshooting
 
 - Check profile health: `tabctl doctor`
-- Auto-repair broken profiles (e.g., after Node upgrade): `tabctl doctor --fix`
-- Verify connection: `tabctl ping`
+- Auto-repair broken profiles and resync extension files: `tabctl doctor --fix`
+- Verify connection + runtime version sync: `tabctl ping --json`
+- Read version state only from `ping`/`version` surfaces (not from `open`/`list` output payloads).
+- For local release-like sync checks during development, run a scoped command with `TABCTL_AUTO_SYNC_MODE=release-like` (example: `TABCTL_AUTO_SYNC_MODE=release-like tabctl list --all`).
 
 ## Output flags
 

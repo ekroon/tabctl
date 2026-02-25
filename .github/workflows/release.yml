@@ -28,6 +28,47 @@ jobs:
             echo "Release tag ($tag) must match package version tag ($expected_tag)." >&2
             exit 1
           fi
+          node - <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+          const root = process.cwd();
+          const packageVersion = require(path.join(root, "package.json")).version;
+          const winPackageVersion = require(path.join(root, "packages", "win32-x64", "package.json")).version;
+          const cargoFiles = [
+            "rust/crates/shared/Cargo.toml",
+            "rust/crates/host/Cargo.toml",
+            "rust/crates/tabctl/Cargo.toml",
+          ];
+          const mismatches = [];
+
+          const readCargoPackageVersion = (relativePath) => {
+            const content = fs.readFileSync(path.join(root, relativePath), "utf8");
+            const match = content.match(/\[package\][\s\S]*?\nversion\s*=\s*"([^"]+)"/m);
+            if (!match) {
+              throw new Error(`Could not find [package].version in ${relativePath}`);
+            }
+            return match[1];
+          };
+
+          if (winPackageVersion !== packageVersion) {
+            mismatches.push(`packages/win32-x64/package.json=${winPackageVersion} (expected ${packageVersion})`);
+          }
+
+          for (const file of cargoFiles) {
+            const cargoVersion = readCargoPackageVersion(file);
+            if (cargoVersion !== packageVersion) {
+              mismatches.push(`${file}=${cargoVersion} (expected ${packageVersion})`);
+            }
+          }
+
+          if (mismatches.length > 0) {
+            console.error("Version drift detected between source manifests:");
+            for (const mismatch of mismatches) {
+              console.error(`- ${mismatch}`);
+            }
+            process.exit(1);
+          }
+          NODE
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           if [ '${{ github.event.release.prerelease }}' = 'true' ]; then
             if [[ "$version" == *-alpha.* ]]; then

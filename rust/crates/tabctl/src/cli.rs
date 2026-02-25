@@ -2,7 +2,7 @@ use clap::{value_parser, Arg, ArgAction, ArgMatches, Command};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -14,13 +14,31 @@ use tabctl_shared::{
     Browser, ProfileEntry, ProfileRegistry, RequestEnvelope, ResponseEnvelope, SocketEndpoint,
 };
 
-#[cfg(windows)]
 use sha2::{Digest, Sha256};
 
 const WSL_TCP_PORT_FILENAME: &str = "tcp-port";
 #[cfg(target_os = "linux")]
 const WSL_TCP_PORT_FALLBACK: u16 = 39_001;
 const AUTH_TOKEN_FILENAME: &str = "auth-token";
+const EXTENSION_ACTIVE_DIR_NAME: &str = "extension";
+const EXTENSION_RELEASES_DIR_NAME: &str = "extension-releases";
+const EXTENSION_VERSIONS_DIR_NAME: &str = "extension-versions";
+const EXTENSION_VERSION_MARKER_FILE: &str = ".tabctl-version";
+
+#[derive(Debug, Clone)]
+struct ExtensionSyncResult {
+    updated: bool,
+    target_version: String,
+    installed_version: Option<String>,
+    active_path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoSyncMode {
+    Auto,
+    ReleaseLike,
+    Off,
+}
 
 pub fn run<I, T>(args: I) -> Result<(), String>
 where
@@ -74,7 +92,11 @@ where
         routed.profile.as_deref(),
         routed.progress,
     )?;
-    render_response(&response, routed.json, routed.pretty)
+    let rendered = render_response(&response, routed.json, routed.pretty);
+    if rendered.is_ok() {
+        maybe_runtime_extension_auto_sync(&routed.action, routed.profile.as_deref());
+    }
+    rendered
 }
 
 #[derive(Debug)]
@@ -321,7 +343,7 @@ fn resolve_extension_release_source(
         path
     } else {
         PathBuf::from(resolve_data_dir(None)?)
-            .join("extension")
+            .join(EXTENSION_RELEASES_DIR_NAME)
             .join(version)
             .join(asset)
     };
@@ -357,6 +379,562 @@ fn download_extension_asset(source: &ExtensionReleaseSource) -> Result<Value, St
         ));
     }
     Ok(source.to_json())
+}
+
+fn extension_active_dir(data_dir: &str) -> PathBuf {
+    PathBuf::from(data_dir).join(EXTENSION_ACTIVE_DIR_NAME)
+}
+
+fn extension_versions_dir(data_dir: &str) -> PathBuf {
+    PathBuf::from(data_dir).join(EXTENSION_VERSIONS_DIR_NAME)
+}
+
+fn extension_version_dir(data_dir: &str, version: &str) -> PathBuf {
+    extension_versions_dir(data_dir).join(version)
+}
+
+fn extension_release_checksum_path(archive_path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.sha256", archive_path.display()))
+}
+
+fn normalize_base_version(version: &str) -> &str {
+    version
+        .split_once('-')
+        .map(|(base, _)| base)
+        .or_else(|| version.split_once('+').map(|(base, _)| base))
+        .unwrap_or(version)
+}
+
+fn parse_base_triplet(version: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = normalize_base_version(version)
+        .split('.')
+        .map(|segment| segment.parse::<u64>().ok());
+    Some((parts.next()??, parts.next()??, parts.next()??))
+}
+
+fn compare_base_versions(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    let a_parts = parse_base_triplet(a)?;
+    let b_parts = parse_base_triplet(b)?;
+    Some(a_parts.cmp(&b_parts))
+}
+
+fn chromium_extension_id_from_digest(digest: &[u8]) -> String {
+    digest
+        .iter()
+        .take(16)
+        .flat_map(|byte| [((byte >> 4) & 0x0f) + b'a', (byte & 0x0f) + b'a'])
+        .map(char::from)
+        .collect::<String>()
+}
+
+fn derive_extension_id_from_extension_path(path: &Path) -> Result<String, String> {
+    let canonical = fs::canonicalize(path).map_err(|e| {
+        format!(
+            "Failed to resolve extension path {} for ID derivation: {e}",
+            path.display()
+        )
+    })?;
+    let normalized = canonical.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    let normalized = {
+        let mut normalized = normalized;
+        if normalized.len() > 1 && normalized.as_bytes()[1] == b':' {
+            if let Some(first) = normalized.chars().next() {
+                normalized.replace_range(0..1, &first.to_ascii_lowercase().to_string());
+            }
+        }
+        normalized
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(normalized.as_bytes());
+    let digest = hasher.finalize();
+    Ok(chromium_extension_id_from_digest(digest.as_ref()))
+}
+
+fn read_extension_manifest_version(extension_dir: &Path) -> Option<String> {
+    let manifest_path = extension_dir.join("manifest.json");
+    let raw = fs::read_to_string(manifest_path).ok()?;
+    let parsed: Value = serde_json::from_str(&raw).ok()?;
+    parsed
+        .get("version")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn read_installed_extension_version(data_dir: &str) -> Option<String> {
+    let active_dir = extension_active_dir(data_dir);
+    let marker_path = active_dir.join(EXTENSION_VERSION_MARKER_FILE);
+    if let Ok(content) = fs::read_to_string(marker_path) {
+        let version = content.trim();
+        if !version.is_empty() {
+            return Some(version.to_string());
+        }
+    }
+    read_extension_manifest_version(&active_dir)
+}
+
+fn download_extension_checksum(source: &ExtensionReleaseSource) -> Result<PathBuf, String> {
+    let checksum_path = extension_release_checksum_path(&source.path);
+    if let Some(parent) = checksum_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create checksum output directory: {e}"))?;
+    }
+    let checksum_url = format!("{}.sha256", source.url);
+    let status = ProcessCommand::new("curl")
+        .arg("--fail")
+        .arg("--location")
+        .arg("--silent")
+        .arg("--output")
+        .arg(&checksum_path)
+        .arg(&checksum_url)
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| format!("Failed to execute curl: {e}"))?;
+    if !status.success() {
+        return Err(format!(
+            "Failed to download extension checksum from {}",
+            checksum_url
+        ));
+    }
+    Ok(checksum_path)
+}
+
+fn read_expected_sha256(checksum_path: &Path) -> Result<String, String> {
+    let content = fs::read_to_string(checksum_path).map_err(|e| {
+        format!(
+            "Failed to read checksum file {}: {e}",
+            checksum_path.display()
+        )
+    })?;
+    let expected = content
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| format!("Checksum file {} is empty", checksum_path.display()))?
+        .trim()
+        .to_lowercase();
+    if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "Checksum file {} does not contain a valid SHA256 digest",
+            checksum_path.display()
+        ));
+    }
+    Ok(expected)
+}
+
+fn file_sha256(path: &Path) -> Result<String, String> {
+    let mut file =
+        fs::File::open(path).map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hasher.finalize();
+    Ok(digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>())
+}
+
+fn verify_extension_asset_checksum(
+    source: &ExtensionReleaseSource,
+    checksum_path: &Path,
+) -> Result<(), String> {
+    let expected = read_expected_sha256(checksum_path)?;
+    let actual = file_sha256(&source.path)?;
+    if expected != actual {
+        return Err(format!(
+            "Extension checksum mismatch for {} (expected {}, got {})",
+            source.path.display(),
+            expected,
+            actual
+        ));
+    }
+    Ok(())
+}
+
+fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::create_dir_all(destination)
+        .map_err(|e| format!("Failed to create {}: {e}", destination.display()))?;
+    let entries = fs::read_dir(source)
+        .map_err(|e| format!("Failed to read directory {}: {e}", source.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to read directory entry: {e}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("Failed to read file type: {e}"))?;
+        let src_path = entry.path();
+        let dest_path = destination.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dest_path)?;
+        } else if file_type.is_file() || file_type.is_symlink() {
+            if let Some(parent) = dest_path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
+            }
+            fs::copy(&src_path, &dest_path).map_err(|e| {
+                format!(
+                    "Failed to copy {} -> {}: {e}",
+                    src_path.display(),
+                    dest_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn extract_extension_archive_to_version(
+    source: &ExtensionReleaseSource,
+    version_dir: &Path,
+) -> Result<(), String> {
+    let parent = version_dir
+        .parent()
+        .ok_or_else(|| "Invalid extension version directory path".to_string())?;
+    fs::create_dir_all(parent).map_err(|e| {
+        format!(
+            "Failed to create extension versions directory {}: {e}",
+            parent.display()
+        )
+    })?;
+    let staging = parent.join(format!(
+        ".staging-{}-{}",
+        version_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("extension"),
+        now_ms()
+    ));
+    if staging.exists() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    fs::create_dir_all(&staging).map_err(|e| {
+        format!(
+            "Failed to create staging directory {}: {e}",
+            staging.display()
+        )
+    })?;
+
+    let file = fs::File::open(&source.path).map_err(|e| {
+        format!(
+            "Failed to open extension archive {}: {e}",
+            source.path.display()
+        )
+    })?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| {
+        format!(
+            "Failed to read extension archive {}: {e}",
+            source.path.display()
+        )
+    })?;
+
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| format!("Failed to read zip entry at index {i}: {e}"))?;
+        let entry_path = entry
+            .enclosed_name()
+            .ok_or_else(|| format!("Unsafe zip entry path: {}", entry.name()))?
+            .to_path_buf();
+        let out_path = staging.join(entry_path);
+        if entry.is_dir() {
+            fs::create_dir_all(&out_path)
+                .map_err(|e| format!("Failed to create {}: {e}", out_path.display()))?;
+        } else {
+            if let Some(parent) = out_path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
+            }
+            let mut out_file = fs::File::create(&out_path)
+                .map_err(|e| format!("Failed to create {}: {e}", out_path.display()))?;
+            std::io::copy(&mut entry, &mut out_file)
+                .map_err(|e| format!("Failed to extract {}: {e}", out_path.display()))?;
+        }
+    }
+
+    let rooted_manifest = staging.join("extension").join("manifest.json");
+    let extracted_root = if rooted_manifest.exists() {
+        staging.join("extension")
+    } else if staging.join("manifest.json").exists() {
+        staging.clone()
+    } else {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(format!(
+            "Extension archive {} does not contain manifest.json",
+            source.path.display()
+        ));
+    };
+
+    if version_dir.exists() {
+        fs::remove_dir_all(version_dir).map_err(|e| {
+            format!(
+                "Failed to remove previous version directory {}: {e}",
+                version_dir.display()
+            )
+        })?;
+    }
+
+    if extracted_root == staging {
+        fs::rename(&staging, version_dir).map_err(|e| {
+            format!(
+                "Failed to move {} to {}: {e}",
+                staging.display(),
+                version_dir.display()
+            )
+        })?;
+    } else {
+        fs::rename(&extracted_root, version_dir).map_err(|e| {
+            format!(
+                "Failed to move {} to {}: {e}",
+                extracted_root.display(),
+                version_dir.display()
+            )
+        })?;
+        let _ = fs::remove_dir_all(&staging);
+    }
+
+    if !version_dir.join("manifest.json").exists() {
+        return Err(format!(
+            "Extracted extension at {} is missing manifest.json",
+            version_dir.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn activate_extension_version(
+    data_dir: &str,
+    version_dir: &Path,
+    target_version: &str,
+) -> Result<String, String> {
+    let active_dir = extension_active_dir(data_dir);
+    let parent = active_dir
+        .parent()
+        .ok_or_else(|| "Invalid extension active path".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
+    let staging = parent.join(format!(".extension-active-{}", now_ms()));
+    if staging.exists() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    copy_dir_recursive(version_dir, &staging)?;
+    fs::write(
+        staging.join(EXTENSION_VERSION_MARKER_FILE),
+        format!("{target_version}\n"),
+    )
+    .map_err(|e| format!("Failed to write extension version marker: {e}"))?;
+    if active_dir.exists() {
+        fs::remove_dir_all(&active_dir)
+            .map_err(|e| format!("Failed to replace {}: {e}", active_dir.display()))?;
+    }
+    fs::rename(&staging, &active_dir).map_err(|e| {
+        format!(
+            "Failed to activate extension {} -> {}: {e}",
+            staging.display(),
+            active_dir.display()
+        )
+    })?;
+    Ok(active_dir.display().to_string())
+}
+
+fn sync_extension_release(
+    source: &ExtensionReleaseSource,
+    allow_download: bool,
+) -> Result<ExtensionSyncResult, String> {
+    let data_dir = resolve_data_dir(None)?;
+    let target_version = source.tag.trim_start_matches('v').to_string();
+    let installed_version = read_installed_extension_version(&data_dir);
+    let version_dir = extension_version_dir(&data_dir, &target_version);
+
+    let active_path = extension_active_dir(&data_dir);
+    if installed_version.as_deref() == Some(target_version.as_str()) && active_path.exists() {
+        return Ok(ExtensionSyncResult {
+            updated: false,
+            target_version,
+            installed_version,
+            active_path: active_path.display().to_string(),
+        });
+    }
+
+    if !source.path.exists() {
+        if !allow_download {
+            return Err(format!(
+                "Extension release asset not found at {}",
+                source.path.display()
+            ));
+        }
+        download_extension_asset(source)?;
+    }
+
+    let checksum_path = extension_release_checksum_path(&source.path);
+    if !checksum_path.exists() {
+        if !allow_download {
+            return Err(format!(
+                "Extension checksum file not found at {}",
+                checksum_path.display()
+            ));
+        }
+        download_extension_checksum(source)?;
+    }
+    verify_extension_asset_checksum(source, &checksum_path)?;
+
+    if !version_dir.join("manifest.json").exists() {
+        extract_extension_archive_to_version(source, &version_dir)?;
+    }
+    let active_path = activate_extension_version(&data_dir, &version_dir, &target_version)?;
+    Ok(ExtensionSyncResult {
+        updated: installed_version.as_deref() != Some(target_version.as_str()),
+        target_version,
+        installed_version,
+        active_path,
+    })
+}
+
+fn sync_extension_unpacked_dir(source_dir: &Path) -> Result<ExtensionSyncResult, String> {
+    let canonical_source = fs::canonicalize(source_dir).map_err(|e| {
+        format!(
+            "Failed to resolve local extension directory {}: {e}",
+            source_dir.display()
+        )
+    })?;
+    if !canonical_source.is_dir() {
+        return Err(format!(
+            "Local extension source {} is not a directory",
+            canonical_source.display()
+        ));
+    }
+    if !canonical_source.join("manifest.json").exists() {
+        return Err(format!(
+            "Local extension source {} is missing manifest.json",
+            canonical_source.display()
+        ));
+    }
+
+    let data_dir = resolve_data_dir(None)?;
+    let target_version = env!("CARGO_PKG_VERSION").to_string();
+    let installed_version = read_installed_extension_version(&data_dir);
+    let version_dir = extension_version_dir(&data_dir, &target_version);
+    if version_dir.exists() {
+        fs::remove_dir_all(&version_dir).map_err(|e| {
+            format!(
+                "Failed to remove previous version directory {}: {e}",
+                version_dir.display()
+            )
+        })?;
+    }
+    copy_dir_recursive(&canonical_source, &version_dir)?;
+    if !version_dir.join("manifest.json").exists() {
+        return Err(format!(
+            "Copied extension at {} is missing manifest.json",
+            version_dir.display()
+        ));
+    }
+    let active_path = activate_extension_version(&data_dir, &version_dir, &target_version)?;
+    Ok(ExtensionSyncResult {
+        updated: true,
+        target_version,
+        installed_version,
+        active_path,
+    })
+}
+
+fn should_runtime_auto_sync(action: &str) -> bool {
+    !matches!(action, "ping" | "reload")
+}
+
+fn effective_auto_sync_mode() -> AutoSyncMode {
+    let Some(raw) = std::env::var("TABCTL_AUTO_SYNC_MODE").ok() else {
+        return AutoSyncMode::Auto;
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "off" | "0" | "false" | "disabled" => AutoSyncMode::Off,
+        "release-like" | "release_like" | "release" | "force" | "on" | "1" | "true" => {
+            AutoSyncMode::ReleaseLike
+        }
+        _ => AutoSyncMode::Auto,
+    }
+}
+
+fn maybe_runtime_extension_auto_sync(action: &str, profile: Option<&str>) {
+    if !should_runtime_auto_sync(action) {
+        return;
+    }
+    let mode = effective_auto_sync_mode();
+    if mode == AutoSyncMode::Off {
+        return;
+    }
+    if mode == AutoSyncMode::Auto {
+        if std::env::var("TABCTL_VERSION_MODE").ok().as_deref() == Some("dev") {
+            return;
+        }
+        if std::env::var("TABCTL_SETUP_FETCH_EXTENSION")
+            .ok()
+            .as_deref()
+            == Some("0")
+        {
+            return;
+        }
+    }
+
+    let ping = match send_request("ping", Value::Object(Map::new()), profile, false) {
+        Ok(response) if response.ok => response,
+        _ => return,
+    };
+
+    let Some(data) = ping.data.as_ref().and_then(Value::as_object) else {
+        return;
+    };
+
+    let host_base = data.get("hostBaseVersion").and_then(Value::as_str);
+    let extension_base = data.get("baseVersion").and_then(Value::as_str);
+    let (Some(host_base), Some(extension_base)) = (host_base, extension_base) else {
+        return;
+    };
+
+    if normalize_base_version(host_base) == normalize_base_version(extension_base) {
+        return;
+    }
+
+    if compare_base_versions(extension_base, host_base) == Some(std::cmp::Ordering::Greater) {
+        eprintln!(
+            "[tabctl] extension auto-sync skipped (installed extension {} is newer than tabctl {})",
+            extension_base, host_base
+        );
+        return;
+    }
+
+    let source = match resolve_extension_release_source(Some(host_base), None, None, None) {
+        Ok(source) => source,
+        Err(error) => {
+            eprintln!("[tabctl] extension auto-sync failed: {error}");
+            return;
+        }
+    };
+
+    let sync = match sync_extension_release(&source, true) {
+        Ok(sync) => sync,
+        Err(error) => {
+            eprintln!("[tabctl] extension auto-sync failed: {error}");
+            return;
+        }
+    };
+
+    if !sync.updated {
+        return;
+    }
+
+    let _ = send_request("reload", Value::Object(Map::new()), profile, false);
+    eprintln!(
+        "[tabctl] extension auto-synced to {} at {}",
+        sync.target_version, sync.active_path
+    );
 }
 
 fn command_setup() -> Command {
@@ -396,6 +974,11 @@ fn command_setup() -> Command {
             Arg::new("extension-id")
                 .long("extension-id")
                 .value_name("id"),
+        )
+        .arg(
+            Arg::new("extension-dir")
+                .long("extension-dir")
+                .value_name("path"),
         )
         .arg(Arg::new("node").long("node").value_name("path"))
         .arg(Arg::new("name").long("name").value_name("name"))
@@ -464,7 +1047,10 @@ fn load_profile_registry(
                 },
             ));
         }
-        return Err("profiles.json not found. Run `tabctl setup --browser <edge|chrome> --extension-id <id>` first.".to_string());
+        return Err(
+            "profiles.json not found. Run `tabctl setup --browser <edge|chrome>` first."
+                .to_string(),
+        );
     }
     let content = fs::read_to_string(&profiles_path)
         .map_err(|e| format!("failed to read profiles.json: {e}"))?;
@@ -710,6 +1296,26 @@ fn evaluate_doctor_profile(
             "ok": false,
             "reason": "No local profile artifact issue detected; follow manualSteps under connectivity."
         });
+    }
+
+    if fix {
+        report["extensionSync"] = match attempt_profile_extension_sync(profile_name) {
+            Ok(sync) => {
+                if sync
+                    .get("updated")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    repaired = true;
+                }
+                sync
+            }
+            Err(error) => json!({
+                "attempted": true,
+                "ok": false,
+                "error": error
+            }),
+        };
     }
 
     let healthy = static_healthy && connectivity_healthy;
@@ -1000,6 +1606,51 @@ fn attempt_profile_repair(profile_name: &str, entry: &ProfileEntry) -> Result<Va
     }))
 }
 
+fn attempt_profile_extension_sync(profile_name: &str) -> Result<Value, String> {
+    let allow_download = std::env::var("TABCTL_SETUP_FETCH_EXTENSION")
+        .ok()
+        .as_deref()
+        != Some("0");
+    let release_source = resolve_extension_release_source(None, None, None, None)?;
+    let result = sync_extension_release(&release_source, allow_download)?;
+    let mut payload = json!({
+        "attempted": true,
+        "ok": true,
+        "updated": result.updated,
+        "targetVersion": result.target_version,
+        "installedVersion": result.installed_version,
+        "activePath": result.active_path
+    });
+    if result.updated {
+        match send_request(
+            "reload",
+            Value::Object(Map::new()),
+            Some(profile_name),
+            false,
+        ) {
+            Ok(reload_response) => {
+                payload["reload"] = json!({
+                    "attempted": true,
+                    "ok": reload_response.ok
+                });
+            }
+            Err(error) => {
+                payload["reload"] = json!({
+                    "attempted": true,
+                    "ok": false,
+                    "error": error
+                });
+            }
+        }
+    } else {
+        payload["reload"] = json!({
+            "attempted": false,
+            "ok": true
+        });
+    }
+    Ok(payload)
+}
+
 fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
     let browser = sub
         .get_one::<String>("browser")
@@ -1008,33 +1659,53 @@ fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
     if browser != "edge" && browser != "chrome" {
         return Err("Missing or invalid --browser (edge|chrome)".to_string());
     }
-    let release_source = resolve_setup_release_source(sub)?;
+    let local_extension_dir = resolve_setup_extension_dir_override(sub)?;
+    let release_source = if local_extension_dir.is_none() {
+        Some(resolve_setup_release_source(sub)?)
+    } else {
+        None
+    };
     let mut setup_warnings = Vec::new();
-    let extension_asset = if should_skip_extension_download(sub) {
+    let skip_extension_download = should_skip_extension_download(sub);
+    let extension_asset = if let Some(local_dir) = local_extension_dir.as_ref() {
         json!({
             "downloaded": false,
-            "reason": "skipped",
-            "source": release_source.to_json()
+            "reason": "local-source",
+            "source": {
+                "type": "local-directory",
+                "path": local_dir.display().to_string()
+            }
         })
     } else {
-        match download_extension_asset(&release_source) {
-            Ok(payload) => json!({ "downloaded": true, "asset": payload }),
-            Err(error_message) => {
-                let warning = json!({
-                    "code": "extension_download_failed",
-                    "message": error_message,
-                    "url": release_source.url.clone(),
-                });
-                setup_warnings.push(warning.clone());
-                json!({
-                    "downloaded": false,
-                    "reason": "download-failed",
-                    "source": release_source.to_json(),
-                    "fallback": {
-                        "path": release_source.path.display().to_string()
-                    },
-                    "warning": warning
-                })
+        let release_source = release_source
+            .as_ref()
+            .ok_or_else(|| "Missing release source".to_string())?;
+        if skip_extension_download {
+            json!({
+                "downloaded": false,
+                "reason": "skipped",
+                "source": release_source.to_json()
+            })
+        } else {
+            match download_extension_asset(release_source) {
+                Ok(payload) => json!({ "downloaded": true, "asset": payload }),
+                Err(error_message) => {
+                    let warning = json!({
+                        "code": "extension_download_failed",
+                        "message": error_message,
+                        "url": release_source.url.clone(),
+                    });
+                    setup_warnings.push(warning.clone());
+                    json!({
+                        "downloaded": false,
+                        "reason": "download-failed",
+                        "source": release_source.to_json(),
+                        "fallback": {
+                            "path": release_source.path.display().to_string()
+                        },
+                        "warning": warning
+                    })
+                }
             }
         }
     };
@@ -1047,7 +1718,88 @@ fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
         "native-linux"
     };
     let wrapper_path = resolve_tabctl_binary_path();
-    let extension_id = sub.get_one::<String>("extension-id");
+    let explicit_extension_id = sub.get_one::<String>("extension-id").cloned();
+    let mut sync_active_path = None::<String>;
+    let extension_sync = if let Some(local_dir) = local_extension_dir.as_ref() {
+        match sync_extension_unpacked_dir(local_dir) {
+            Ok(result) => {
+                sync_active_path = Some(result.active_path.clone());
+                json!({
+                    "attempted": true,
+                    "ok": true,
+                    "updated": result.updated,
+                    "targetVersion": result.target_version,
+                    "installedVersion": result.installed_version,
+                    "activePath": result.active_path
+                })
+            }
+            Err(error_message) => {
+                let warning = json!({
+                    "code": "extension_sync_failed",
+                    "message": error_message
+                });
+                setup_warnings.push(warning.clone());
+                json!({
+                    "attempted": true,
+                    "ok": false,
+                    "error": error_message,
+                    "warning": warning
+                })
+            }
+        }
+    } else {
+        let release_source = release_source
+            .as_ref()
+            .ok_or_else(|| "Missing release source".to_string())?;
+        match sync_extension_release(release_source, !skip_extension_download) {
+            Ok(result) => {
+                sync_active_path = Some(result.active_path.clone());
+                json!({
+                    "attempted": true,
+                    "ok": true,
+                    "updated": result.updated,
+                    "targetVersion": result.target_version,
+                    "installedVersion": result.installed_version,
+                    "activePath": result.active_path
+                })
+            }
+            Err(error_message) => {
+                let warning = json!({
+                    "code": "extension_sync_failed",
+                    "message": error_message
+                });
+                setup_warnings.push(warning.clone());
+                json!({
+                    "attempted": true,
+                    "ok": false,
+                    "error": error_message,
+                    "warning": warning
+                })
+            }
+        }
+    };
+
+    let mut effective_extension_id = explicit_extension_id.clone();
+    let extension_id_source = if effective_extension_id.is_some() {
+        "explicit"
+    } else {
+        let derive_path = sync_active_path
+            .map(PathBuf::from)
+            .unwrap_or_else(|| extension_active_dir(&data_dir));
+        match derive_extension_id_from_extension_path(&derive_path) {
+            Ok(derived_id) => {
+                effective_extension_id = Some(derived_id);
+                "derived"
+            }
+            Err(error_message) => {
+                setup_warnings.push(json!({
+                    "code": "extension_id_derive_failed",
+                    "message": error_message
+                }));
+                "missing"
+            }
+        }
+    };
 
     let mut actual_wrapper_path = wrapper_path.clone();
     let mut actual_manifest_path = data_dir.clone();
@@ -1057,7 +1809,7 @@ fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
     #[cfg(windows)]
     let mut registry_key_value = None::<String>;
 
-    if let Some(ext_id) = extension_id {
+    if let Some(ref ext_id) = effective_extension_id {
         let profile_name = sub
             .get_one::<String>("name")
             .map(|s| s.as_str())
@@ -1103,9 +1855,11 @@ fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
         "manifestPath": actual_manifest_path,
         "hostArgs": ["host"],
         "extensionReleaseAsset": extension_asset,
+        "extensionSync": extension_sync,
+        "extensionIdSource": extension_id_source,
         "warnings": setup_warnings
     });
-    if let Some(id) = extension_id {
+    if let Some(id) = effective_extension_id.as_deref() {
         data["extensionId"] = json!(id);
         data["allowedOrigins"] = json!([format!("chrome-extension://{id}/")]);
         data["isDefault"] = json!(is_default_profile);
@@ -1203,6 +1957,35 @@ fn resolve_setup_release_source(sub: &ArgMatches) -> Result<ExtensionReleaseSour
         resolve_setup_release_override(sub, "release-asset", "TABCTL_RELEASE_ASSET").as_deref(),
         None,
     )
+}
+
+fn resolve_setup_extension_dir_override(sub: &ArgMatches) -> Result<Option<PathBuf>, String> {
+    let local_dir = sub
+        .get_one::<String>("extension-dir")
+        .cloned()
+        .or_else(|| std::env::var("TABCTL_SETUP_EXTENSION_DIR").ok());
+    let Some(local_dir) = local_dir else {
+        return Ok(None);
+    };
+    let resolved = fs::canonicalize(&local_dir).map_err(|e| {
+        format!(
+            "Failed to resolve local extension directory {}: {e}",
+            local_dir
+        )
+    })?;
+    if !resolved.is_dir() {
+        return Err(format!(
+            "Local extension source {} is not a directory",
+            resolved.display()
+        ));
+    }
+    if !resolved.join("manifest.json").exists() {
+        return Err(format!(
+            "Local extension source {} is missing manifest.json",
+            resolved.display()
+        ));
+    }
+    Ok(Some(resolved))
 }
 
 fn resolve_setup_release_override(
@@ -2371,11 +3154,14 @@ fn write_native_manifest(
 }
 
 fn request_id() -> String {
-    let now = SystemTime::now()
+    format!("req-{}-{}", now_ms(), std::process::id())
+}
+
+fn now_ms() -> u128 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis();
-    format!("req-{now}-{}", std::process::id())
+        .as_millis()
 }
 
 fn send_request(
@@ -2966,6 +3752,72 @@ mod tests {
     }
 
     #[test]
+    fn parses_setup_command_with_local_extension_dir() {
+        let matches = build_cli()
+            .try_get_matches_from([
+                "tabctl",
+                "setup",
+                "--browser",
+                "edge",
+                "--extension-dir",
+                "/tmp/tabctl-extension",
+            ])
+            .expect("parse command");
+        let (_, sub) = matches.subcommand().expect("subcommand");
+        assert_eq!(
+            sub.get_one::<String>("extension-dir").map(String::as_str),
+            Some("/tmp/tabctl-extension")
+        );
+    }
+
+    #[test]
+    fn setup_extension_dir_override_uses_cli_and_env() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-extension-dir-{}", request_id()));
+        fs::create_dir_all(&dir).expect("create extension dir");
+        fs::write(
+            dir.join("manifest.json"),
+            r#"{"manifest_version":3,"name":"Tab Control","version":"0.6.0"}"#,
+        )
+        .expect("write manifest");
+        let dir_str = dir.to_str().expect("utf-8 extension dir");
+
+        let matches = build_cli()
+            .try_get_matches_from([
+                "tabctl",
+                "setup",
+                "--browser",
+                "edge",
+                "--extension-dir",
+                dir_str,
+            ])
+            .expect("parse command");
+        let (_, sub) = matches.subcommand().expect("subcommand");
+        let resolved = resolve_setup_extension_dir_override(sub)
+            .expect("resolve local extension dir from cli")
+            .expect("local extension dir from cli should be set");
+        assert_eq!(
+            resolved,
+            fs::canonicalize(&dir).expect("canonicalize cli dir")
+        );
+
+        with_env_vars(&[("TABCTL_SETUP_EXTENSION_DIR", Some(dir_str))], || {
+            let matches = build_cli()
+                .try_get_matches_from(["tabctl", "setup", "--browser", "edge"])
+                .expect("parse command");
+            let (_, sub) = matches.subcommand().expect("subcommand");
+            let resolved = resolve_setup_extension_dir_override(sub)
+                .expect("resolve local extension dir from env")
+                .expect("local extension dir from env should be set");
+            assert_eq!(
+                resolved,
+                fs::canonicalize(&dir).expect("canonicalize env dir")
+            );
+        });
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn parses_setup_release_override_flags() {
         with_env_vars(
             &[
@@ -3112,6 +3964,82 @@ mod tests {
                 .expect("parse command");
             let (_, sub) = matches.subcommand().expect("subcommand");
             assert!(!should_skip_extension_download(sub));
+        });
+    }
+
+    #[test]
+    fn compare_base_versions_ignores_prerelease_metadata() {
+        assert_eq!(
+            compare_base_versions("0.6.0-alpha.5", "0.6.0"),
+            Some(std::cmp::Ordering::Equal)
+        );
+        assert_eq!(
+            compare_base_versions("0.6.1-rc.1", "0.6.0"),
+            Some(std::cmp::Ordering::Greater)
+        );
+        assert_eq!(
+            compare_base_versions("0.5.2", "0.6.0-alpha.1"),
+            Some(std::cmp::Ordering::Less)
+        );
+    }
+
+    #[test]
+    fn chromium_extension_id_from_digest_maps_to_ap_alphabet() {
+        let zeros = chromium_extension_id_from_digest(&[0u8; 32]);
+        assert_eq!(zeros, "a".repeat(32));
+
+        let ff = chromium_extension_id_from_digest(&[0xffu8; 32]);
+        assert_eq!(ff, "p".repeat(32));
+    }
+
+    #[test]
+    fn derive_extension_id_from_extension_path_returns_32_ap_chars() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-derive-ext-id-{}", request_id()));
+        fs::create_dir_all(&dir).expect("create extension dir");
+        fs::write(
+            dir.join("manifest.json"),
+            r#"{"manifest_version":3,"name":"Tab Control","version":"0.6.0"}"#,
+        )
+        .expect("write manifest");
+
+        let id = derive_extension_id_from_extension_path(&dir).expect("derive extension id");
+        assert_eq!(id.len(), 32);
+        assert!(id.chars().all(|ch| ('a'..='p').contains(&ch)));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn should_runtime_auto_sync_skips_ping_and_reload() {
+        assert!(!should_runtime_auto_sync("ping"));
+        assert!(!should_runtime_auto_sync("reload"));
+        assert!(should_runtime_auto_sync("list"));
+    }
+
+    #[test]
+    fn effective_auto_sync_mode_defaults_to_auto() {
+        with_env_vars(&[("TABCTL_AUTO_SYNC_MODE", None)], || {
+            assert_eq!(effective_auto_sync_mode(), AutoSyncMode::Auto);
+        });
+    }
+
+    #[test]
+    fn effective_auto_sync_mode_accepts_release_like_values() {
+        with_env_vars(&[("TABCTL_AUTO_SYNC_MODE", Some("release-like"))], || {
+            assert_eq!(effective_auto_sync_mode(), AutoSyncMode::ReleaseLike);
+        });
+        with_env_vars(&[("TABCTL_AUTO_SYNC_MODE", Some("true"))], || {
+            assert_eq!(effective_auto_sync_mode(), AutoSyncMode::ReleaseLike);
+        });
+    }
+
+    #[test]
+    fn effective_auto_sync_mode_accepts_off_values() {
+        with_env_vars(&[("TABCTL_AUTO_SYNC_MODE", Some("off"))], || {
+            assert_eq!(effective_auto_sync_mode(), AutoSyncMode::Off);
+        });
+        with_env_vars(&[("TABCTL_AUTO_SYNC_MODE", Some("0"))], || {
+            assert_eq!(effective_auto_sync_mode(), AutoSyncMode::Off);
         });
     }
 
@@ -3909,6 +4837,90 @@ mod tests {
     }
 
     #[test]
+    fn run_setup_without_extension_id_derives_from_local_extension_dir() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-e2e-derive-{}", request_id()));
+        let _ = fs::remove_dir_all(&dir);
+        let config_dir = dir.join("config");
+        let data_dir = dir.join("data");
+        let udd = dir.join("user-data");
+        let local_extension_dir = dir.join("local-extension");
+        fs::create_dir_all(&local_extension_dir).expect("create local extension dir");
+        fs::write(
+            local_extension_dir.join("manifest.json"),
+            r#"{"manifest_version":3,"name":"Tab Control","version":"0.6.0"}"#,
+        )
+        .expect("write local extension manifest");
+        fs::write(
+            local_extension_dir.join("background.js"),
+            "self.addEventListener('install', () => {});",
+        )
+        .expect("write local extension background");
+
+        with_env_vars(
+            &[
+                ("TABCTL_CONFIG_DIR", Some(config_dir.to_str().unwrap())),
+                ("TABCTL_DATA_DIR", Some(data_dir.to_str().unwrap())),
+                ("TABCTL_SETUP_FETCH_EXTENSION", Some("0")),
+            ],
+            || {
+                let matches = build_cli()
+                    .try_get_matches_from([
+                        "tabctl",
+                        "--json",
+                        "setup",
+                        "--browser",
+                        "edge",
+                        "--extension-dir",
+                        local_extension_dir.to_str().unwrap(),
+                        "--user-data-dir",
+                        udd.to_str().unwrap(),
+                    ])
+                    .expect("parse args");
+
+                let (_, sub) = matches.subcommand().expect("subcommand");
+                let result = run_setup(&matches, sub);
+                assert!(result.is_ok(), "run_setup failed: {:?}", result.err());
+
+                let wrapper = data_dir
+                    .join("profiles")
+                    .join("edge")
+                    .join(if cfg!(windows) {
+                        "tabctl-host.cmd"
+                    } else {
+                        "tabctl-host.sh"
+                    });
+                assert!(wrapper.exists(), "wrapper script should be created");
+
+                let manifest_path = udd
+                    .join("NativeMessagingHosts")
+                    .join(format!("{HOST_NAME}.json"));
+                assert!(manifest_path.exists(), "native manifest should be created");
+                let manifest_json: Value = serde_json::from_str(
+                    &fs::read_to_string(&manifest_path).expect("read native manifest"),
+                )
+                .expect("parse native manifest");
+
+                let profiles = config_dir.join("profiles.json");
+                assert!(profiles.exists(), "profiles.json should be created");
+                let registry: Value =
+                    serde_json::from_str(&fs::read_to_string(&profiles).expect("read profiles"))
+                        .expect("parse profiles");
+                let extension_id = registry["profiles"]["edge"]["extensionId"]
+                    .as_str()
+                    .expect("derived extension id should be string");
+                assert_eq!(extension_id.len(), 32);
+                assert!(extension_id.chars().all(|ch| ('a'..='p').contains(&ch)));
+                assert_eq!(
+                    manifest_json["allowed_origins"][0],
+                    json!(format!("chrome-extension://{extension_id}/"))
+                );
+            },
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_read_auth_token_from_file() {
         let dir = std::env::temp_dir().join(format!("tabctl-test-auth-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -4368,6 +5380,7 @@ mod tests {
                     "TABCTL_DATA_DIR",
                     Some(data_dir.to_str().expect("data path")),
                 ),
+                ("TABCTL_SETUP_FETCH_EXTENSION", Some("0")),
                 ("HOME", Some(home_dir.to_str().expect("home path"))),
                 ("XDG_CONFIG_HOME", None),
                 ("XDG_STATE_HOME", None),
