@@ -192,7 +192,7 @@ export async function refreshTabs(params: Record<string, unknown>) {
   };
 }
 
-export async function openTabs(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "log">) {
+export async function openTabs(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "log" | "delay">) {
   const urls = Array.isArray(params.urls)
     ? params.urls.map((url) => (typeof url === "string" ? url.trim() : "")).filter(Boolean)
     : [];
@@ -428,6 +428,11 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
       skipped.push({ url, reason: "create_failed" });
     }
   }
+  const createdTabIds = new Set(
+    created
+      .map((tab) => tab.tabId)
+      .filter((id): id is number => typeof id === "number"),
+  );
 
   let groupId: number | null = null;
   if (groupTitle && created.length > 0) {
@@ -457,25 +462,74 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
     groupId = existingGroupId;
   }
 
-  // Reorder: groups before ungrouped tabs
+  const targetGroupId = groupId ?? existingGroupId;
+  if (targetGroupId != null && created.length > 0) {
+    try {
+      if (createdTabIds.size > 0) {
+        const latestTabs = await chrome.tabs.query({ windowId });
+        const missingGroupTabIds = latestTabs
+          .filter((tab) => typeof tab.id === "number" && createdTabIds.has(tab.id) && tab.groupId !== targetGroupId)
+          .map((tab) => tab.id as number);
+        if (missingGroupTabIds.length > 0) {
+          await chrome.tabs.group({ groupId: targetGroupId, tabIds: missingGroupTabIds });
+        }
+      }
+    } catch (error) {
+      deps.log("Failed to enforce grouping for newly opened tabs", error);
+    }
+  }
+
   try {
     const freshTabs = await chrome.tabs.query({ windowId });
     freshTabs.sort((a, b) => a.index - b.index);
 
     const firstUngroupedIndex = freshTabs.findIndex(t => (t.groupId ?? -1) === -1);
     if (firstUngroupedIndex >= 0) {
-      const groupedAfterUngrouped = freshTabs.filter(
-        (t, i) => i > firstUngroupedIndex && (t.groupId ?? -1) !== -1
-      );
-      if (groupedAfterUngrouped.length > 0) {
-        const tabIdsToMove = groupedAfterUngrouped.map(t => t.id!).filter(id => typeof id === "number");
-        if (tabIdsToMove.length > 0) {
-          await chrome.tabs.move(tabIdsToMove, { index: firstUngroupedIndex });
-        }
+      let tabIdsToMove: number[] = [];
+      if (existingGroupId != null) {
+        // In reuse mode, only reorder tabs created by this operation.
+        tabIdsToMove = freshTabs
+          .filter((tab, i) => i > firstUngroupedIndex && typeof tab.id === "number" && createdTabIds.has(tab.id) && (tab.groupId ?? -1) !== -1)
+          .map((tab) => tab.id as number);
+      } else {
+        tabIdsToMove = freshTabs
+          .filter((tab, i) => i > firstUngroupedIndex && (tab.groupId ?? -1) !== -1)
+          .map((tab) => tab.id!)
+          .filter((id): id is number => typeof id === "number");
+      }
+      if (tabIdsToMove.length > 0) {
+        await chrome.tabs.move(tabIdsToMove, { index: firstUngroupedIndex });
       }
     }
   } catch (err) {
     deps.log("Failed to reorder groups before ungrouped tabs", err);
+  }
+  if (targetGroupId != null && createdTabIds.size > 0) {
+    try {
+      const latestTabs = await chrome.tabs.query({ windowId });
+      const lateUngroupedTabIds = latestTabs
+        .filter((tab) => typeof tab.id === "number" && createdTabIds.has(tab.id) && tab.groupId !== targetGroupId)
+        .map((tab) => tab.id as number);
+      if (lateUngroupedTabIds.length > 0) {
+        await chrome.tabs.group({ groupId: targetGroupId, tabIds: lateUngroupedTabIds });
+      }
+    } catch (error) {
+      deps.log("Failed post-reorder grouping verification", error);
+    }
+  }
+  if (targetGroupId != null && createdTabIds.size > 0) {
+    try {
+      await deps.delay(250);
+      const delayedTabs = await chrome.tabs.query({ windowId });
+      const delayedUngroupedTabIds = delayedTabs
+        .filter((tab) => typeof tab.id === "number" && createdTabIds.has(tab.id) && tab.groupId !== targetGroupId)
+        .map((tab) => tab.id as number);
+      if (delayedUngroupedTabIds.length > 0) {
+        await chrome.tabs.group({ groupId: targetGroupId, tabIds: delayedUngroupedTabIds });
+      }
+    } catch (error) {
+      deps.log("Failed delayed grouping verification", error);
+    }
   }
 
   return {
@@ -493,5 +547,3 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
     },
   };
 }
-
-
