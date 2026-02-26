@@ -1,6 +1,6 @@
 {
   "name": "tabctl",
-  "version": "0.6.0-alpha.6",
+  "version": "0.6.0-alpha.7",
   "description": "CLI tool to manage and analyze browser tabs",
   "license": "MIT",
   "repository": {
