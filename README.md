@@ -350,7 +350,7 @@ Rust-only validation:
 npm run rust:verify
 ```
 
-Integration script (currently Rust-suite parity in CI/local):
+Browser-backed integration harness (requires built dist artifacts and Chrome):
 ```bash
 npm run test:integration
 ```

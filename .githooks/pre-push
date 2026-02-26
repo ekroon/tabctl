@@ -56,5 +56,7 @@ fi
 
 echo "pre-push: running rust verify…"
 npm run rust:verify
+echo "pre-push: building artifacts for integration checks…"
+npm run build
 echo "pre-push: running integration checks…"
 npm run test:integration

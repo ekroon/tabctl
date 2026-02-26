@@ -636,7 +636,7 @@ See [Configuration](#configuration) for how the data directory is resolved.
 ## Build and release
 - `npm run build`: generates version metadata, bundles the extension, and builds the Rust workspace (single `tabctl` binary).
 - `npm test`: runs build + Rust formatting/lint/tests (`npm run rust:verify`).
-- `npm run test:integration`: runs the Rust integration-equivalent suite (`npm run rust:test`).
+- `npm run test:integration`: runs the browser-backed Rust integration harness (`cargo test --manifest-path rust/Cargo.toml --test browser_integration -- --ignored --nocapture`), which requires built dist artifacts and Chrome.
 
 Release channel mapping:
 - `x.y.z-alpha.N` → npm `alpha`
