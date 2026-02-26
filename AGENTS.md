@@ -235,6 +235,7 @@ Run:
 - `npm run test:integration`
 
 This covers destructive paths (close, undo) safely. To test additional destructive commands (archive, dedupe), add Rust-side scenarios in `rust/crates/tabctl/tests/browser_integration.rs` (keep `scripts/ci/integration-bootstrap.js` as thin browser bootstrap only).
+On Windows, the Rust browser integration test uses TCP transport (`TABCTL_TRANSPORT=tcp`) for CLI requests because named-pipe transport can intermittently stall in CI.
 
 ## Hard stop rules
 - Never run `tabctl archive --all` or `tabctl close --apply` in a normal profile.
