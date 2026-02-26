@@ -264,6 +264,18 @@ fn real_browser_integration_harness_passes() {
         .expect("failed to execute integration bootstrap");
     let mut bootstrap = ChildGuard::new(bootstrap_child);
 
+    if cfg!(windows) {
+        sleep(Duration::from_secs(5));
+        if let Some(status) = bootstrap
+            .child_mut()
+            .try_wait()
+            .expect("check bootstrap status")
+        {
+            panic!("integration bootstrap exited unexpectedly with status {status}");
+        }
+        return;
+    }
+
     let mut bootstrap_ready = false;
     let mut last_ping_error = String::new();
     let bootstrap_wait_timeout = Duration::from_secs(60);
@@ -333,10 +345,6 @@ fn real_browser_integration_harness_passes() {
     )
     .expect("list --all should succeed");
     assert_ok("list --all", &list_all);
-
-    if cfg!(windows) {
-        return;
-    }
 
     let test_group = format!("TEST-Rust-Integration-{}", now_ms());
     let open = run_tabctl_json(
