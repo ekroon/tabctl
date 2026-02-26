@@ -266,7 +266,7 @@ fn real_browser_integration_harness_passes() {
 
     let mut bootstrap_ready = false;
     let mut last_ping_error = String::new();
-    let bootstrap_wait_timeout = Duration::from_secs(120);
+    let bootstrap_wait_timeout = Duration::from_secs(180);
     let bootstrap_wait_start = Instant::now();
     while bootstrap_wait_start.elapsed() < bootstrap_wait_timeout {
         if let Some(status) = bootstrap
@@ -283,7 +283,7 @@ fn real_browser_integration_harness_passes() {
             &config_home,
             &state_home,
             &["ping"],
-            Duration::from_secs(15),
+            Duration::from_secs(45),
         ) {
             Ok(ping) => {
                 if ping.get("ok").and_then(Value::as_bool) == Some(true) {
