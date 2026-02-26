@@ -266,7 +266,9 @@ fn real_browser_integration_harness_passes() {
 
     let mut bootstrap_ready = false;
     let mut last_ping_error = String::new();
-    for _ in 0..8 {
+    let bootstrap_wait_timeout = Duration::from_secs(60);
+    let bootstrap_wait_start = Instant::now();
+    while bootstrap_wait_start.elapsed() < bootstrap_wait_timeout {
         if let Some(status) = bootstrap
             .child_mut()
             .try_wait()
