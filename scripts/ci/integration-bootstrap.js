@@ -106,17 +106,6 @@ function sendCDP(method, params = {}, sessionId) {
   });
 }
 
-function runtimeValueOrThrow(evaluation, label) {
-  if (evaluation?.exceptionDetails) {
-    const detail =
-      evaluation.exceptionDetails.exception?.description ||
-      evaluation.exceptionDetails.text ||
-      "unknown runtime exception";
-    throw new Error(`${label}: ${detail}`);
-  }
-  return evaluation?.result?.value;
-}
-
 async function attachServiceWorker(extensionId, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -139,63 +128,39 @@ async function attachServiceWorker(extensionId, timeoutMs) {
   throw new Error("Extension service worker not found before timeout");
 }
 
-async function waitForNativeHostReady(sessionId, timeoutMs) {
-  const evaluation = await sendCDP(
-    "Runtime.evaluate",
-    {
-      expression: `
-        (async () => {
-          const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-          const deadline = Date.now() + ${timeoutMs};
-          while (Date.now() < deadline) {
-            try {
-              if (!self.__tabctl?.state?.port) {
-                self.__tabctl?.connectNative?.();
-                await sleep(200);
-                continue;
-              }
-              const port = self.__tabctl.state.port;
-              const probeId = "tabctl-bootstrap-probe-" + Math.random().toString(16).slice(2);
-              const response = await new Promise((resolve, reject) => {
-                const onMessage = (message) => {
-                  if (!message || message.id !== probeId || typeof message.ok !== "boolean") return;
-                  clearTimeout(timer);
-                  port.onMessage.removeListener(onMessage);
-                  resolve(message);
-                };
-                const timer = setTimeout(() => {
-                  port.onMessage.removeListener(onMessage);
-                  reject(new Error("native probe response timeout"));
-                }, 3000);
-                port.onMessage.addListener(onMessage);
-                try {
-                  port.postMessage({ id: probeId, action: "ping", params: {} });
-                } catch (error) {
-                  clearTimeout(timer);
-                  port.onMessage.removeListener(onMessage);
-                  reject(error);
-                }
-              });
-              if (response.ok === true) {
-                return { ok: true };
-              }
-            } catch (error) {
-              // Retry until timeout.
+async function ensureNativePortConnected(sessionId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const evaluation = await sendCDP(
+      "Runtime.evaluate",
+      {
+        expression: `
+          (() => {
+            if (!self.__tabctl?.state?.port) {
+              self.__tabctl?.connectNative?.();
+              return { connected: false };
             }
-            await sleep(250);
-          }
-          return { ok: false, error: "native host ping probe did not succeed before timeout" };
-        })();
-      `,
-      awaitPromise: true,
-      returnByValue: true,
-    },
-    sessionId
-  );
-  const value = runtimeValueOrThrow(evaluation, "native host readiness probe failed");
-  if (!value?.ok) {
-    throw new Error(value?.error || "native host readiness probe failed");
+            return { connected: true };
+          })();
+        `,
+        returnByValue: true,
+      },
+      sessionId
+    );
+    if (evaluation?.exceptionDetails) {
+      const detail =
+        evaluation.exceptionDetails.exception?.description ||
+        evaluation.exceptionDetails.text ||
+        "unknown runtime exception";
+      throw new Error(`native port probe failed: ${detail}`);
+    }
+    const connected = evaluation?.result?.value?.connected === true;
+    if (connected) {
+      return;
+    }
+    await sleep(250);
   }
+  throw new Error("native port did not connect before timeout");
 }
 
 async function shutdown(exitCode) {
@@ -305,7 +270,7 @@ async function main() {
   }
 
   const sessionId = await attachServiceWorker(extensionId, timeoutMs);
-  await waitForNativeHostReady(sessionId, timeoutMs);
+  await ensureNativePortConnected(sessionId, timeoutMs);
 
   process.stdout.write(`${JSON.stringify({ ok: true, event: "ready", extensionId })}\n`);
   keepAlive = setInterval(() => {}, 60_000);
