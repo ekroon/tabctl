@@ -58,7 +58,8 @@ fn run_tabctl_json_with_timeout(
     args: &[&str],
     timeout: Duration,
 ) -> Result<Value, String> {
-    let mut child = Command::new(tabctl_bin)
+    let mut command = Command::new(tabctl_bin);
+    command
         .arg("--json")
         .arg("--no-pretty")
         .arg("--profile")
@@ -68,7 +69,11 @@ fn run_tabctl_json_with_timeout(
         .env("XDG_CONFIG_HOME", config_home)
         .env("XDG_STATE_HOME", state_home)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    if cfg!(windows) {
+        command.env("TABCTL_TRANSPORT", "tcp");
+    }
+    let mut child = command
         .spawn()
         .map_err(|e| format!("failed to execute tabctl {:?}: {e}", args))?;
     let start = Instant::now();
