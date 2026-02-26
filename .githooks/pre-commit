@@ -1,5 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+maybe_activate_mise() {
+  local mise_cmd=""
+  if command -v mise >/dev/null 2>&1; then
+    mise_cmd="$(command -v mise)"
+  elif [ -x "${HOME}/.local/bin/mise" ]; then
+    mise_cmd="${HOME}/.local/bin/mise"
+  fi
+
+  [ -z "${mise_cmd}" ] && return 0
+
+  if ! eval "$("${mise_cmd}" activate bash 2>/dev/null)"; then
+    echo "pre-commit: mise is installed but this repo is not trusted yet."
+    echo "pre-commit: run '${mise_cmd} trust' once in this repo, then retry."
+  fi
+}
+
+if ! command -v npm >/dev/null 2>&1; then
+  maybe_activate_mise
+fi
+
+if ! command -v npm >/dev/null 2>&1; then
+  echo "pre-commit: npm not found. Run 'mise install' (after trust) or ensure npm is on PATH."
+  exit 1
+fi
+
 echo "pre-commit: running fast unit checks…"
 npm run test:unit
