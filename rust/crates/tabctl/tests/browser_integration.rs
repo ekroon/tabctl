@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn repo_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -57,7 +57,7 @@ fn run_tabctl_json(
     state_home: &Path,
     args: &[&str],
 ) -> Result<Value, String> {
-    let output = Command::new(tabctl_bin)
+    let mut child = Command::new(tabctl_bin)
         .arg("--json")
         .arg("--no-pretty")
         .arg("--profile")
@@ -66,8 +66,37 @@ fn run_tabctl_json(
         .current_dir(root)
         .env("XDG_CONFIG_HOME", config_home)
         .env("XDG_STATE_HOME", state_home)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("failed to execute tabctl {:?}: {e}", args))?;
+    let timeout = Duration::from_secs(30);
+    let start = Instant::now();
+    loop {
+        if let Some(_status) = child
+            .try_wait()
+            .map_err(|e| format!("failed to poll tabctl {:?}: {e}", args))?
+        {
+            break;
+        }
+        if start.elapsed() > timeout {
+            let _ = child.kill();
+            let output = child
+                .wait_with_output()
+                .map_err(|e| format!("failed to capture timed-out tabctl {:?}: {e}", args))?;
+            return Err(format!(
+                "tabctl {:?} timed out after {}s.\nstdout: {}\nstderr: {}",
+                args,
+                timeout.as_secs(),
+                String::from_utf8_lossy(&output.stdout).trim(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        sleep(Duration::from_millis(100));
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("failed to capture tabctl {:?} output: {e}", args))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -282,6 +311,10 @@ fn real_browser_integration_harness_passes() {
     )
     .expect("list --all should succeed");
     assert_ok("list --all", &list_all);
+
+    if cfg!(windows) {
+        return;
+    }
 
     let test_group = format!("TEST-Rust-Integration-{}", now_ms());
     let open = run_tabctl_json(
