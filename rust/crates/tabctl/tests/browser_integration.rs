@@ -58,7 +58,8 @@ fn run_tabctl_json_with_timeout(
     args: &[&str],
     timeout: Duration,
 ) -> Result<Value, String> {
-    let mut child = Command::new(tabctl_bin)
+    let mut command = Command::new(tabctl_bin);
+    command
         .arg("--json")
         .arg("--no-pretty")
         .arg("--profile")
@@ -68,7 +69,11 @@ fn run_tabctl_json_with_timeout(
         .env("XDG_CONFIG_HOME", config_home)
         .env("XDG_STATE_HOME", state_home)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    if cfg!(windows) {
+        command.env("TABCTL_TRANSPORT", "tcp");
+    }
+    let mut child = command
         .spawn()
         .map_err(|e| format!("failed to execute tabctl {:?}: {e}", args))?;
     let start = Instant::now();
@@ -264,21 +269,9 @@ fn real_browser_integration_harness_passes() {
         .expect("failed to execute integration bootstrap");
     let mut bootstrap = ChildGuard::new(bootstrap_child);
 
-    if cfg!(windows) {
-        sleep(Duration::from_secs(5));
-        if let Some(status) = bootstrap
-            .child_mut()
-            .try_wait()
-            .expect("check bootstrap status")
-        {
-            panic!("integration bootstrap exited unexpectedly with status {status}");
-        }
-        return;
-    }
-
     let mut bootstrap_ready = false;
     let mut last_ping_error = String::new();
-    let bootstrap_wait_timeout = Duration::from_secs(60);
+    let bootstrap_wait_timeout = Duration::from_secs(180);
     let bootstrap_wait_start = Instant::now();
     while bootstrap_wait_start.elapsed() < bootstrap_wait_timeout {
         if let Some(status) = bootstrap
@@ -295,7 +288,7 @@ fn real_browser_integration_harness_passes() {
             &config_home,
             &state_home,
             &["ping"],
-            Duration::from_secs(15),
+            Duration::from_secs(45),
         ) {
             Ok(ping) => {
                 if ping.get("ok").and_then(Value::as_bool) == Some(true) {

@@ -128,6 +128,69 @@ async function attachServiceWorker(extensionId, timeoutMs) {
   throw new Error("Extension service worker not found before timeout");
 }
 
+async function ensureNativePortConnected(sessionId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const evaluation = await sendCDP(
+      "Runtime.evaluate",
+      {
+        expression: `
+          (() => {
+            if (!self.__tabctl?.state?.port) {
+              self.__tabctl?.connectNative?.();
+              return { connected: false };
+            }
+            return { connected: true };
+          })();
+        `,
+        returnByValue: true,
+      },
+      sessionId
+    );
+    if (evaluation?.exceptionDetails) {
+      const detail =
+        evaluation.exceptionDetails.exception?.description ||
+        evaluation.exceptionDetails.text ||
+        "unknown runtime exception";
+      throw new Error(`native port probe failed: ${detail}`);
+    }
+    const connected = evaluation?.result?.value?.connected === true;
+    if (connected) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error("native port did not connect before timeout");
+}
+
+async function startNativeReconnectHeartbeat(sessionId) {
+  const evaluation = await sendCDP(
+    "Runtime.evaluate",
+    {
+      expression: `
+        (() => {
+          if (!self.__tabctl) return false;
+          if (!self.__tabctl.__ciNativeReconnectHeartbeat) {
+            self.__tabctl.__ciNativeReconnectHeartbeat = setInterval(() => {
+              self.__tabctl?.connectNative?.();
+            }, 1000);
+          }
+          return true;
+        })();
+      `,
+      returnByValue: true,
+    },
+    sessionId
+  );
+  if (evaluation?.exceptionDetails) {
+    const detail =
+      evaluation.exceptionDetails.exception?.description ||
+      evaluation.exceptionDetails.text ||
+      "unknown runtime exception";
+    throw new Error(`failed to start native reconnect heartbeat: ${detail}`);
+  }
+}
+
 async function shutdown(exitCode) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -235,18 +298,8 @@ async function main() {
   }
 
   const sessionId = await attachServiceWorker(extensionId, timeoutMs);
-  await sendCDP(
-    "Runtime.evaluate",
-    {
-      expression: `
-        if (!self.__tabctl?.state?.port) {
-          self.__tabctl?.connectNative?.();
-        }
-      `,
-      returnByValue: true,
-    },
-    sessionId
-  );
+  await ensureNativePortConnected(sessionId, timeoutMs);
+  await startNativeReconnectHeartbeat(sessionId);
 
   process.stdout.write(`${JSON.stringify({ ok: true, event: "ready", extensionId })}\n`);
   keepAlive = setInterval(() => {}, 60_000);
