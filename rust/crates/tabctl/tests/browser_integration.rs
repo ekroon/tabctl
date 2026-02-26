@@ -49,13 +49,14 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
-fn run_tabctl_json(
+fn run_tabctl_json_with_timeout(
     tabctl_bin: &Path,
     root: &Path,
     profile: &str,
     config_home: &Path,
     state_home: &Path,
     args: &[&str],
+    timeout: Duration,
 ) -> Result<Value, String> {
     let mut child = Command::new(tabctl_bin)
         .arg("--json")
@@ -70,7 +71,6 @@ fn run_tabctl_json(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("failed to execute tabctl {:?}: {e}", args))?;
-    let timeout = Duration::from_secs(30);
     let start = Instant::now();
     loop {
         if let Some(_status) = child
@@ -112,6 +112,25 @@ fn run_tabctl_json(
             args, stdout
         )
     })
+}
+
+fn run_tabctl_json(
+    tabctl_bin: &Path,
+    root: &Path,
+    profile: &str,
+    config_home: &Path,
+    state_home: &Path,
+    args: &[&str],
+) -> Result<Value, String> {
+    run_tabctl_json_with_timeout(
+        tabctl_bin,
+        root,
+        profile,
+        config_home,
+        state_home,
+        args,
+        Duration::from_secs(30),
+    )
 }
 
 fn assert_ok(action: &str, payload: &Value) {
@@ -247,7 +266,7 @@ fn real_browser_integration_harness_passes() {
 
     let mut bootstrap_ready = false;
     let mut last_ping_error = String::new();
-    for _ in 0..60 {
+    for _ in 0..24 {
         if let Some(status) = bootstrap
             .child_mut()
             .try_wait()
@@ -255,13 +274,14 @@ fn real_browser_integration_harness_passes() {
         {
             panic!("integration bootstrap exited unexpectedly with status {status}");
         }
-        match run_tabctl_json(
+        match run_tabctl_json_with_timeout(
             &tabctl_bin,
             &root,
             profile_name,
             &config_home,
             &state_home,
             &["ping"],
+            Duration::from_secs(5),
         ) {
             Ok(ping) => {
                 if ping.get("ok").and_then(Value::as_bool) == Some(true) {
