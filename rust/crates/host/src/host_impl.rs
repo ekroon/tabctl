@@ -751,10 +751,18 @@ mod tests {
                 assert_eq!(config.active_profile_name.as_deref(), Some("edge"));
                 assert_eq!(config.data_dir, profile_data_dir.display().to_string());
                 assert_eq!(config.base_data_dir, base_data_dir.display().to_string());
-                assert!(
-                    config.socket_path.ends_with("profiles/edge/tabctl.sock")
-                        || config.socket_path.ends_with("profiles\\edge\\tabctl.sock")
-                );
+                if cfg!(windows) {
+                    assert!(
+                        config.socket_path.starts_with(r"\\.\pipe\tabctl-"),
+                        "unexpected windows socket path: {}",
+                        config.socket_path
+                    );
+                } else {
+                    assert!(
+                        config.socket_path.ends_with("profiles/edge/tabctl.sock")
+                            || config.socket_path.ends_with("profiles\\edge\\tabctl.sock")
+                    );
+                }
             },
         );
 
