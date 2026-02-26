@@ -234,7 +234,7 @@ The integration test launches a headless Chrome with its own `--user-data-dir`, 
 Run:
 - `npm run test:integration`
 
-This covers destructive paths (close, undo) safely. To test additional destructive commands (archive, dedupe), add them to `src/scripts/integration-test.ts` rather than using mock sockets or manual browser testing.
+This covers destructive paths (close, undo) safely. To test additional destructive commands (archive, dedupe), add Rust-side scenarios in `rust/crates/tabctl/tests/browser_integration.rs` (keep `scripts/ci/integration-bootstrap.js` as thin browser bootstrap only).
 
 ## Hard stop rules
 - Never run `tabctl archive --all` or `tabctl close --apply` in a normal profile.

@@ -429,7 +429,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $Workspace
 $env:CHROME_PATH = $ChromePath
-node dist/scripts/integration-test.js
+npm run test:integration
 POWERSHELL
   local win_ps_runner
   win_ps_runner="$(wslpath -w "$ps_runner")"

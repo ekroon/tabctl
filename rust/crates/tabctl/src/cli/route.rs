@@ -158,8 +158,10 @@ pub(super) fn collect_scope_params(sub: &ArgMatches) -> Map<String, Value> {
     }
     copy_opt_u64(sub, "limit", &mut params, "limit");
     copy_opt_u64(sub, "offset", &mut params, "offset");
-    if sub.get_flag("no-page") {
-        params.insert("page".to_string(), Value::Bool(false));
+    if let Ok(Some(no_page)) = sub.try_get_one::<bool>("no-page") {
+        if *no_page {
+            params.insert("page".to_string(), Value::Bool(false));
+        }
     }
     params
 }
@@ -170,19 +172,19 @@ pub(super) fn copy_opt_string(
     out: &mut Map<String, Value>,
     key: &str,
 ) {
-    if let Some(value) = sub.get_one::<String>(src) {
+    if let Ok(Some(value)) = sub.try_get_one::<String>(src) {
         out.insert(key.to_string(), Value::String(value.to_string()));
     }
 }
 
 pub(super) fn copy_opt_i64(sub: &ArgMatches, src: &str, out: &mut Map<String, Value>, key: &str) {
-    if let Some(value) = sub.get_one::<i64>(src) {
+    if let Ok(Some(value)) = sub.try_get_one::<i64>(src) {
         out.insert(key.to_string(), Value::from(*value));
     }
 }
 
 pub(super) fn copy_opt_u64(sub: &ArgMatches, src: &str, out: &mut Map<String, Value>, key: &str) {
-    if let Some(value) = sub.get_one::<u64>(src) {
+    if let Ok(Some(value)) = sub.try_get_one::<u64>(src) {
         out.insert(key.to_string(), Value::from(*value));
     }
 }
@@ -201,7 +203,7 @@ pub(super) fn copy_many_strings(
     out: &mut Map<String, Value>,
     key: &str,
 ) {
-    if let Some(values) = sub.get_many::<String>(src) {
+    if let Ok(Some(values)) = sub.try_get_many::<String>(src) {
         let entries: Vec<Value> = values.map(|v| Value::String(v.to_string())).collect();
         if !entries.is_empty() {
             out.insert(key.to_string(), Value::Array(entries));
@@ -210,7 +212,7 @@ pub(super) fn copy_many_strings(
 }
 
 pub(super) fn copy_many_i64(sub: &ArgMatches, src: &str, out: &mut Map<String, Value>, key: &str) {
-    if let Some(values) = sub.get_many::<String>(src) {
+    if let Ok(Some(values)) = sub.try_get_many::<String>(src) {
         let mut ids = Vec::new();
         for value in values {
             if let Ok(id) = value.parse::<i64>() {
