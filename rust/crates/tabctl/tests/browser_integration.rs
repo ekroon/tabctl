@@ -359,6 +359,49 @@ fn real_browser_integration_harness_passes() {
     )
     .expect("open should succeed");
     assert_ok("open", &open);
+    let open_window_id = open
+        .pointer("/data/windowId")
+        .and_then(Value::as_i64)
+        .expect("open payload missing data.windowId");
+    let open_window_id_arg = open_window_id.to_string();
+    sleep(Duration::from_secs(2));
+
+    let open_reuse_group = run_tabctl_json(
+        &tabctl_bin,
+        &root,
+        profile_name,
+        &config_home,
+        &state_home,
+        &[
+            "open",
+            "--window",
+            open_window_id_arg.as_str(),
+            "--group",
+            test_group.as_str(),
+            "--color",
+            "blue",
+            "--url",
+            "https://example.com",
+            "--url",
+            "https://example.net",
+        ],
+    )
+    .expect("open into existing group should succeed");
+    assert_ok("open into existing group", &open_reuse_group);
+    assert_eq!(
+        open_reuse_group
+            .pointer("/data/summary/createdTabs")
+            .and_then(Value::as_u64),
+        Some(1),
+        "expected duplicate URL to be skipped and one tab to be created: {open_reuse_group}"
+    );
+    assert_eq!(
+        open_reuse_group
+            .pointer("/data/summary/skippedUrls")
+            .and_then(Value::as_u64),
+        Some(1),
+        "expected one skipped duplicate URL: {open_reuse_group}"
+    );
 
     sleep(Duration::from_secs(2));
 
@@ -368,10 +411,41 @@ fn real_browser_integration_harness_passes() {
         profile_name,
         &config_home,
         &state_home,
-        &["list", "--window", "last-focused"],
+        &["list", "--window", open_window_id_arg.as_str()],
     )
-    .expect("list --window last-focused should succeed");
-    assert_ok("list --window last-focused", &list_last_focused);
+    .expect("list --window <open window> should succeed");
+    assert_ok("list --window <open window>", &list_last_focused);
+    let windows = list_last_focused
+        .pointer("/data/windows")
+        .and_then(Value::as_array)
+        .expect("list payload missing data.windows");
+    let mut example_net_group_title: Option<String> = None;
+    let mut example_net_ungrouped = false;
+    for window in windows {
+        if let Some(tabs) = window.get("tabs").and_then(Value::as_array) {
+            for tab in tabs {
+                let url = tab.get("url").and_then(Value::as_str).unwrap_or_default();
+                if url.starts_with("https://example.net") {
+                    if tab.get("groupId").and_then(Value::as_i64) == Some(-1) {
+                        example_net_ungrouped = true;
+                    }
+                    example_net_group_title = tab
+                        .get("groupTitle")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned);
+                }
+            }
+        }
+    }
+    assert_eq!(
+        example_net_group_title.as_deref(),
+        Some(test_group.as_str()),
+        "example.net tab should be in the target group: {list_last_focused}"
+    );
+    assert!(
+        !example_net_ungrouped,
+        "example.net tab must not be left ungrouped: {list_last_focused}"
+    );
 
     let groups = run_tabctl_json(
         &tabctl_bin,
@@ -379,7 +453,7 @@ fn real_browser_integration_harness_passes() {
         profile_name,
         &config_home,
         &state_home,
-        &["group-list", "--window", "last-focused"],
+        &["group-list", "--window", open_window_id_arg.as_str()],
     )
     .expect("group-list should succeed");
     assert_ok("group-list", &groups);
@@ -395,7 +469,7 @@ fn real_browser_integration_harness_passes() {
             "--group",
             test_group.as_str(),
             "--window",
-            "last-focused",
+            open_window_id_arg.as_str(),
             "--confirm",
         ],
     )

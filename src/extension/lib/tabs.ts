@@ -457,6 +457,28 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
     groupId = existingGroupId;
   }
 
+  const targetGroupId = groupId ?? existingGroupId;
+  if (targetGroupId != null && created.length > 0) {
+    try {
+      const createdTabIds = new Set(
+        created
+          .map((tab) => tab.tabId)
+          .filter((id): id is number => typeof id === "number"),
+      );
+      if (createdTabIds.size > 0) {
+        const latestTabs = await chrome.tabs.query({ windowId });
+        const missingGroupTabIds = latestTabs
+          .filter((tab) => typeof tab.id === "number" && createdTabIds.has(tab.id) && tab.groupId !== targetGroupId)
+          .map((tab) => tab.id as number);
+        if (missingGroupTabIds.length > 0) {
+          await chrome.tabs.group({ groupId: targetGroupId, tabIds: missingGroupTabIds });
+        }
+      }
+    } catch (error) {
+      deps.log("Failed to enforce grouping for newly opened tabs", error);
+    }
+  }
+
   // Reorder: groups before ungrouped tabs
   try {
     const freshTabs = await chrome.tabs.query({ windowId });
@@ -493,5 +515,4 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
     },
   };
 }
-
 
