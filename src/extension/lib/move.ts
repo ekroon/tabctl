@@ -219,6 +219,34 @@ export async function moveGroup(params: Record<string, unknown>, deps: Pick<Exte
   if (!source.tabs.length) {
     throw new Error("Group has no tabs to move");
   }
+  const ensureMovedTabsAreGrouped = async (
+    movedTabIds: number[],
+    targetWindowId: number,
+    targetGroupId: number | null,
+  ) => {
+    if (!targetGroupId || movedTabIds.length === 0) {
+      return;
+    }
+    const movedSet = new Set(movedTabIds);
+    const verify = async (step: string) => {
+      const tabs = await chrome.tabs.query({ windowId: targetWindowId });
+      const missingGroupTabIds = tabs
+        .filter((tab) => typeof tab.id === "number" && movedSet.has(tab.id) && tab.groupId !== targetGroupId)
+        .map((tab) => tab.id as number);
+      if (missingGroupTabIds.length > 0) {
+        await chrome.tabs.group({ groupId: targetGroupId, tabIds: missingGroupTabIds });
+      }
+    };
+    try {
+      await verify("group-verify");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await verify("group-verify-delayed");
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await verify("group-verify-delayed-late");
+    } catch (error) {
+      deps.log("Failed to enforce moved group integrity", error);
+    }
+  };
 
   const newWindow = params.newWindow === true;
   const hasTarget = Number.isFinite(params.beforeTabId as number)
@@ -252,6 +280,7 @@ export async function moveGroup(params: Record<string, unknown>, deps: Pick<Exte
     } catch (error) {
       deps.log("Failed to regroup tabs", error);
     }
+    await ensureMovedTabsAreGrouped(tabIds, targetWindowId, newGroupId);
 
     const undoTabs = source.tabs
       .map((tab) => ({
@@ -334,6 +363,11 @@ export async function moveGroup(params: Record<string, unknown>, deps: Pick<Exte
       deps.log("Failed to regroup tabs", error);
     }
   }
+  await ensureMovedTabsAreGrouped(
+    tabIds,
+    targetWindowId,
+    targetWindowId === source.windowId ? (source.group.groupId as number) : newGroupId,
+  );
 
   const undoTabs = source.tabs
     .map((tab) => ({
