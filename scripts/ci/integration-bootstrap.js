@@ -163,6 +163,34 @@ async function ensureNativePortConnected(sessionId, timeoutMs) {
   throw new Error("native port did not connect before timeout");
 }
 
+async function startNativeReconnectHeartbeat(sessionId) {
+  const evaluation = await sendCDP(
+    "Runtime.evaluate",
+    {
+      expression: `
+        (() => {
+          if (!self.__tabctl) return false;
+          if (!self.__tabctl.__ciNativeReconnectHeartbeat) {
+            self.__tabctl.__ciNativeReconnectHeartbeat = setInterval(() => {
+              self.__tabctl?.connectNative?.();
+            }, 1000);
+          }
+          return true;
+        })();
+      `,
+      returnByValue: true,
+    },
+    sessionId
+  );
+  if (evaluation?.exceptionDetails) {
+    const detail =
+      evaluation.exceptionDetails.exception?.description ||
+      evaluation.exceptionDetails.text ||
+      "unknown runtime exception";
+    throw new Error(`failed to start native reconnect heartbeat: ${detail}`);
+  }
+}
+
 async function shutdown(exitCode) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -271,6 +299,7 @@ async function main() {
 
   const sessionId = await attachServiceWorker(extensionId, timeoutMs);
   await ensureNativePortConnected(sessionId, timeoutMs);
+  await startNativeReconnectHeartbeat(sessionId);
 
   process.stdout.write(`${JSON.stringify({ ok: true, event: "ready", extensionId })}\n`);
   keepAlive = setInterval(() => {}, 60_000);
