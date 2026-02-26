@@ -1,0 +1,632 @@
+use super::*;
+
+pub(super) fn build_cli() -> Command {
+    Command::new("tabctl")
+        .disable_help_subcommand(true)
+        .arg(
+            Arg::new("json")
+                .long("json")
+                .action(ArgAction::SetTrue)
+                .global(true),
+        )
+        .arg(
+            Arg::new("pretty")
+                .long("pretty")
+                .action(ArgAction::SetTrue)
+                .global(true),
+        )
+        .arg(
+            Arg::new("no-pretty")
+                .long("no-pretty")
+                .action(ArgAction::SetTrue)
+                .global(true),
+        )
+        .arg(
+            Arg::new("profile")
+                .long("profile")
+                .value_name("name")
+                .global(true),
+        )
+        .arg(
+            Arg::new("progress")
+                .long("progress")
+                .action(ArgAction::SetTrue)
+                .global(true),
+        )
+        .arg(
+            Arg::new("version")
+                .long("version")
+                .short('v')
+                .action(ArgAction::SetTrue)
+                .global(true),
+        )
+        .subcommand(command_with_scope("ping"))
+        .subcommand(command_list())
+        .subcommand(
+            command_with_scope("group-list")
+                .visible_alias("groups")
+                .visible_alias("group"),
+        )
+        .subcommand(command_analyze())
+        .subcommand(command_dedupe())
+        .subcommand(command_inspect())
+        .subcommand(command_with_scope("focus"))
+        .subcommand(command_with_scope("refresh"))
+        .subcommand(command_open())
+        .subcommand(command_group_update())
+        .subcommand(command_group_ungroup())
+        .subcommand(command_group_assign())
+        .subcommand(command_with_scope("group-gather"))
+        .subcommand(command_move_tab())
+        .subcommand(command_move_group())
+        .subcommand(command_merge_window())
+        .subcommand(command_with_scope("archive"))
+        .subcommand(command_close())
+        .subcommand(command_report())
+        .subcommand(command_setup())
+        .subcommand(command_doctor())
+        .subcommand(command_policy())
+        .subcommand(command_skill())
+        .subcommand(command_profile_list())
+        .subcommand(command_profile_show())
+        .subcommand(command_profile_switch())
+        .subcommand(command_profile_remove())
+        .subcommand(command_help())
+        .subcommand(command_version())
+        .subcommand(command_screenshot())
+        .subcommand(command_undo())
+        .subcommand(
+            Command::new("history").arg(
+                Arg::new("limit")
+                    .long("limit")
+                    .value_parser(value_parser!(u64))
+                    .value_name("n"),
+            ),
+        )
+        .subcommand(
+            Command::new("extension-fetch")
+                .arg(
+                    Arg::new("version")
+                        .long("version")
+                        .value_name("version|tag"),
+                )
+                .arg(
+                    Arg::new("repo")
+                        .long("repo")
+                        .value_name("owner/repo")
+                        .default_value("ekroon/tabctl"),
+                )
+                .arg(
+                    Arg::new("asset")
+                        .long("asset")
+                        .value_name("name")
+                        .default_value("tabctl-extension.zip"),
+                )
+                .arg(Arg::new("out").long("out").value_name("path")),
+        )
+        .subcommand(command_with_scope("reload"))
+}
+
+pub(super) fn command_list() -> Command {
+    command_with_scope("list").arg(Arg::new("groups").long("groups").action(ArgAction::SetTrue))
+}
+
+pub(super) fn command_help() -> Command {
+    Command::new("help").arg(Arg::new("command").value_name("command").index(1))
+}
+
+pub(super) fn command_version() -> Command {
+    Command::new("version")
+}
+
+pub(super) fn command_doctor() -> Command {
+    Command::new("doctor").arg(Arg::new("fix").long("fix").action(ArgAction::SetTrue))
+}
+
+pub(super) fn command_policy() -> Command {
+    Command::new("policy").arg(Arg::new("init").long("init").action(ArgAction::SetTrue))
+}
+
+pub(super) fn command_skill() -> Command {
+    Command::new("skill")
+        .arg(
+            Arg::new("agent")
+                .long("agent")
+                .action(ArgAction::Append)
+                .value_name("name"),
+        )
+        .arg(Arg::new("global").long("global").action(ArgAction::SetTrue))
+}
+
+pub(super) fn command_profile_list() -> Command {
+    Command::new("profile-list")
+}
+
+pub(super) fn command_profile_show() -> Command {
+    Command::new("profile-show")
+}
+
+pub(super) fn command_profile_switch() -> Command {
+    Command::new("profile-switch").arg(Arg::new("name").value_name("name").required(true))
+}
+
+pub(super) fn command_profile_remove() -> Command {
+    Command::new("profile-remove").arg(Arg::new("name").value_name("name").required(true))
+}
+
+pub(super) fn command_setup() -> Command {
+    Command::new("setup")
+        .arg(
+            Arg::new("browser")
+                .long("browser")
+                .required(true)
+                .value_name("edge|chrome"),
+        )
+        .arg(
+            Arg::new("skip-extension-download")
+                .long("skip-extension-download")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("release-repo")
+                .long("release-repo")
+                .value_name("owner/repo"),
+        )
+        .arg(
+            Arg::new("release-tag")
+                .long("release-tag")
+                .value_name("tag|version"),
+        )
+        .arg(
+            Arg::new("release-version")
+                .long("release-version")
+                .value_name("version"),
+        )
+        .arg(
+            Arg::new("release-asset")
+                .long("release-asset")
+                .value_name("name"),
+        )
+        .arg(
+            Arg::new("extension-id")
+                .long("extension-id")
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("extension-dir")
+                .long("extension-dir")
+                .value_name("path"),
+        )
+        .arg(Arg::new("node").long("node").value_name("path"))
+        .arg(Arg::new("name").long("name").value_name("name"))
+        .arg(
+            Arg::new("user-data-dir")
+                .long("user-data-dir")
+                .value_name("path"),
+        )
+}
+
+pub(super) fn command_with_scope(name: &'static str) -> Command {
+    Command::new(name)
+        .arg(
+            Arg::new("tab")
+                .long("tab")
+                .action(ArgAction::Append)
+                .value_name("id"),
+        )
+        .arg(Arg::new("group").long("group").value_name("name"))
+        .arg(
+            Arg::new("group-id")
+                .long("group-id")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("ungrouped")
+                .long("ungrouped")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("window")
+                .long("window")
+                .value_name("id|active|last-focused|new"),
+        )
+        .arg(Arg::new("all").long("all").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("limit")
+                .long("limit")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("offset")
+                .long("offset")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("no-page")
+                .long("no-page")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+pub(super) fn command_with_scope_no_all(name: &'static str) -> Command {
+    Command::new(name)
+        .arg(
+            Arg::new("tab")
+                .long("tab")
+                .action(ArgAction::Append)
+                .value_name("id"),
+        )
+        .arg(Arg::new("group").long("group").value_name("name"))
+        .arg(
+            Arg::new("group-id")
+                .long("group-id")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("ungrouped")
+                .long("ungrouped")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("window")
+                .long("window")
+                .value_name("id|active|last-focused|new"),
+        )
+        .arg(
+            Arg::new("limit")
+                .long("limit")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("offset")
+                .long("offset")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("no-page")
+                .long("no-page")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+pub(super) fn command_open() -> Command {
+    command_with_scope("open")
+        .arg(
+            Arg::new("url")
+                .long("url")
+                .action(ArgAction::Append)
+                .value_name("url"),
+        )
+        .arg(Arg::new("color").long("color").value_name("name"))
+        .arg(
+            Arg::new("before-tab")
+                .long("before-tab")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("after-tab")
+                .long("after-tab")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("after-group")
+                .long("after-group")
+                .value_name("name"),
+        )
+        .arg(
+            Arg::new("new-window")
+                .long("new-window")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("window-group")
+                .long("window-group")
+                .value_name("name"),
+        )
+        .arg(
+            Arg::new("window-tab")
+                .long("window-tab")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("window-url")
+                .long("window-url")
+                .value_name("substring"),
+        )
+        .arg(
+            Arg::new("new-group")
+                .long("new-group")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("allow-duplicates")
+                .long("allow-duplicates")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+pub(super) fn command_group_update() -> Command {
+    command_with_scope("group-update")
+        .arg(Arg::new("title").long("title").value_name("name"))
+        .arg(Arg::new("color").long("color").value_name("name"))
+        .arg(
+            Arg::new("collapsed")
+                .long("collapsed")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("expanded")
+                .long("expanded")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+pub(super) fn command_group_ungroup() -> Command {
+    command_with_scope("group-ungroup")
+}
+
+pub(super) fn command_group_assign() -> Command {
+    command_with_scope("group-assign")
+        .arg(Arg::new("create").long("create").action(ArgAction::SetTrue))
+        .arg(Arg::new("color").long("color").value_name("name"))
+        .arg(
+            Arg::new("collapsed")
+                .long("collapsed")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("expanded")
+                .long("expanded")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+pub(super) fn command_merge_window() -> Command {
+    Command::new("merge-window")
+        .arg(
+            Arg::new("from")
+                .long("from")
+                .required(true)
+                .value_parser(value_parser!(i64)),
+        )
+        .arg(
+            Arg::new("to")
+                .long("to")
+                .required(true)
+                .value_parser(value_parser!(i64)),
+        )
+        .arg(
+            Arg::new("close-source")
+                .long("close-source")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("confirm")
+                .long("confirm")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+pub(super) fn command_close() -> Command {
+    command_with_scope_no_all("close")
+        .arg(Arg::new("apply").long("apply").value_name("analysisId"))
+        .arg(
+            Arg::new("confirm")
+                .long("confirm")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("dry-run")
+                .long("dry-run")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+pub(super) fn command_report() -> Command {
+    command_with_scope("report")
+        .arg(Arg::new("format").long("format").value_name("json|md|csv"))
+        .arg(Arg::new("out").long("out").value_name("path"))
+}
+
+pub(super) fn command_analyze() -> Command {
+    command_with_scope("analyze")
+        .arg(
+            Arg::new("stale-days")
+                .long("stale-days")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("window-title")
+                .long("window-title")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+pub(super) fn command_dedupe() -> Command {
+    command_with_scope("dedupe")
+        .arg(
+            Arg::new("stale-days")
+                .long("stale-days")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("include-stale")
+                .long("include-stale")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("window-title")
+                .long("window-title")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("confirm")
+                .long("confirm")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+pub(super) fn command_inspect() -> Command {
+    command_with_scope("inspect")
+        .arg(
+            Arg::new("signal-config")
+                .long("signal-config")
+                .value_name("path"),
+        )
+        .arg(
+            Arg::new("signal")
+                .long("signal")
+                .action(ArgAction::Append)
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("selector")
+                .long("selector")
+                .action(ArgAction::Append)
+                .value_name("name=css|json"),
+        )
+        .arg(
+            Arg::new("selector-attr")
+                .long("selector-attr")
+                .value_name("attr"),
+        )
+        .arg(
+            Arg::new("signal-concurrency")
+                .long("signal-concurrency")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("signal-timeout-ms")
+                .long("signal-timeout-ms")
+                .value_parser(value_parser!(u64))
+                .value_name("ms"),
+        )
+        .arg(
+            Arg::new("wait-for")
+                .long("wait-for")
+                .value_name("load|dom|settle|none"),
+        )
+        .arg(
+            Arg::new("wait-timeout-ms")
+                .long("wait-timeout-ms")
+                .value_parser(value_parser!(u64))
+                .value_name("ms"),
+        )
+}
+
+pub(super) fn command_screenshot() -> Command {
+    command_with_scope("screenshot")
+        .arg(Arg::new("mode").long("mode").value_name("viewport|full"))
+        .arg(Arg::new("format").long("format").value_name("png|jpeg"))
+        .arg(
+            Arg::new("quality")
+                .long("quality")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("tile-max-dim")
+                .long("tile-max-dim")
+                .value_parser(value_parser!(u64))
+                .value_name("px"),
+        )
+        .arg(
+            Arg::new("max-bytes")
+                .long("max-bytes")
+                .value_parser(value_parser!(u64))
+                .value_name("n"),
+        )
+        .arg(
+            Arg::new("wait-for")
+                .long("wait-for")
+                .value_name("load|dom|settle|none"),
+        )
+        .arg(
+            Arg::new("wait-timeout-ms")
+                .long("wait-timeout-ms")
+                .value_parser(value_parser!(u64))
+                .value_name("ms"),
+        )
+        .arg(Arg::new("out").long("out").value_name("dir"))
+}
+
+pub(super) fn command_move_tab() -> Command {
+    command_with_scope("move-tab")
+        .arg(
+            Arg::new("before-tab")
+                .long("before-tab")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("after-tab")
+                .long("after-tab")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("before-group")
+                .long("before-group")
+                .value_name("name"),
+        )
+        .arg(
+            Arg::new("after-group")
+                .long("after-group")
+                .value_name("name"),
+        )
+        .arg(
+            Arg::new("new-window")
+                .long("new-window")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+pub(super) fn command_move_group() -> Command {
+    command_with_scope("move-group")
+        .arg(
+            Arg::new("before-tab")
+                .long("before-tab")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("after-tab")
+                .long("after-tab")
+                .value_parser(value_parser!(i64))
+                .value_name("id"),
+        )
+        .arg(
+            Arg::new("before-group")
+                .long("before-group")
+                .value_name("name"),
+        )
+        .arg(
+            Arg::new("after-group")
+                .long("after-group")
+                .value_name("name"),
+        )
+        .arg(
+            Arg::new("new-window")
+                .long("new-window")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+pub(super) fn command_undo() -> Command {
+    Command::new("undo")
+        .arg(Arg::new("txid").value_name("txid").index(1))
+        .arg(Arg::new("txid-flag").long("txid").value_name("txid"))
+        .arg(Arg::new("latest").long("latest").action(ArgAction::SetTrue))
+}
