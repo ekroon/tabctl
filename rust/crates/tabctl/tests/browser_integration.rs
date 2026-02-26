@@ -596,7 +596,10 @@ fn real_browser_integration_harness_passes() {
         &["list", "--window", open_window_id_arg.as_str()],
     )
     .expect("list busy window after delayed open should succeed");
-    assert_ok("list busy window after delayed open", &list_busy_open_delayed);
+    assert_ok(
+        "list busy window after delayed open",
+        &list_busy_open_delayed,
+    );
     assert_move_tabs_grouped(&list_busy_open_delayed, "busy-open-delayed");
 
     let move_group = run_tabctl_json(
