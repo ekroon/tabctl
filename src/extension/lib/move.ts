@@ -8,10 +8,6 @@ type GroupMatch = import("./groups").GroupMatch;
 
 import type { ExtensionDeps } from "./deps";
 
-function mutationResponse(_params: Record<string, unknown>, compactData: Record<string, unknown>, _fullData: Record<string, unknown>) {
-  return compactData;
-}
-
 export function resolveMoveTarget(snapshot: { windows: Array<Record<string, unknown>> }, params: Record<string, unknown>, deps: Pick<ExtensionDeps, "resolveGroupByTitle">) {
   const beforeTabId = Number(params.beforeTabId);
   const afterTabId = Number(params.afterTabId);
@@ -157,14 +153,14 @@ export async function moveTab(params: Record<string, unknown>, deps: Pick<Extens
       },
       txid: params.txid || null,
     };
-    return mutationResponse(params, {
+    return {
       tabId,
       fromWindowId: sourceWindow.windowId,
       toWindowId: targetWindowId,
       summary: fullResult.summary,
       undo: fullResult.undo,
       txid: fullResult.txid,
-    }, fullResult);
+    };
   }
 
   let normalizedParams = params;
@@ -209,14 +205,14 @@ export async function moveTab(params: Record<string, unknown>, deps: Pick<Extens
     },
     txid: params.txid || null,
   };
-  return mutationResponse(params, {
+  return {
     tabId,
     fromWindowId: sourceWindow.windowId,
     toWindowId: targetWindowId,
     summary: fullResult.summary,
     undo: fullResult.undo,
     txid: fullResult.txid,
-  }, fullResult);
+  };
 }
 
 export async function moveGroup(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "log" | "resolveWindowIdFromParams" | "resolveGroupByTitle" | "resolveGroupById">) {
@@ -332,7 +328,7 @@ export async function moveGroup(params: Record<string, unknown>, deps: Pick<Exte
       },
       txid: params.txid || null,
     };
-    return mutationResponse(params, {
+    return {
       groupId: source.group.groupId as number,
       windowId: source.windowId,
       movedToWindowId: targetWindowId,
@@ -340,7 +336,7 @@ export async function moveGroup(params: Record<string, unknown>, deps: Pick<Exte
       summary: fullResult.summary,
       undo: fullResult.undo,
       txid: fullResult.txid,
-    }, fullResult);
+    };
   }
 
   const target = resolveMoveTarget(snapshot, params, deps);
@@ -428,7 +424,7 @@ export async function moveGroup(params: Record<string, unknown>, deps: Pick<Exte
     },
     txid: params.txid || null,
   };
-  return mutationResponse(params, {
+  return {
     groupId: source.group.groupId as number,
     windowId: source.windowId,
     movedToWindowId: targetWindowId,
@@ -436,5 +432,5 @@ export async function moveGroup(params: Record<string, unknown>, deps: Pick<Exte
     summary: fullResult.summary,
     undo: fullResult.undo,
     txid: fullResult.txid,
-  }, fullResult);
+  };
 }

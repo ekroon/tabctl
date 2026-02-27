@@ -2,24 +2,19 @@ use super::*;
 
 pub(super) fn render_local_command(
     matches: &ArgMatches,
-    action: &str,
+    _action: &str,
     data: Value,
 ) -> Result<(), String> {
-    let payload = json!({
-        "ok": true,
-        "action": action,
-        "data": data
-    });
     if matches.get_flag("json") {
         if !matches.get_flag("no-pretty") {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+                serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?
             );
         } else {
             println!(
                 "{}",
-                serde_json::to_string(&payload).map_err(|e| e.to_string())?
+                serde_json::to_string(&data).map_err(|e| e.to_string())?
             );
         }
         return Ok(());
@@ -103,10 +98,7 @@ pub(super) fn compact_response_payload(response: &ResponseEnvelope) -> Value {
     if let Some(error) = &response.error {
         return json!({
             "ok": false,
-            "error": {
-                "message": error.message,
-                "hint": error.hint
-            }
+            "error": error
         });
     }
     json!({

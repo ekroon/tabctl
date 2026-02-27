@@ -22,10 +22,6 @@ export type GroupSummary = {
 
 import type { ExtensionDeps } from "./deps";
 
-function mutationResponse(_params: Record<string, unknown>, compactData: Record<string, unknown>, _fullData: Record<string, unknown>) {
-  return compactData;
-}
-
 export function getGroupTabs(windowSnapshot: WindowSnapshot, groupId: number) {
   return windowSnapshot.tabs
     .filter((tab) => tab.groupId === groupId)
@@ -254,13 +250,13 @@ export async function groupUpdate(params: Record<string, unknown>, deps: Pick<Ex
     },
     txid: params.txid || null,
   };
-  return mutationResponse(params, {
+  return {
     groupId: updated.id,
     windowId: updated.windowId,
     summary: { updatedGroups: 1 },
     undo: fullResult.undo,
     txid: fullResult.txid,
-  }, fullResult);
+  };
 }
 
 export async function groupUngroup(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "buildWindowLabels" | "resolveWindowIdFromParams">) {
@@ -332,13 +328,13 @@ export async function groupUngroup(params: Record<string, unknown>, deps: Pick<E
     },
     txid: params.txid || null,
   };
-  return mutationResponse(params, {
+  return {
     groupId: match.group.groupId,
     windowId: match.windowId,
     summary: fullResult.summary,
     undo: fullResult.undo,
     txid: fullResult.txid,
-  }, fullResult);
+  };
 }
 
 export async function groupAssign(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "buildWindowLabels" | "resolveWindowIdFromParams" | "log">) {
@@ -497,7 +493,7 @@ export async function groupAssign(params: Record<string, unknown>, deps: Pick<Ex
     },
     txid: params.txid || null,
   };
-  return mutationResponse(params, {
+  return {
     groupId: assignedGroupId,
     windowId: targetWindowId,
     created,
@@ -505,7 +501,7 @@ export async function groupAssign(params: Record<string, unknown>, deps: Pick<Ex
     skipped: fullResult.skipped,
     undo: fullResult.undo,
     txid: fullResult.txid,
-  }, fullResult);
+  };
 }
 
 export async function groupGather(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "buildWindowLabels" | "resolveWindowIdFromParams" | "log">) {
@@ -597,10 +593,10 @@ export async function groupGather(params: Record<string, unknown>, deps: Pick<Ex
     },
     txid: params.txid || null,
   };
-  return mutationResponse(params, {
+  return {
     merged,
     summary: fullResult.summary,
     undo: fullResult.undo,
     txid: fullResult.txid,
-  }, fullResult);
+  };
 }

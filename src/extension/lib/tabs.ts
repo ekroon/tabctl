@@ -55,7 +55,6 @@ export function normalizeTabIndex(value: unknown) {
 }
 
 function shapeOpenResult(
-  _params: Record<string, unknown>,
   result: {
     windowId: number;
     groupId: number | null;
@@ -306,7 +305,7 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
       }
     }
 
-    return shapeOpenResult(params, {
+    return shapeOpenResult({
       windowId,
       groupId,
       groupTitle: groupTitle || null,
@@ -556,7 +555,7 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
     }
   }
 
-  return shapeOpenResult(params, {
+  return shapeOpenResult({
     windowId,
     groupId,
     groupTitle: groupTitle || null,

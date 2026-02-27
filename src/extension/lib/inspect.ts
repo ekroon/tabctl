@@ -200,7 +200,6 @@ export async function inspectTabs(params: Record<string, unknown>, requestId: st
 
       let result: unknown = null;
       let error: string | null = null;
-      const started = Date.now();
       try {
         await waitForTabReady(tabId, params, signalTimeoutMs);
         result = await task.signal.run(tabId);

@@ -4,10 +4,6 @@ type WindowSnapshot = import("./groups").WindowSnapshot;
 
 import type { ExtensionDeps } from "./deps";
 
-function mutationResponse(_params: Record<string, unknown>, compactData: Record<string, unknown>, _fullData: Record<string, unknown>) {
-  return compactData;
-}
-
 export async function ensureArchiveWindow(deps: Pick<ExtensionDeps, "getArchiveWindowId" | "setArchiveWindowId">) {
   const archiveWindowId = await deps.getArchiveWindowId();
   if (archiveWindowId) {
@@ -63,7 +59,7 @@ export async function archiveTabs(params: Record<string, unknown>, deps: Pick<Ex
       skipped: [],
       undo: { action: "archive", tabs: [] },
     };
-    return mutationResponse(params, fullResult, fullResult);
+    return fullResult;
   }
 
   const archiveWindowId = await ensureArchiveWindow(deps);
@@ -200,13 +196,13 @@ export async function archiveTabs(params: Record<string, unknown>, deps: Pick<Ex
       tabs: undoTabs,
     },
   };
-  return mutationResponse(params, {
+  return {
     txid: fullResult.txid,
     summary: fullResult.summary,
     archiveWindowId,
     skipped: fullResult.skipped,
     undo: fullResult.undo,
-  }, fullResult);
+  };
 }
 
 export async function getTabsByIds(tabIds: Array<number>) {
@@ -245,7 +241,7 @@ export async function closeTabs(params: Record<string, unknown>, deps: Pick<Exte
       skipped: [],
       undo: { action: "close", tabs: [] },
     };
-    return mutationResponse(params, fullResult, fullResult);
+    return fullResult;
   }
 
   const expectedUrls = (params.expectedUrls as Record<string, string>) || {};
@@ -310,12 +306,12 @@ export async function closeTabs(params: Record<string, unknown>, deps: Pick<Exte
       })),
     },
   };
-  return mutationResponse(params, {
+  return {
     txid: fullResult.txid,
     summary: fullResult.summary,
     skipped: fullResult.skipped,
     undo: fullResult.undo,
-  }, fullResult);
+  };
 }
 
 export async function mergeWindow(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "log">) {
@@ -373,7 +369,7 @@ export async function mergeWindow(params: Record<string, unknown>, deps: Pick<Ex
         tabs: [],
       },
     };
-    return mutationResponse(params, fullResult, fullResult);
+    return fullResult;
   }
 
   const orderedTabs = [...selectedTabs].sort((a, b) => {
@@ -498,7 +494,7 @@ export async function mergeWindow(params: Record<string, unknown>, deps: Pick<Ex
     },
     txid: params.txid || null,
   };
-  return mutationResponse(params, {
+  return {
     fromWindowId,
     toWindowId,
     summary: fullResult.summary,
@@ -506,5 +502,5 @@ export async function mergeWindow(params: Record<string, unknown>, deps: Pick<Ex
     groups: fullResult.groups,
     undo: fullResult.undo,
     txid: fullResult.txid,
-  }, fullResult);
+  };
 }

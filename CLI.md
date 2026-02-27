@@ -60,13 +60,13 @@ tabctl output is compact by default so automation can depend on stable, minimal 
 - `inspect`: request additional metadata via `--signal` (`page-meta`, `selector`) and `--selector` options.
 - `screenshot`: use `--mode full` for tiled full-page capture output (default remains viewport).
 - `report`: select `--format json|md|csv` depending on downstream detail needs.
-- `ping`: use `--json` for runtime/version sync fields (`data.versionsInSync`, `data.hostBaseVersion`, `data.baseVersion`).
+- `ping`: use `--json` for runtime/version sync fields (`versionsInSync`, `hostBaseVersion`, `baseVersion`).
 
 There is no global `--verbose` or `--full` flag today; use the command-local options above.
 
 ### Migration notes (known output-shape changes)
-- `list --json` is window-nested (`data.windows[].tabs[]`); update parsers that assumed a flat top-level tabs array.
-- `history --json` returns entries as an array under `data` (`.data[]`).
+- `list --json` is window-nested (`windows[].tabs[]`); update parsers that assumed a flat top-level tabs array.
+- `history --json` returns a top-level array (`.[]`).
 - Non-health commands (`open`, `list`, etc.) no longer carry version metadata; use `tabctl ping --json` for version/sync fields.
 - `list` and `group-list` now paginate by default (limit 100); add `--limit`, `--offset`, or `--no-page` where full result sets are required.
 
@@ -112,7 +112,7 @@ List browser tabs.
 ```bash
 tabctl list
 ```
-JSON output is nested under `data.windows[].tabs[]` when using `--json`.
+JSON output is nested under `windows[].tabs[]` when using `--json`.
 
 **Uses:** [Scope Options](#scope-options), [Pagination Options](#pagination-options)
 
@@ -453,11 +453,11 @@ Options:
 ```bash
 tabctl history --limit 20
 ```
-Returns a JSON array under `data`.
+Returns a top-level JSON array.
 
 JSON example:
 ```bash
-tabctl history --json | jq -r '.data[] | {txid, action, summary}'
+tabctl history --json | jq -r '.[] | {txid, action, summary}'
 ```
 
 ### extension-fetch
@@ -523,7 +523,7 @@ Check host/extension connectivity and runtime version sync status.
 ```bash
 tabctl ping
 ```
-Use `tabctl ping --json` as the canonical runtime version surface (`data.versionsInSync`, `data.hostBaseVersion`, `data.baseVersion`).
+Use `tabctl ping --json` as the canonical runtime version surface (`versionsInSync`, `hostBaseVersion`, `baseVersion`).
 Non-health command outputs (`open`, `list`, etc.) intentionally do not include version metadata.
 
 ### host
