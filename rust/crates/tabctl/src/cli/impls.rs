@@ -222,6 +222,66 @@ mod tests {
     }
 
     #[test]
+    fn compact_response_payload_prefers_data_for_success() {
+        let response = ResponseEnvelope {
+            ok: true,
+            action: Some("list".to_string()),
+            request_id: Some("req-1".to_string()),
+            component: Some("host".to_string()),
+            version: Some("1.0.0".to_string()),
+            progress: None,
+            data: Some(json!({"windows":[{"windowId": 1}]})),
+            error: None,
+        };
+        assert_eq!(
+            compact_response_payload(&response),
+            json!({"windows":[{"windowId": 1}]})
+        );
+    }
+
+    #[test]
+    fn compact_response_payload_uses_minimal_error_shape() {
+        let response = ResponseEnvelope {
+            ok: false,
+            action: Some("list".to_string()),
+            request_id: Some("req-2".to_string()),
+            component: Some("host".to_string()),
+            version: Some("1.0.0".to_string()),
+            progress: None,
+            data: None,
+            error: Some(tabctl_shared::ProtocolError {
+                message: "boom".to_string(),
+                hint: Some("retry".to_string()),
+            }),
+        };
+        assert_eq!(
+            compact_response_payload(&response),
+            json!({"ok": false, "error": {"message": "boom", "hint": "retry"}})
+        );
+    }
+
+    #[test]
+    fn compact_response_payload_omits_empty_error_hint() {
+        let response = ResponseEnvelope {
+            ok: false,
+            action: Some("list".to_string()),
+            request_id: Some("req-3".to_string()),
+            component: Some("host".to_string()),
+            version: Some("1.0.0".to_string()),
+            progress: None,
+            data: None,
+            error: Some(tabctl_shared::ProtocolError {
+                message: "boom".to_string(),
+                hint: None,
+            }),
+        };
+        assert_eq!(
+            compact_response_payload(&response),
+            json!({"ok": false, "error": {"message": "boom"}})
+        );
+    }
+
+    #[test]
     fn maps_no_page_and_valid_tab_ids_only() {
         let matches = build_cli()
             .try_get_matches_from([

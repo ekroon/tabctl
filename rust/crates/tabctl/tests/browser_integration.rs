@@ -139,11 +139,22 @@ fn run_tabctl_json(
 }
 
 fn assert_ok(action: &str, payload: &Value) {
-    assert_eq!(
-        payload.get("ok").and_then(Value::as_bool),
-        Some(true),
-        "tabctl {action} returned non-ok payload: {payload}"
-    );
+    if payload.get("ok").is_some() {
+        assert_eq!(
+            payload.get("ok").and_then(Value::as_bool),
+            Some(true),
+            "tabctl {action} returned non-ok payload: {payload}"
+        );
+    } else {
+        assert!(
+            payload.get("error").is_none(),
+            "tabctl {action} returned error payload: {payload}"
+        );
+    }
+}
+
+fn response_data(payload: &Value) -> &Value {
+    payload.get("data").unwrap_or(payload)
 }
 
 struct ChildGuard {
@@ -241,13 +252,14 @@ fn real_browser_integration_harness_passes() {
     .expect("setup command should succeed");
     assert_ok("setup", &setup);
 
-    let active_extension_dir = setup
-        .pointer("/data/extensionSync/activePath")
+    let setup_data = response_data(&setup);
+    let active_extension_dir = setup_data
+        .pointer("/extensionSync/activePath")
         .and_then(Value::as_str)
         .map(PathBuf::from)
         .unwrap_or(extension_dir);
-    let host_wrapper = setup
-        .pointer("/data/wrapperPath")
+    let host_wrapper = setup_data
+        .pointer("/wrapperPath")
         .and_then(Value::as_str)
         .expect("setup payload missing data.wrapperPath");
     assert!(
@@ -291,7 +303,9 @@ fn real_browser_integration_harness_passes() {
             Duration::from_secs(45),
         ) {
             Ok(ping) => {
-                if ping.get("ok").and_then(Value::as_bool) == Some(true) {
+                if ping.get("ok").and_then(Value::as_bool) == Some(true)
+                    || (ping.get("ok").is_none() && ping.get("error").is_none())
+                {
                     bootstrap_ready = true;
                     break;
                 }
@@ -359,8 +373,8 @@ fn real_browser_integration_harness_passes() {
     )
     .expect("open should succeed");
     assert_ok("open", &open);
-    let open_window_id = open
-        .pointer("/data/windowId")
+    let open_window_id = response_data(&open)
+        .pointer("/windowId")
         .and_then(Value::as_i64)
         .expect("open payload missing data.windowId");
     let open_window_id_arg = open_window_id.to_string();
@@ -388,16 +402,17 @@ fn real_browser_integration_harness_passes() {
     )
     .expect("open into existing group should succeed");
     assert_ok("open into existing group", &open_reuse_group);
+    let open_reuse_data = response_data(&open_reuse_group);
     assert_eq!(
-        open_reuse_group
-            .pointer("/data/summary/createdTabs")
+        open_reuse_data
+            .pointer("/summary/createdTabs")
             .and_then(Value::as_u64),
         Some(1),
         "expected duplicate URL to be skipped and one tab to be created: {open_reuse_group}"
     );
     assert_eq!(
-        open_reuse_group
-            .pointer("/data/summary/skippedUrls")
+        open_reuse_data
+            .pointer("/summary/skippedUrls")
             .and_then(Value::as_u64),
         Some(1),
         "expected one skipped duplicate URL: {open_reuse_group}"
@@ -415,8 +430,8 @@ fn real_browser_integration_harness_passes() {
     )
     .expect("list --window <open window> should succeed");
     assert_ok("list --window <open window>", &list_last_focused);
-    let windows = list_last_focused
-        .pointer("/data/windows")
+    let windows = response_data(&list_last_focused)
+        .pointer("/windows")
         .and_then(Value::as_array)
         .expect("list payload missing data.windows");
     let mut example_net_group_title: Option<String> = None;
@@ -513,20 +528,30 @@ fn real_browser_integration_harness_passes() {
     )
     .expect("open into busy existing group should succeed");
     assert_ok("open into busy existing group", &open_busy_reuse);
+    let open_busy_data = response_data(&open_busy_reuse);
     assert_eq!(
-        open_busy_reuse
-            .pointer("/data/summary/createdTabs")
+        open_busy_data
+            .pointer("/summary/createdTabs")
             .and_then(Value::as_u64),
         Some(2),
         "expected two created tabs in busy reuse scenario: {open_busy_reuse}"
     );
-    let busy_created_tab_ids: Vec<i64> = open_busy_reuse
-        .pointer("/data/created")
+    let busy_created_tab_ids: Vec<i64> = open_busy_data
+        .pointer("/createdTabIds")
         .and_then(Value::as_array)
-        .expect("open busy reuse payload missing data.created")
-        .iter()
-        .filter_map(|entry| entry.get("tabId").and_then(Value::as_i64))
-        .collect();
+        .map(|entries| entries.iter().filter_map(Value::as_i64).collect())
+        .or_else(|| {
+            open_busy_data
+                .pointer("/created")
+                .and_then(Value::as_array)
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|entry| entry.get("tabId").and_then(Value::as_i64))
+                        .collect()
+                })
+        })
+        .expect("open busy reuse payload missing data.createdTabIds/data.created");
     assert_eq!(
         busy_created_tab_ids.len(),
         2,
@@ -534,8 +559,8 @@ fn real_browser_integration_harness_passes() {
     );
 
     let assert_move_tabs_grouped = |payload: &Value, phase: &str| {
-        let windows = payload
-            .pointer("/data/windows")
+        let windows = response_data(payload)
+            .pointer("/windows")
             .and_then(Value::as_array)
             .expect("list payload missing data.windows");
         let mut found: Vec<(i64, Option<String>, i64)> = Vec::new();

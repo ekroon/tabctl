@@ -22,7 +22,6 @@ export async function analyzeTabs(params: Record<string, unknown>, requestId: st
   const selectedTabs = selection.tabs;
   const scopeTabs = selectedTabs;
   const now = Date.now();
-  const startedAt = Date.now();
 
   const normalizedMap = new Map<string, Record<string, unknown>>();
   const duplicates = new Map<number, number>();
@@ -84,19 +83,16 @@ export async function analyzeTabs(params: Record<string, unknown>, requestId: st
     };
   });
 
-  return {
-    generatedAt: Date.now(),
+  const response: Record<string, unknown> = {
     staleDays,
     totals: {
       tabs: scopeTabs.length,
       analyzed: selectedTabs.length,
       candidates: candidates.length,
     },
-    meta: {
-      durationMs: Date.now() - startedAt,
-    },
     candidates,
   };
+  return response;
 }
 
 export async function inspectTabs(params: Record<string, unknown>, requestId: string, deps: Pick<ExtensionDeps, "getTabSnapshot" | "selectTabsByScope" | "sendProgress">) {
@@ -130,8 +126,6 @@ export async function inspectTabs(params: Record<string, unknown>, requestId: st
   }
 
   const tabs = selection.tabs;
-  const startedAt = Date.now();
-
   const selectorSpecs: Array<Record<string, unknown>> = [];
   if (Array.isArray(params.selectorSpecs)) {
     selectorSpecs.push(...(params.selectorSpecs as Array<Record<string, unknown>>));
@@ -152,20 +146,27 @@ export async function inspectTabs(params: Record<string, unknown>, requestId: st
 
   const normalizedSelectors = selectorSpecs
     .filter((spec) => spec && typeof spec.selector === "string" && spec.selector.length > 0)
-    .map((spec) => ({
-      name: typeof spec.name === "string" ? spec.name : undefined,
-      selector: spec.selector,
-      attr: typeof spec.attr === "string" ? spec.attr : "text",
-      all: Boolean(spec.all),
-      text: typeof spec.text === "string" && spec.text.trim() ? spec.text.trim() : undefined,
-      textMode: typeof spec.textMode === "string" ? spec.textMode.trim().toLowerCase() : undefined,
-    }));
+    .map((spec) => {
+      const selector = spec.selector as string;
+      return {
+        name: typeof spec.name === "string" ? spec.name : undefined,
+        selector,
+        attr: typeof spec.attr === "string" ? spec.attr : "text",
+        all: Boolean(spec.all),
+        text: typeof spec.text === "string" && spec.text.trim() ? spec.text.trim() : undefined,
+        textMode: typeof spec.textMode === "string" ? spec.textMode.trim().toLowerCase() : undefined,
+      };
+    });
 
   const selectorWarnings = normalizedSelectors
-    .filter((spec) => typeof spec.selector === "string" && spec.selector.includes(":contains("))
+    .filter((spec) => spec.selector.includes(":contains("))
     .map((spec) => ({
+      code: "unsupported_selector_syntax",
+      signalId: "selector",
+      selector: spec.selector,
       name: spec.name || spec.selector,
-      hint: "CSS :contains() is not supported; use selector text filters or a different selector.",
+      message: "Selector uses unsupported CSS :contains() syntax.",
+      hint: "Use selector text filters (text/textMode) or a different selector.",
     }));
 
   const signalDefs: Array<{ id: string; match: (tab: Record<string, unknown>) => boolean; run: (tabId: number) => Promise<unknown> }> = [];
@@ -213,20 +214,22 @@ export async function inspectTabs(params: Record<string, unknown>, requestId: st
 
       let result: unknown = null;
       let error: string | null = null;
-      const started = Date.now();
       try {
         await waitForTabReady(tabId, params, signalTimeoutMs);
         result = await task.signal.run(tabId);
+        if (task.signal.id === "selector" && result && typeof result === "object") {
+          const selectorErrors = Object.keys((result as { errors?: Record<string, unknown> }).errors || {});
+          if (selectorErrors.length > 0) {
+            error = `selector failures: ${selectorErrors.join(", ")}`;
+          }
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : "signal_error";
         error = message;
       }
-      const durationMs = Date.now() - started;
-
       const entry = entryMap.get(tabId) || { tab: task.tab, signals: {} };
       entry.signals[task.signal.id] = {
         ok: error === null,
-        durationMs,
         data: result,
         error,
       };
@@ -256,19 +259,16 @@ export async function inspectTabs(params: Record<string, unknown>, requestId: st
     signals: entry.signals,
   }));
 
-  return {
-    generatedAt: Date.now(),
+  const response: Record<string, unknown> = {
     totals: {
       tabs: tabs.length,
       signals: signalDefs.length,
       tasks: totalTasks,
     },
-    meta: {
-      durationMs: Date.now() - startedAt,
-      signalTimeoutMs,
-      selectorCount: normalizedSelectors.length,
-      selectorWarnings: selectorWarnings.length > 0 ? selectorWarnings : undefined,
-    },
     entries,
   };
+  if (selectorWarnings.length > 0) {
+    response.warnings = selectorWarnings;
+  }
+  return response;
 }

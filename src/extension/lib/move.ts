@@ -130,7 +130,7 @@ export async function moveTab(params: Record<string, unknown>, deps: Pick<Extens
         targetIndex = 0;
       }
     }
-    return {
+    const fullResult = {
       tabId,
       from: { windowId: sourceWindow.windowId, index: sourceTab.index },
       to: { windowId: targetWindowId, index: targetIndex },
@@ -153,6 +153,14 @@ export async function moveTab(params: Record<string, unknown>, deps: Pick<Extens
       },
       txid: params.txid || null,
     };
+    return {
+      tabId,
+      fromWindowId: sourceWindow.windowId,
+      toWindowId: targetWindowId,
+      summary: fullResult.summary,
+      undo: fullResult.undo,
+      txid: fullResult.txid,
+    };
   }
 
   let normalizedParams = params;
@@ -174,7 +182,7 @@ export async function moveTab(params: Record<string, unknown>, deps: Pick<Extens
   }
 
   const moved = await chrome.tabs.move(tabId, { windowId: targetWindowId, index: targetIndex });
-  return {
+  const fullResult = {
     tabId,
     from: { windowId: sourceWindow.windowId, index: sourceTab.index },
     to: { windowId: targetWindowId, index: (moved as chrome.tabs.Tab).index },
@@ -196,6 +204,14 @@ export async function moveTab(params: Record<string, unknown>, deps: Pick<Extens
       },
     },
     txid: params.txid || null,
+  };
+  return {
+    tabId,
+    fromWindowId: sourceWindow.windowId,
+    toWindowId: targetWindowId,
+    summary: fullResult.summary,
+    undo: fullResult.undo,
+    txid: fullResult.txid,
   };
 }
 
@@ -294,7 +310,7 @@ export async function moveGroup(params: Record<string, unknown>, deps: Pick<Exte
       }))
       .filter((tab) => typeof tab.tabId === "number") as Array<Record<string, unknown>>;
 
-    return {
+    const fullResult = {
       groupId: source.group.groupId,
       windowId: source.windowId,
       movedToWindowId: targetWindowId,
@@ -311,6 +327,15 @@ export async function moveGroup(params: Record<string, unknown>, deps: Pick<Exte
         tabs: undoTabs,
       },
       txid: params.txid || null,
+    };
+    return {
+      groupId: source.group.groupId as number,
+      windowId: source.windowId,
+      movedToWindowId: targetWindowId,
+      newGroupId,
+      summary: fullResult.summary,
+      undo: fullResult.undo,
+      txid: fullResult.txid,
     };
   }
 
@@ -381,7 +406,7 @@ export async function moveGroup(params: Record<string, unknown>, deps: Pick<Exte
     }))
     .filter((tab) => typeof tab.tabId === "number") as Array<Record<string, unknown>>;
 
-  return {
+  const fullResult = {
     groupId: source.group.groupId,
     windowId: source.windowId,
     movedToWindowId: targetWindowId,
@@ -398,5 +423,14 @@ export async function moveGroup(params: Record<string, unknown>, deps: Pick<Exte
       tabs: undoTabs,
     },
     txid: params.txid || null,
+  };
+  return {
+    groupId: source.group.groupId as number,
+    windowId: source.windowId,
+    movedToWindowId: targetWindowId,
+    newGroupId,
+    summary: fullResult.summary,
+    undo: fullResult.undo,
+    txid: fullResult.txid,
   };
 }

@@ -232,7 +232,7 @@ export async function groupUpdate(params: Record<string, unknown>, deps: Pick<Ex
   }
 
   const updated = await chrome.tabGroups.update(match.group.groupId as number, update);
-  return {
+  const fullResult = {
     groupId: updated.id,
     windowId: updated.windowId,
     title: updated.title,
@@ -249,6 +249,13 @@ export async function groupUpdate(params: Record<string, unknown>, deps: Pick<Ex
       },
     },
     txid: params.txid || null,
+  };
+  return {
+    groupId: updated.id,
+    windowId: updated.windowId,
+    summary: { updatedGroups: 1 },
+    undo: fullResult.undo,
+    txid: fullResult.txid,
   };
 }
 
@@ -303,7 +310,7 @@ export async function groupUngroup(params: Record<string, unknown>, deps: Pick<E
     await chrome.tabs.ungroup(tabIds);
   }
 
-  return {
+  const fullResult = {
     groupId: match.group.groupId,
     groupTitle: match.group.title || null,
     windowId: match.windowId,
@@ -320,6 +327,13 @@ export async function groupUngroup(params: Record<string, unknown>, deps: Pick<E
       tabs: undoTabs,
     },
     txid: params.txid || null,
+  };
+  return {
+    groupId: match.group.groupId,
+    windowId: match.windowId,
+    summary: fullResult.summary,
+    undo: fullResult.undo,
+    txid: fullResult.txid,
   };
 }
 
@@ -457,7 +471,7 @@ export async function groupAssign(params: Record<string, unknown>, deps: Pick<Ex
     created = true;
   }
 
-  return {
+  const fullResult = {
     groupId: assignedGroupId,
     groupTitle: targetTitle || groupTitle || null,
     windowId: targetWindowId,
@@ -478,6 +492,15 @@ export async function groupAssign(params: Record<string, unknown>, deps: Pick<Ex
       tabs: undoTabs,
     },
     txid: params.txid || null,
+  };
+  return {
+    groupId: assignedGroupId,
+    windowId: targetWindowId,
+    created,
+    summary: fullResult.summary,
+    skipped: fullResult.skipped,
+    undo: fullResult.undo,
+    txid: fullResult.txid,
   };
 }
 
@@ -558,7 +581,7 @@ export async function groupGather(params: Record<string, unknown>, deps: Pick<Ex
     }
   }
 
-  return {
+  const fullResult = {
     merged,
     summary: {
       mergedGroups: merged.reduce((sum, m) => sum + (m.mergedGroupCount as number), 0),
@@ -569,5 +592,11 @@ export async function groupGather(params: Record<string, unknown>, deps: Pick<Ex
       tabs: undoEntries,
     },
     txid: params.txid || null,
+  };
+  return {
+    merged,
+    summary: fullResult.summary,
+    undo: fullResult.undo,
+    txid: fullResult.txid,
   };
 }

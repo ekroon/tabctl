@@ -423,6 +423,8 @@ mod tests {
             panic!("expected ping response");
         };
         assert_eq!(payload.request_id.as_deref(), Some("req-ping"));
+        assert_eq!(payload.component.as_deref(), Some("host"));
+        assert_eq!(payload.version.as_deref(), Some(host_version()));
         let data = payload
             .data
             .as_ref()
@@ -512,6 +514,8 @@ mod tests {
         let HostEffect::Respond { payload, .. } = &effects[0] else {
             panic!("expected list response");
         };
+        assert!(payload.component.is_none());
+        assert!(payload.version.is_none());
         let data = payload
             .data
             .as_ref()
@@ -522,6 +526,30 @@ mod tests {
         assert!(data.get("hostGitSha").is_none());
         assert!(data.get("hostDirty").is_none());
         assert!(data.get("versionsInSync").is_none());
+    }
+
+    #[test]
+    fn missing_action_error_response_omits_host_metadata() {
+        let mut state = HostState::new(temp_undo_path());
+        let effects = state.handle_cli_request(
+            88,
+            RequestEnvelope {
+                id: Some("req-empty-action".to_string()),
+                action: String::new(),
+                params: Value::Object(Map::new()),
+                auth_token: None,
+            },
+        );
+        let HostEffect::Respond { payload, .. } = &effects[0] else {
+            panic!("expected error response");
+        };
+        assert!(!payload.ok);
+        assert!(payload.component.is_none());
+        assert!(payload.version.is_none());
+        assert_eq!(
+            payload.error.as_ref().map(|e| e.message.as_str()),
+            Some("Missing action")
+        );
     }
 
     // TCP bridge tests — run on all platforms to validate bridge fundamentals

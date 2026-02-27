@@ -205,7 +205,7 @@ async function handleAction(action: string, params: Record<string, unknown>, req
         component: "extension",
       };
     case "list":
-      return await getTabSnapshot();
+      return shapeListSnapshot(await getTabSnapshot());
     case "analyze":
       return await inspect.analyzeTabs(params, requestId, deps);
     case "inspect":
@@ -249,6 +249,30 @@ async function handleAction(action: string, params: Record<string, unknown>, req
     default:
       throw new Error(`Unknown action: ${action}`);
   }
+}
+
+function shapeListSnapshot(snapshot: { generatedAt: number; windows: Array<Record<string, unknown>> }) {
+  return {
+    windows: snapshot.windows.map((win) => ({
+      windowId: win.windowId,
+      focused: win.focused,
+      tabs: ((win.tabs as Array<Record<string, unknown>>) || []).map((tab) => ({
+        tabId: tab.tabId,
+        windowId: tab.windowId,
+        url: tab.url,
+        title: tab.title,
+        active: tab.active,
+        groupId: tab.groupId,
+        groupTitle: tab.groupTitle,
+      })),
+      groups: ((win.groups as Array<Record<string, unknown>>) || []).map((group) => ({
+        groupId: group.groupId,
+        title: group.title,
+        color: group.color,
+        collapsed: group.collapsed,
+      })),
+    })),
+  };
 }
 
 function resolveWindowIdFromParams(snapshot: { windows: Array<Record<string, unknown>> }, value: unknown): number | null {

@@ -443,7 +443,7 @@ dependencies = [
 
 [[package]]
 name = "tabctl"
-version = "0.6.0-alpha.7"
+version = "0.6.0-alpha.8"
 dependencies = [
  "clap",
  "dirs",
@@ -458,7 +458,7 @@ dependencies = [
 
 [[package]]
 name = "tabctl-host"
-version = "0.6.0-alpha.7"
+version = "0.6.0-alpha.8"
 dependencies = [
  "getrandom",
  "serde_json",
@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "tabctl-shared"
-version = "0.6.0-alpha.7"
+version = "0.6.0-alpha.8"
 dependencies = [
  "serde",
  "serde_json",

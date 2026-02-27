@@ -54,6 +54,26 @@ export function normalizeTabIndex(value: unknown) {
   return Number.isFinite(index) ? index : null;
 }
 
+function shapeOpenResult(
+  result: {
+    windowId: number;
+    groupId: number | null;
+    created: Array<Record<string, unknown>>;
+    skipped: Array<Record<string, unknown>>;
+    summary: Record<string, unknown>;
+  },
+) {
+  return {
+    windowId: result.windowId,
+    groupId: result.groupId,
+    createdTabIds: result.created
+      .map((tab) => tab.tabId)
+      .filter((id): id is number => typeof id === "number"),
+    skipped: result.skipped,
+    summary: result.summary,
+  };
+}
+
 function matchIncludes(value: unknown, needle: string) {
   if (!needle) {
     return false;
@@ -282,12 +302,9 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
       }
     }
 
-    return {
+    return shapeOpenResult({
       windowId,
       groupId,
-      groupTitle: groupTitle || null,
-      afterGroupTitle: null,
-      insertIndex: null,
       created,
       skipped,
       summary: {
@@ -295,7 +312,7 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
         skippedUrls: skipped.length,
         grouped: Boolean(groupId),
       },
-    };
+    });
   }
 
   const snapshot = await deps.getTabSnapshot();
@@ -532,12 +549,9 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
     }
   }
 
-  return {
+  return shapeOpenResult({
     windowId,
     groupId,
-    groupTitle: groupTitle || null,
-    afterGroupTitle: afterGroupTitle || null,
-    insertIndex,
     created,
     skipped,
     summary: {
@@ -545,5 +559,5 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
       skippedUrls: skipped.length,
       grouped: Boolean(groupId),
     },
-  };
+  });
 }

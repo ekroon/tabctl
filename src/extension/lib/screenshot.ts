@@ -383,7 +383,6 @@ export async function screenshotTabs(
   const tabs = selection.tabs;
   const entries: Array<Record<string, unknown>> = [];
   let totalTiles = 0;
-  const startedAt = Date.now();
 
   for (let index = 0; index < tabs.length; index += 1) {
     const tab = tabs[index];
@@ -445,17 +444,9 @@ export async function screenshotTabs(
     }
   }
 
-  return {
-    generatedAt: Date.now(),
+  const response: Record<string, unknown> = {
     totals: { tabs: tabs.length, tiles: totalTiles },
-    meta: {
-      durationMs: Date.now() - startedAt,
-      mode,
-      format,
-      quality: format === "jpeg" ? quality : null,
-      tileMaxDim: adjustedTileMaxDim,
-      maxBytes: adjustedMaxBytes,
-    },
     entries,
   };
+  return response;
 }

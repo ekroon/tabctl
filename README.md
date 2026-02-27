@@ -264,7 +264,7 @@ Relevant knobs: `TABCTL_SOCKET`, `TABCTL_TCP_PORT`, `TABCTL_PROFILE`, `TABCTL_DA
 - Runtime command runs can auto-sync extension files when host/extension versions drift; rerun `tabctl reload` if the browser does not pick up changes immediately.
 - For local release-like testing while developing, force runtime sync behavior with `TABCTL_AUTO_SYNC_MODE=release-like`.
 - Disable runtime sync entirely with `TABCTL_AUTO_SYNC_MODE=off`.
-- `tabctl ping --json` is the canonical runtime version check (`data.versionsInSync`, `data.hostBaseVersion`, `data.baseVersion`).
+- `tabctl ping --json` is the canonical runtime version check (`versionsInSync`, `hostBaseVersion`, `baseVersion`).
 - Version metadata is intentionally health-only: regular command payloads (`open`, `list`, etc.) do not include version fields.
 - `tabctl ping` returns connect errors (`ENOENT`, `ECONNREFUSED`, timeout): ensure extension is loaded and active, rerun `tabctl setup`, and in WSL verify `TABCTL_TCP_PORT` or `<dataDir>/tcp-port` matches a listening localhost port.
 - `tabctl doctor --fix --json` includes per-profile connectivity diagnostics in `data.profiles[].connectivity`; if ping remains unhealthy after local repairs, follow `manualSteps`.
@@ -409,5 +409,5 @@ Notes:
 - Selector `attr` supports `href-url`/`src-url` to return absolute http(s) URLs.
 - `screenshot --out` writes per-tab folders into the target directory.
 - `tabctl undo` accepts a positional txid, `--txid`, or `--latest`.
-- `tabctl history --json` returns a JSON array in `data`.
+- `tabctl history --json` returns a top-level JSON array.
 - `--format` is only supported by `report` (use `--json` elsewhere).
