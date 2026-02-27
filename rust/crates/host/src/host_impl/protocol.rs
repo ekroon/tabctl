@@ -119,12 +119,17 @@ pub(super) fn base_response(
         ok,
         action,
         request_id,
-        component: Some("host".to_string()),
-        version: Some(host_version().to_string()),
+        component: None,
+        version: None,
         progress: None,
         data: None,
         error: None,
     }
+}
+
+pub(super) fn add_host_metadata(response: &mut ResponseEnvelope) {
+    response.component = Some("host".to_string());
+    response.version = Some(host_version().to_string());
 }
 
 pub(super) fn value_object(input: Option<Value>) -> Map<String, Value> {

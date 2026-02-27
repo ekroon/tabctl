@@ -43,17 +43,23 @@ pub(super) fn render_response(
     response: &ResponseEnvelope,
     json_mode: bool,
     pretty: bool,
+    full: bool,
 ) -> Result<(), String> {
     if json_mode {
+        let payload = if full {
+            serde_json::to_value(response).map_err(|e| e.to_string())?
+        } else {
+            compact_response_payload(response)
+        };
         if pretty {
             println!(
                 "{}",
-                serde_json::to_string_pretty(response).map_err(|e| e.to_string())?
+                serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
             );
         } else {
             println!(
                 "{}",
-                serde_json::to_string(response).map_err(|e| e.to_string())?
+                serde_json::to_string(&payload).map_err(|e| e.to_string())?
             );
         }
         if !response.ok {
@@ -90,4 +96,28 @@ pub(super) fn render_response(
         eprintln!("error: request failed");
     }
     Err("request failed".to_string())
+}
+
+pub(super) fn compact_response_payload(response: &ResponseEnvelope) -> Value {
+    if response.ok {
+        return response
+            .data
+            .clone()
+            .unwrap_or_else(|| json!({ "ok": true }));
+    }
+    if let Some(error) = &response.error {
+        return json!({
+            "ok": false,
+            "error": {
+                "message": error.message,
+                "hint": error.hint
+            }
+        });
+    }
+    json!({
+        "ok": false,
+        "error": {
+            "message": "request failed"
+        }
+    })
 }

@@ -23,6 +23,7 @@ export async function analyzeTabs(params: Record<string, unknown>, requestId: st
   const scopeTabs = selectedTabs;
   const now = Date.now();
   const startedAt = Date.now();
+  const compact = params.compact !== false;
 
   const normalizedMap = new Map<string, Record<string, unknown>>();
   const duplicates = new Map<number, number>();
@@ -84,19 +85,22 @@ export async function analyzeTabs(params: Record<string, unknown>, requestId: st
     };
   });
 
-  return {
-    generatedAt: Date.now(),
+  const response: Record<string, unknown> = {
     staleDays,
     totals: {
       tabs: scopeTabs.length,
       analyzed: selectedTabs.length,
       candidates: candidates.length,
     },
-    meta: {
-      durationMs: Date.now() - startedAt,
-    },
     candidates,
   };
+  if (!compact) {
+    response.generatedAt = Date.now();
+    response.meta = {
+      durationMs: Date.now() - startedAt,
+    };
+  }
+  return response;
 }
 
 export async function inspectTabs(params: Record<string, unknown>, requestId: string, deps: Pick<ExtensionDeps, "getTabSnapshot" | "selectTabsByScope" | "sendProgress">) {
@@ -112,6 +116,7 @@ export async function inspectTabs(params: Record<string, unknown>, requestId: st
     ? Math.floor(signalTimeoutRaw)
     : 4000;
   const progressEnabled = params.progress === true;
+  const compact = params.compact !== false;
 
   // For settle mode with specific tab IDs, wait BEFORE taking snapshot
   // This ensures the tab URL is available for isScriptableUrl() checks
@@ -226,9 +231,9 @@ export async function inspectTabs(params: Record<string, unknown>, requestId: st
       const entry = entryMap.get(tabId) || { tab: task.tab, signals: {} };
       entry.signals[task.signal.id] = {
         ok: error === null,
-        durationMs,
         data: result,
         error,
+        ...(compact ? {} : { durationMs }),
       };
       entryMap.set(tabId, entry);
 
@@ -256,19 +261,22 @@ export async function inspectTabs(params: Record<string, unknown>, requestId: st
     signals: entry.signals,
   }));
 
-  return {
-    generatedAt: Date.now(),
+  const response: Record<string, unknown> = {
     totals: {
       tabs: tabs.length,
       signals: signalDefs.length,
       tasks: totalTasks,
     },
-    meta: {
+    entries,
+  };
+  if (!compact) {
+    response.generatedAt = Date.now();
+    response.meta = {
       durationMs: Date.now() - startedAt,
       signalTimeoutMs,
       selectorCount: normalizedSelectors.length,
       selectorWarnings: selectorWarnings.length > 0 ? selectorWarnings : undefined,
-    },
-    entries,
-  };
+    };
+  }
+  return response;
 }

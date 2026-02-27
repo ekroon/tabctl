@@ -22,6 +22,10 @@ export type GroupSummary = {
 
 import type { ExtensionDeps } from "./deps";
 
+function mutationResponse(params: Record<string, unknown>, compactData: Record<string, unknown>, fullData: Record<string, unknown>) {
+  return params.compact === false ? fullData : compactData;
+}
+
 export function getGroupTabs(windowSnapshot: WindowSnapshot, groupId: number) {
   return windowSnapshot.tabs
     .filter((tab) => tab.groupId === groupId)
@@ -232,7 +236,7 @@ export async function groupUpdate(params: Record<string, unknown>, deps: Pick<Ex
   }
 
   const updated = await chrome.tabGroups.update(match.group.groupId as number, update);
-  return {
+  const fullResult = {
     groupId: updated.id,
     windowId: updated.windowId,
     title: updated.title,
@@ -250,6 +254,13 @@ export async function groupUpdate(params: Record<string, unknown>, deps: Pick<Ex
     },
     txid: params.txid || null,
   };
+  return mutationResponse(params, {
+    groupId: updated.id,
+    windowId: updated.windowId,
+    summary: { updatedGroups: 1 },
+    undo: fullResult.undo,
+    txid: fullResult.txid,
+  }, fullResult);
 }
 
 export async function groupUngroup(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "buildWindowLabels" | "resolveWindowIdFromParams">) {
@@ -303,7 +314,7 @@ export async function groupUngroup(params: Record<string, unknown>, deps: Pick<E
     await chrome.tabs.ungroup(tabIds);
   }
 
-  return {
+  const fullResult = {
     groupId: match.group.groupId,
     groupTitle: match.group.title || null,
     windowId: match.windowId,
@@ -321,6 +332,13 @@ export async function groupUngroup(params: Record<string, unknown>, deps: Pick<E
     },
     txid: params.txid || null,
   };
+  return mutationResponse(params, {
+    groupId: match.group.groupId,
+    windowId: match.windowId,
+    summary: fullResult.summary,
+    undo: fullResult.undo,
+    txid: fullResult.txid,
+  }, fullResult);
 }
 
 export async function groupAssign(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "buildWindowLabels" | "resolveWindowIdFromParams" | "log">) {
@@ -457,7 +475,7 @@ export async function groupAssign(params: Record<string, unknown>, deps: Pick<Ex
     created = true;
   }
 
-  return {
+  const fullResult = {
     groupId: assignedGroupId,
     groupTitle: targetTitle || groupTitle || null,
     windowId: targetWindowId,
@@ -479,6 +497,15 @@ export async function groupAssign(params: Record<string, unknown>, deps: Pick<Ex
     },
     txid: params.txid || null,
   };
+  return mutationResponse(params, {
+    groupId: assignedGroupId,
+    windowId: targetWindowId,
+    created,
+    summary: fullResult.summary,
+    skipped: fullResult.skipped,
+    undo: fullResult.undo,
+    txid: fullResult.txid,
+  }, fullResult);
 }
 
 export async function groupGather(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "buildWindowLabels" | "resolveWindowIdFromParams" | "log">) {
@@ -558,7 +585,7 @@ export async function groupGather(params: Record<string, unknown>, deps: Pick<Ex
     }
   }
 
-  return {
+  const fullResult = {
     merged,
     summary: {
       mergedGroups: merged.reduce((sum, m) => sum + (m.mergedGroupCount as number), 0),
@@ -570,4 +597,10 @@ export async function groupGather(params: Record<string, unknown>, deps: Pick<Ex
     },
     txid: params.txid || null,
   };
+  return mutationResponse(params, {
+    merged,
+    summary: fullResult.summary,
+    undo: fullResult.undo,
+    txid: fullResult.txid,
+  }, fullResult);
 }

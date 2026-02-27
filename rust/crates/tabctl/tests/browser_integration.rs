@@ -62,6 +62,7 @@ fn run_tabctl_json_with_timeout(
     command
         .arg("--json")
         .arg("--no-pretty")
+        .arg("--full")
         .arg("--profile")
         .arg(profile)
         .args(args)
@@ -521,12 +522,21 @@ fn real_browser_integration_harness_passes() {
         "expected two created tabs in busy reuse scenario: {open_busy_reuse}"
     );
     let busy_created_tab_ids: Vec<i64> = open_busy_reuse
-        .pointer("/data/created")
+        .pointer("/data/createdTabIds")
         .and_then(Value::as_array)
-        .expect("open busy reuse payload missing data.created")
-        .iter()
-        .filter_map(|entry| entry.get("tabId").and_then(Value::as_i64))
-        .collect();
+        .map(|entries| entries.iter().filter_map(Value::as_i64).collect())
+        .or_else(|| {
+            open_busy_reuse
+                .pointer("/data/created")
+                .and_then(Value::as_array)
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|entry| entry.get("tabId").and_then(Value::as_i64))
+                        .collect()
+                })
+        })
+        .expect("open busy reuse payload missing data.createdTabIds/data.created");
     assert_eq!(
         busy_created_tab_ids.len(),
         2,

@@ -51,6 +51,25 @@ tabctl policy --init
 - `--profile <name>`: override active profile for this command
 - `--format` is only supported by `report` (use `--json` elsewhere)
 
+## Output contract (compact by default)
+
+tabctl output is compact by default so automation can depend on stable, minimal response shapes. By default, JSON focuses on identifiers, scope, and action results; richer fields are exposed through command-specific options instead of a global verbose/full mode.
+
+### Verbose/full retrieval paths (by command family)
+- `analyze`, `dedupe`: use `--window-title` to include active window title context in output.
+- `inspect`: request additional metadata via `--signal` (`page-meta`, `selector`) and `--selector` options.
+- `screenshot`: use `--mode full` for tiled full-page capture output (default remains viewport).
+- `report`: select `--format json|md|csv` depending on downstream detail needs.
+- `ping`: use `--json` for runtime/version sync fields (`data.versionsInSync`, `data.hostBaseVersion`, `data.baseVersion`).
+
+There is no global `--verbose` or `--full` flag today; use the command-local options above.
+
+### Migration notes (known output-shape changes)
+- `list --json` is window-nested (`data.windows[].tabs[]`); update parsers that assumed a flat top-level tabs array.
+- `history --json` returns entries as an array under `data` (`.data[]`).
+- Non-health commands (`open`, `list`, etc.) no longer carry version metadata; use `tabctl ping --json` for version/sync fields.
+- `list` and `group-list` now paginate by default (limit 100); add `--limit`, `--offset`, or `--no-page` where full result sets are required.
+
 ## Option Groups
 
 Commands reference these reusable option groups to avoid documentation duplication.

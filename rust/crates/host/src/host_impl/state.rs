@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use tabctl_shared::{ClientInfo, NativeMessage, ProtocolError, RequestEnvelope, ResponseEnvelope};
 
 use super::protocol::{
-    add_ping_metadata, base_response, create_id, host_version, local_actions, now_ms, undo_actions,
-    value_object, version_info_value, REQUEST_TIMEOUT_MS,
+    add_host_metadata, add_ping_metadata, base_response, create_id, host_version, local_actions,
+    now_ms, undo_actions, value_object, version_info_value, REQUEST_TIMEOUT_MS,
 };
 use super::undo::{
     append_undo_record, filter_by_retention, find_latest_undo_record, find_undo_record,
@@ -118,6 +118,7 @@ impl HostState {
 
         if action == "version" {
             let mut resp = base_response(true, Some(action), request.id);
+            add_host_metadata(&mut resp);
             resp.data = Some(version_info_value());
             return vec![HostEffect::Respond {
                 client_id,
@@ -349,6 +350,7 @@ impl HostState {
         if pending.action == "ping" {
             let data = add_ping_metadata(message_data);
             let mut resp = base_response(true, Some("ping".to_string()), Some(message_id));
+            add_host_metadata(&mut resp);
             resp.data = Some(Value::Object(data));
             return vec![HostEffect::Respond {
                 client_id: pending.client_id,

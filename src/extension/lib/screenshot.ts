@@ -379,6 +379,7 @@ export async function screenshotTabs(
   const maxBytes = Number.isFinite(maxBytesRaw) && maxBytesRaw > 0 ? Math.floor(maxBytesRaw) : SCREENSHOT_MAX_BYTES;
   const adjustedMaxBytes = maxBytes < 50_000 ? 50_000 : maxBytes;
   const progressEnabled = params.progress === true;
+  const compact = params.compact !== false;
 
   const tabs = selection.tabs;
   const entries: Array<Record<string, unknown>> = [];
@@ -445,17 +446,20 @@ export async function screenshotTabs(
     }
   }
 
-  return {
-    generatedAt: Date.now(),
+  const response: Record<string, unknown> = {
     totals: { tabs: tabs.length, tiles: totalTiles },
-    meta: {
+    entries,
+  };
+  if (!compact) {
+    response.generatedAt = Date.now();
+    response.meta = {
       durationMs: Date.now() - startedAt,
       mode,
       format,
       quality: format === "jpeg" ? quality : null,
       tileMaxDim: adjustedTileMaxDim,
       maxBytes: adjustedMaxBytes,
-    },
-    entries,
-  };
+    };
+  }
+  return response;
 }

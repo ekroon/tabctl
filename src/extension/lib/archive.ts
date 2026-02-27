@@ -4,6 +4,10 @@ type WindowSnapshot = import("./groups").WindowSnapshot;
 
 import type { ExtensionDeps } from "./deps";
 
+function mutationResponse(params: Record<string, unknown>, compactData: Record<string, unknown>, fullData: Record<string, unknown>) {
+  return params.compact === false ? fullData : compactData;
+}
+
 export async function ensureArchiveWindow(deps: Pick<ExtensionDeps, "getArchiveWindowId" | "setArchiveWindowId">) {
   const archiveWindowId = await deps.getArchiveWindowId();
   if (archiveWindowId) {
@@ -52,13 +56,14 @@ export async function archiveTabs(params: Record<string, unknown>, deps: Pick<Ex
   }
 
   if (windowsToProcess.length === 0) {
-    return {
+    const fullResult = {
       txid: params.txid || null,
       summary: { movedTabs: 0, movedGroups: 0, skippedTabs: 0 },
       archiveWindowId: null,
       skipped: [],
       undo: { action: "archive", tabs: [] },
     };
+    return mutationResponse(params, fullResult, fullResult);
   }
 
   const archiveWindowId = await ensureArchiveWindow(deps);
@@ -181,7 +186,7 @@ export async function archiveTabs(params: Record<string, unknown>, deps: Pick<Ex
     }
   }
 
-  return {
+  const fullResult = {
     txid: params.txid || null,
     summary: {
       movedTabs,
@@ -195,6 +200,13 @@ export async function archiveTabs(params: Record<string, unknown>, deps: Pick<Ex
       tabs: undoTabs,
     },
   };
+  return mutationResponse(params, {
+    txid: fullResult.txid,
+    summary: fullResult.summary,
+    archiveWindowId,
+    skipped: fullResult.skipped,
+    undo: fullResult.undo,
+  }, fullResult);
 }
 
 export async function getTabsByIds(tabIds: Array<number>) {
@@ -227,12 +239,13 @@ export async function closeTabs(params: Record<string, unknown>, deps: Pick<Exte
   }
 
   if (!tabIds.length) {
-    return {
+    const fullResult = {
       txid: params.txid || null,
       summary: { closedTabs: 0, skippedTabs: 0 },
       skipped: [],
       undo: { action: "close", tabs: [] },
     };
+    return mutationResponse(params, fullResult, fullResult);
   }
 
   const expectedUrls = (params.expectedUrls as Record<string, string>) || {};
@@ -279,7 +292,7 @@ export async function closeTabs(params: Record<string, unknown>, deps: Pick<Exte
     await chrome.tabs.remove(validTabs.map((tab) => tab.tabId as number));
   }
 
-  return {
+  const fullResult = {
     txid: params.txid || null,
     summary: {
       closedTabs: validTabs.length,
@@ -297,6 +310,12 @@ export async function closeTabs(params: Record<string, unknown>, deps: Pick<Exte
       })),
     },
   };
+  return mutationResponse(params, {
+    txid: fullResult.txid,
+    summary: fullResult.summary,
+    skipped: fullResult.skipped,
+    undo: fullResult.undo,
+  }, fullResult);
 }
 
 export async function mergeWindow(params: Record<string, unknown>, deps: Pick<ExtensionDeps, "getTabSnapshot" | "log">) {
@@ -340,7 +359,7 @@ export async function mergeWindow(params: Record<string, unknown>, deps: Pick<Ex
   }
 
   if (selectedTabs.length === 0) {
-    return {
+    const fullResult = {
       fromWindowId,
       toWindowId,
       summary: { movedTabs: 0, movedGroups: 0, skippedTabs: skipped.length, closedSource: false },
@@ -354,6 +373,7 @@ export async function mergeWindow(params: Record<string, unknown>, deps: Pick<Ex
         tabs: [],
       },
     };
+    return mutationResponse(params, fullResult, fullResult);
   }
 
   const orderedTabs = [...selectedTabs].sort((a, b) => {
@@ -463,7 +483,7 @@ export async function mergeWindow(params: Record<string, unknown>, deps: Pick<Ex
     }
   }
 
-  return {
+  const fullResult = {
     fromWindowId,
     toWindowId,
     summary: { movedTabs, movedGroups, skippedTabs: skipped.length, closedSource },
@@ -478,4 +498,13 @@ export async function mergeWindow(params: Record<string, unknown>, deps: Pick<Ex
     },
     txid: params.txid || null,
   };
+  return mutationResponse(params, {
+    fromWindowId,
+    toWindowId,
+    summary: fullResult.summary,
+    skipped: fullResult.skipped,
+    groups: fullResult.groups,
+    undo: fullResult.undo,
+    txid: fullResult.txid,
+  }, fullResult);
 }
