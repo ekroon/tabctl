@@ -22,8 +22,6 @@ export async function analyzeTabs(params: Record<string, unknown>, requestId: st
   const selectedTabs = selection.tabs;
   const scopeTabs = selectedTabs;
   const now = Date.now();
-  const startedAt = Date.now();
-  const compact = params.compact !== false;
 
   const normalizedMap = new Map<string, Record<string, unknown>>();
   const duplicates = new Map<number, number>();
@@ -94,12 +92,6 @@ export async function analyzeTabs(params: Record<string, unknown>, requestId: st
     },
     candidates,
   };
-  if (!compact) {
-    response.generatedAt = Date.now();
-    response.meta = {
-      durationMs: Date.now() - startedAt,
-    };
-  }
   return response;
 }
 
@@ -116,7 +108,6 @@ export async function inspectTabs(params: Record<string, unknown>, requestId: st
     ? Math.floor(signalTimeoutRaw)
     : 4000;
   const progressEnabled = params.progress === true;
-  const compact = params.compact !== false;
 
   // For settle mode with specific tab IDs, wait BEFORE taking snapshot
   // This ensures the tab URL is available for isScriptableUrl() checks
@@ -135,8 +126,6 @@ export async function inspectTabs(params: Record<string, unknown>, requestId: st
   }
 
   const tabs = selection.tabs;
-  const startedAt = Date.now();
-
   const selectorSpecs: Array<Record<string, unknown>> = [];
   if (Array.isArray(params.selectorSpecs)) {
     selectorSpecs.push(...(params.selectorSpecs as Array<Record<string, unknown>>));
@@ -164,13 +153,6 @@ export async function inspectTabs(params: Record<string, unknown>, requestId: st
       all: Boolean(spec.all),
       text: typeof spec.text === "string" && spec.text.trim() ? spec.text.trim() : undefined,
       textMode: typeof spec.textMode === "string" ? spec.textMode.trim().toLowerCase() : undefined,
-    }));
-
-  const selectorWarnings = normalizedSelectors
-    .filter((spec) => typeof spec.selector === "string" && spec.selector.includes(":contains("))
-    .map((spec) => ({
-      name: spec.name || spec.selector,
-      hint: "CSS :contains() is not supported; use selector text filters or a different selector.",
     }));
 
   const signalDefs: Array<{ id: string; match: (tab: Record<string, unknown>) => boolean; run: (tabId: number) => Promise<unknown> }> = [];
@@ -226,14 +208,11 @@ export async function inspectTabs(params: Record<string, unknown>, requestId: st
         const message = err instanceof Error ? err.message : "signal_error";
         error = message;
       }
-      const durationMs = Date.now() - started;
-
       const entry = entryMap.get(tabId) || { tab: task.tab, signals: {} };
       entry.signals[task.signal.id] = {
         ok: error === null,
         data: result,
         error,
-        ...(compact ? {} : { durationMs }),
       };
       entryMap.set(tabId, entry);
 
@@ -269,14 +248,5 @@ export async function inspectTabs(params: Record<string, unknown>, requestId: st
     },
     entries,
   };
-  if (!compact) {
-    response.generatedAt = Date.now();
-    response.meta = {
-      durationMs: Date.now() - startedAt,
-      signalTimeoutMs,
-      selectorCount: normalizedSelectors.length,
-      selectorWarnings: selectorWarnings.length > 0 ? selectorWarnings : undefined,
-    };
-  }
   return response;
 }

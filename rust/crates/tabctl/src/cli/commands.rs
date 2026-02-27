@@ -22,13 +22,6 @@ pub(super) fn build_cli() -> Command {
                 .global(true),
         )
         .arg(
-            Arg::new("full")
-                .long("full")
-                .visible_alias("verbose")
-                .action(ArgAction::SetTrue)
-                .global(true),
-        )
-        .arg(
             Arg::new("profile")
                 .long("profile")
                 .value_name("name")

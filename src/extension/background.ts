@@ -205,7 +205,7 @@ async function handleAction(action: string, params: Record<string, unknown>, req
         component: "extension",
       };
     case "list":
-      return shapeListSnapshot(await getTabSnapshot(), params);
+      return shapeListSnapshot(await getTabSnapshot());
     case "analyze":
       return await inspect.analyzeTabs(params, requestId, deps);
     case "inspect":
@@ -251,11 +251,7 @@ async function handleAction(action: string, params: Record<string, unknown>, req
   }
 }
 
-function shapeListSnapshot(snapshot: { generatedAt: number; windows: Array<Record<string, unknown>> }, params: Record<string, unknown>) {
-  const compact = params.compact !== false;
-  if (!compact) {
-    return snapshot;
-  }
+function shapeListSnapshot(snapshot: { generatedAt: number; windows: Array<Record<string, unknown>> }) {
   return {
     windows: snapshot.windows.map((win) => ({
       windowId: win.windowId,

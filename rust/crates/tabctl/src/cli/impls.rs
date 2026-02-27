@@ -217,24 +217,8 @@ mod tests {
         let routed = route_command(&matches).expect("route command");
         assert!(routed.json);
         assert!(!routed.pretty);
-        assert!(!routed.full);
         assert_eq!(routed.profile.as_deref(), Some("edge-work"));
         assert_eq!(routed.params["all"], json!(true));
-    }
-
-    #[test]
-    fn routes_full_aliases_for_json_output() {
-        let full_matches = build_cli()
-            .try_get_matches_from(["tabctl", "--json", "--full", "list", "--all"])
-            .expect("parse command");
-        let full_routed = route_command(&full_matches).expect("route command");
-        assert!(full_routed.full);
-
-        let verbose_matches = build_cli()
-            .try_get_matches_from(["tabctl", "--json", "--verbose", "list", "--all"])
-            .expect("parse command");
-        let verbose_routed = route_command(&verbose_matches).expect("route command");
-        assert!(verbose_routed.full);
     }
 
     #[test]

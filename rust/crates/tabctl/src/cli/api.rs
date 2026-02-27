@@ -52,7 +52,7 @@ where
         routed.profile.as_deref(),
         routed.progress,
     )?;
-    let rendered = render_response(&response, routed.json, routed.pretty, routed.full);
+    let rendered = render_response(&response, routed.json, routed.pretty);
     if rendered.is_ok() {
         maybe_runtime_extension_auto_sync(&routed.action, routed.profile.as_deref());
     }
@@ -65,7 +65,6 @@ pub(super) struct RoutedCommand {
     pub(super) params: Value,
     pub(super) json: bool,
     pub(super) pretty: bool,
-    pub(super) full: bool,
     pub(super) progress: bool,
     pub(super) profile: Option<String>,
 }

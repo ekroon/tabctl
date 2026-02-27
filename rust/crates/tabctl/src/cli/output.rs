@@ -43,14 +43,9 @@ pub(super) fn render_response(
     response: &ResponseEnvelope,
     json_mode: bool,
     pretty: bool,
-    full: bool,
 ) -> Result<(), String> {
     if json_mode {
-        let payload = if full {
-            serde_json::to_value(response).map_err(|e| e.to_string())?
-        } else {
-            compact_response_payload(response)
-        };
+        let payload = compact_response_payload(response);
         if pretty {
             println!(
                 "{}",

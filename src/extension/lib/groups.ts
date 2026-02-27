@@ -22,8 +22,8 @@ export type GroupSummary = {
 
 import type { ExtensionDeps } from "./deps";
 
-function mutationResponse(params: Record<string, unknown>, compactData: Record<string, unknown>, fullData: Record<string, unknown>) {
-  return params.compact === false ? fullData : compactData;
+function mutationResponse(_params: Record<string, unknown>, compactData: Record<string, unknown>, _fullData: Record<string, unknown>) {
+  return compactData;
 }
 
 export function getGroupTabs(windowSnapshot: WindowSnapshot, groupId: number) {

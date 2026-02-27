@@ -55,7 +55,7 @@ export function normalizeTabIndex(value: unknown) {
 }
 
 function shapeOpenResult(
-  params: Record<string, unknown>,
+  _params: Record<string, unknown>,
   result: {
     windowId: number;
     groupId: number | null;
@@ -67,9 +67,6 @@ function shapeOpenResult(
     summary: Record<string, unknown>;
   },
 ) {
-  if (params.compact === false) {
-    return result;
-  }
   return {
     windowId: result.windowId,
     groupId: result.groupId,

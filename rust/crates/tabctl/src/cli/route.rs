@@ -3,7 +3,6 @@ use super::*;
 pub(super) fn route_command(matches: &ArgMatches) -> Result<RoutedCommand, String> {
     let json = matches.get_flag("json");
     let pretty = !matches.get_flag("no-pretty");
-    let full = matches.get_flag("full");
     let profile = matches
         .get_one::<String>("profile")
         .map(|v| v.trim().to_string())
@@ -140,7 +139,6 @@ pub(super) fn route_command(matches: &ArgMatches) -> Result<RoutedCommand, Strin
         params: Value::Object(params),
         json,
         pretty,
-        full,
         progress,
         profile,
     })
