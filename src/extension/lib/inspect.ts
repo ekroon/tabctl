@@ -146,13 +146,27 @@ export async function inspectTabs(params: Record<string, unknown>, requestId: st
 
   const normalizedSelectors = selectorSpecs
     .filter((spec) => spec && typeof spec.selector === "string" && spec.selector.length > 0)
+    .map((spec) => {
+      const selector = spec.selector as string;
+      return {
+        name: typeof spec.name === "string" ? spec.name : undefined,
+        selector,
+        attr: typeof spec.attr === "string" ? spec.attr : "text",
+        all: Boolean(spec.all),
+        text: typeof spec.text === "string" && spec.text.trim() ? spec.text.trim() : undefined,
+        textMode: typeof spec.textMode === "string" ? spec.textMode.trim().toLowerCase() : undefined,
+      };
+    });
+
+  const selectorWarnings = normalizedSelectors
+    .filter((spec) => spec.selector.includes(":contains("))
     .map((spec) => ({
-      name: typeof spec.name === "string" ? spec.name : undefined,
+      code: "unsupported_selector_syntax",
+      signalId: "selector",
       selector: spec.selector,
-      attr: typeof spec.attr === "string" ? spec.attr : "text",
-      all: Boolean(spec.all),
-      text: typeof spec.text === "string" && spec.text.trim() ? spec.text.trim() : undefined,
-      textMode: typeof spec.textMode === "string" ? spec.textMode.trim().toLowerCase() : undefined,
+      name: spec.name || spec.selector,
+      message: "Selector uses unsupported CSS :contains() syntax.",
+      hint: "Use selector text filters (text/textMode) or a different selector.",
     }));
 
   const signalDefs: Array<{ id: string; match: (tab: Record<string, unknown>) => boolean; run: (tabId: number) => Promise<unknown> }> = [];
@@ -203,6 +217,12 @@ export async function inspectTabs(params: Record<string, unknown>, requestId: st
       try {
         await waitForTabReady(tabId, params, signalTimeoutMs);
         result = await task.signal.run(tabId);
+        if (task.signal.id === "selector" && result && typeof result === "object") {
+          const selectorErrors = Object.keys((result as { errors?: Record<string, unknown> }).errors || {});
+          if (selectorErrors.length > 0) {
+            error = `selector failures: ${selectorErrors.join(", ")}`;
+          }
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : "signal_error";
         error = message;
@@ -247,5 +267,8 @@ export async function inspectTabs(params: Record<string, unknown>, requestId: st
     },
     entries,
   };
+  if (selectorWarnings.length > 0) {
+    response.warnings = selectorWarnings;
+  }
   return response;
 }

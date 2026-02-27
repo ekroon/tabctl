@@ -58,9 +58,6 @@ function shapeOpenResult(
   result: {
     windowId: number;
     groupId: number | null;
-    groupTitle: string | null;
-    afterGroupTitle: string | null;
-    insertIndex: number | null;
     created: Array<Record<string, unknown>>;
     skipped: Array<Record<string, unknown>>;
     summary: Record<string, unknown>;
@@ -308,9 +305,6 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
     return shapeOpenResult({
       windowId,
       groupId,
-      groupTitle: groupTitle || null,
-      afterGroupTitle: null,
-      insertIndex: null,
       created,
       skipped,
       summary: {
@@ -558,9 +552,6 @@ export async function openTabs(params: Record<string, unknown>, deps: Pick<Exten
   return shapeOpenResult({
     windowId,
     groupId,
-    groupTitle: groupTitle || null,
-    afterGroupTitle: afterGroupTitle || null,
-    insertIndex,
     created,
     skipped,
     summary: {
