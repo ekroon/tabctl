@@ -16,14 +16,6 @@ interface ScreenshotDeps {
     func: (...args: Array<any>) => T,
     args?: Array<unknown>,
   ) => Promise<T | null>;
-  isScriptableUrl: (url: unknown) => boolean;
-  getTabSnapshot: () => Promise<{ generatedAt: number; windows: Array<Record<string, unknown>> }>;
-  selectTabsByScope: (
-    snapshot: { windows: Array<Record<string, unknown>> },
-    params: Record<string, unknown>,
-  ) => { tabs: Array<Record<string, unknown>>; error?: Record<string, unknown> };
-  waitForTabReady: (tabId: number, params: Record<string, unknown>, fallbackTimeoutMs: number) => Promise<void>;
-  sendProgress: (id: string, payload: Record<string, unknown>) => void;
 }
 
 export function estimateDataUrlBytes(dataUrl: string) {
@@ -372,98 +364,4 @@ export async function captureTabTiles(
 
   await scrollToPosition(tabId, SCREENSHOT_PROCESS_TIMEOUT_MS, startScrollX, startScrollY, deps);
   return tiles;
-}
-
-export async function screenshotTabs(
-  params: Record<string, unknown>,
-  requestId: string,
-  deps: Pick<ScreenshotDeps, "delay" | "executeWithTimeout" | "isScriptableUrl" | "getTabSnapshot" | "selectTabsByScope" | "waitForTabReady" | "sendProgress">,
-) {
-  const snapshot = await deps.getTabSnapshot();
-  const selection = deps.selectTabsByScope(snapshot, params) as { tabs: Array<Record<string, unknown>>; error?: Record<string, unknown> };
-  if (selection.error) {
-    throw selection.error;
-  }
-
-  const mode = params.mode === "full" ? "full" : "viewport";
-  const format = params.format === "jpeg" ? "jpeg" : "png";
-  const qualityRaw = Number(params.quality);
-  const quality = Number.isFinite(qualityRaw) ? Math.min(100, Math.max(0, Math.floor(qualityRaw))) : SCREENSHOT_QUALITY;
-  const tileMaxDimRaw = Number(params.tileMaxDim);
-  const tileMaxDim = Number.isFinite(tileMaxDimRaw) && tileMaxDimRaw > 0 ? Math.floor(tileMaxDimRaw) : SCREENSHOT_TILE_MAX_DIM;
-  const adjustedTileMaxDim = tileMaxDim < 50 ? 50 : tileMaxDim;
-  const maxBytesRaw = Number(params.maxBytes);
-  const maxBytes = Number.isFinite(maxBytesRaw) && maxBytesRaw > 0 ? Math.floor(maxBytesRaw) : SCREENSHOT_MAX_BYTES;
-  const adjustedMaxBytes = maxBytes < 50_000 ? 50_000 : maxBytes;
-  const progressEnabled = params.progress === true;
-
-  const tabs = selection.tabs;
-  const entries: Array<Record<string, unknown>> = [];
-  let totalTiles = 0;
-
-  for (let index = 0; index < tabs.length; index += 1) {
-    const tab = tabs[index];
-    const tabId = tab.tabId as number;
-    const url = tab.url as string | undefined;
-    if (!deps.isScriptableUrl(url)) {
-      entries.push({
-        tabId,
-        windowId: tab.windowId,
-        groupId: tab.groupId,
-        url: tab.url,
-        title: tab.title,
-        error: { message: "unsupported_url" },
-        tiles: [],
-      });
-      if (progressEnabled) {
-        deps.sendProgress(requestId, { phase: "screenshot", processed: index + 1, total: tabs.length, tabId });
-      }
-      continue;
-    }
-
-    let tiles: Array<Record<string, unknown>> = [];
-    let error: Record<string, unknown> | null = null;
-    try {
-      const windowId = tab.windowId as number;
-      const activeTabs = await chrome.tabs.query({ windowId, active: true });
-      const activeTabId = activeTabs[0]?.id ?? null;
-      if (activeTabId && activeTabId !== tabId) {
-        await chrome.tabs.update(tabId, { active: true });
-        await deps.delay(SCREENSHOT_SCROLL_DELAY_MS);
-      }
-
-      try {
-        await deps.waitForTabReady(tabId, params, SCREENSHOT_PROCESS_TIMEOUT_MS);
-        tiles = await captureTabTiles(tab, { mode, format, quality, tileMaxDim: adjustedTileMaxDim, maxBytes: adjustedMaxBytes }, deps);
-      } finally {
-        if (activeTabId && activeTabId !== tabId) {
-          await chrome.tabs.update(activeTabId, { active: true });
-        }
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "capture_failed";
-      error = { message };
-    }
-
-    totalTiles += tiles.length;
-    entries.push({
-      tabId: tab.tabId,
-      windowId: tab.windowId,
-      groupId: tab.groupId,
-      url: tab.url,
-      title: tab.title,
-      tiles,
-      ...(error ? { error } : {}),
-    });
-
-    if (progressEnabled) {
-      deps.sendProgress(requestId, { phase: "screenshot", processed: index + 1, total: tabs.length, tabId });
-    }
-  }
-
-  const response: Record<string, unknown> = {
-    totals: { tabs: tabs.length, tiles: totalTiles },
-    entries,
-  };
-  return response;
 }
