@@ -161,6 +161,12 @@ function sendProgress(id: string, payload: Record<string, unknown>) {
 }
 
 async function handleAction(action: string, params: Record<string, unknown>, requestId: string) {
+  // Strip host-injected metadata from primitives so only Chrome-safe fields reach APIs
+  if (action.startsWith("p:")) {
+    delete params.client;
+    delete params.txid;
+  }
+
   switch (action) {
     case "ping":
       return {
