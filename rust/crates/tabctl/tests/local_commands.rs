@@ -150,6 +150,17 @@ fn test_profile_lifecycle() {
     )
     .expect("profile-list after remove should succeed");
     assert_ok("profile-list after remove", &list_after);
+
+    // Verify profile-b was actually removed
+    let list_str = format!("{list_after}");
+    assert!(
+        !list_str.contains(profile_b),
+        "profile-list should not contain removed profile {profile_b}: {list_str}"
+    );
+    assert!(
+        list_str.contains(profile_a),
+        "profile-list should still contain {profile_a}: {list_str}"
+    );
 }
 
 // ── doctor ──────────────────────────────────────────────────────────────────

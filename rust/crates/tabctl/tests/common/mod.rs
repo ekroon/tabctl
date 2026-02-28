@@ -4,7 +4,7 @@
 //! boots Chrome + extension exactly once (via `OnceLock`) and exposes a
 //! convenient API for browser-backed tests.
 
-#![allow(dead_code, unused_imports)]
+#![allow(dead_code)]
 
 use serde_json::Value;
 use std::fs;
@@ -56,9 +56,17 @@ pub fn now_ms() -> u128 {
         .as_millis()
 }
 
+static SANDBOX_COUNTER: AtomicU32 = AtomicU32::new(0);
+
 /// Create an isolated sandbox directory for tests. Caller is responsible for cleanup.
 pub fn create_sandbox() -> PathBuf {
-    let sandbox = std::env::temp_dir().join(format!("tbi-local-{}", now_ms()));
+    let seq = SANDBOX_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let sandbox = std::env::temp_dir().join(format!(
+        "tbi-local-{}-{}-{}",
+        now_ms(),
+        std::process::id(),
+        seq
+    ));
     fs::create_dir_all(&sandbox).expect("create test sandbox");
     sandbox
 }
