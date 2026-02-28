@@ -331,6 +331,7 @@ fn build_undo_tab(
     };
 
     serde_json::json!({
+        "tabId": tab.tab_id,
         "url": tab.url,
         "title": tab.title,
         "pinned": tab.pinned,

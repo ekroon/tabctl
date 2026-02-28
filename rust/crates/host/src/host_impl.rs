@@ -979,5 +979,7 @@ mod tests {
             payload.error.as_ref().map(|e| e.message.as_str()),
             Some("chrome api failed")
         );
+        // Error response must carry the original client request_id, not the internal orch-* id
+        assert_eq!(payload.request_id.as_deref(), Some("req-abort"));
     }
 }

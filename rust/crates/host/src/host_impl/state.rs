@@ -340,7 +340,8 @@ impl HostState {
         if let Some(pending) = self.pending.get(&message_id) {
             if now_ms().saturating_sub(pending.created_at) > REQUEST_TIMEOUT_MS {
                 let timed_out = self.pending.remove(&message_id).expect("pending exists");
-                let mut resp = base_response(false, Some(timed_out.action), Some(message_id));
+                let resp_id = timed_out.request_id.clone().unwrap_or(message_id);
+                let mut resp = base_response(false, Some(timed_out.action), Some(resp_id));
                 resp.error = Some(ProtocolError {
                     message: "Request timed out".to_string(),
                     hint: None,
@@ -357,7 +358,11 @@ impl HostState {
             let Some(pending) = self.pending.get(&message_id) else {
                 return Vec::new();
             };
-            let mut resp = base_response(true, Some(pending.action.clone()), Some(message_id));
+            let resp_id = pending
+                .request_id
+                .clone()
+                .unwrap_or_else(|| message_id.clone());
+            let mut resp = base_response(true, Some(pending.action.clone()), Some(resp_id));
             resp.progress = Some(true);
             resp.data = message.data;
             return vec![HostEffect::Respond {
@@ -373,7 +378,8 @@ impl HostState {
 
         // Extension error — abort orchestration if active
         if !message.ok.unwrap_or(false) {
-            let mut resp = base_response(false, Some(pending.action), Some(message_id));
+            let resp_id = pending.request_id.clone().unwrap_or(message_id);
+            let mut resp = base_response(false, Some(pending.action), Some(resp_id));
             resp.error = message.error.or(Some(ProtocolError {
                 message: "Unknown error".to_string(),
                 hint: None,
