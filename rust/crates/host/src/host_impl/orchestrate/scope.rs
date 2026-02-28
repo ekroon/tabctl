@@ -21,6 +21,7 @@ pub(crate) struct ScopedTab {
     pub(crate) group_title: Option<String>,
     pub(crate) group_color: Option<String>,
     pub(crate) group_collapsed: Option<bool>,
+    pub(crate) last_focused_at: Option<i64>,
 }
 
 impl ScopedTab {
@@ -43,6 +44,7 @@ impl ScopedTab {
                 .and_then(Value::as_str)
                 .map(String::from),
             group_collapsed: tab.get("groupCollapsed").and_then(Value::as_bool),
+            last_focused_at: tab.get("lastFocusedAt").and_then(Value::as_i64),
         })
     }
 }

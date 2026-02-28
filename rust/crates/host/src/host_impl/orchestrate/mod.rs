@@ -1,5 +1,6 @@
 use serde_json::Value;
 
+mod analyze;
 mod archive;
 mod close;
 mod focus;
@@ -7,14 +8,17 @@ mod group_assign;
 mod group_gather;
 mod group_ungroup;
 mod group_update;
+mod inspect;
 mod list;
 mod merge_window;
 mod move_group;
 mod move_tab;
 mod open;
 mod refresh;
+pub(super) mod report;
 pub(crate) mod resolve;
 pub(crate) mod scope;
+mod screenshot;
 mod undo;
 
 /// Multi-step orchestration of extension primitives for a single CLI request.
@@ -92,6 +96,10 @@ pub(super) fn orchestration_for(action: &str, params: &Value) -> Option<Box<dyn 
             params,
         ))),
         "undo" => Some(Box::new(undo::UndoOrchestration::new(params))),
+        "analyze" => Some(Box::new(analyze::AnalyzeOrchestration::new(params))),
+        "inspect" => Some(Box::new(inspect::InspectOrchestration::new(params))),
+        "report" => Some(Box::new(report::ReportOrchestration::new(params))),
+        "screenshot" => Some(Box::new(screenshot::ScreenshotOrchestration::new(params))),
         _ => None,
     }
 }

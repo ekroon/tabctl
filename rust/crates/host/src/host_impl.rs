@@ -235,30 +235,42 @@ mod tests {
             auth_token: None,
         };
         let analyze_effects = state.handle_cli_request(3, analyze_request);
-        let HostEffect::SendNative(analyze_native) = &analyze_effects[0] else {
-            panic!("expected analyze forward");
+        // Orchestration sends p:snapshot first
+        let HostEffect::SendNative(snapshot_native) = &analyze_effects[0] else {
+            panic!("expected p:snapshot forward");
         };
+        assert_eq!(snapshot_native.action.as_deref(), Some("p:snapshot"));
 
-        let analyze_response = state.handle_native_message(NativeMessage {
-            id: analyze_native.id.clone(),
-            action: Some("analyze".to_string()),
+        // Provide snapshot with a stale tab (lastFocusedAt: 0 = epoch = definitely stale)
+        let snapshot_response = state.handle_native_message(NativeMessage {
+            id: snapshot_native.id.clone(),
+            action: Some("p:snapshot".to_string()),
             ok: Some(true),
             progress: None,
             params: None,
-            data: Some(Value::Object(Map::from_iter([(
-                "candidates".to_string(),
-                Value::Array(vec![Value::Object(Map::from_iter([
-                    ("tabId".to_string(), Value::Number(12.into())),
-                    (
-                        "url".to_string(),
-                        Value::String("https://example.com".to_string()),
-                    ),
-                ]))]),
-            )]))),
+            data: Some(serde_json::json!({
+                "windows": [{
+                    "windowId": 100,
+                    "focused": true,
+                    "tabs": [{
+                        "tabId": 12,
+                        "windowId": 100,
+                        "index": 0,
+                        "url": "https://example.com",
+                        "title": "Example",
+                        "active": true,
+                        "pinned": false,
+                        "groupId": -1,
+                        "lastFocusedAt": 0
+                    }],
+                    "groups": []
+                }]
+            })),
             error: None,
         });
 
-        let HostEffect::Respond { payload, .. } = &analyze_response[0] else {
+        // Orchestration completes with analysis → response includes analysisId
+        let HostEffect::Respond { payload, .. } = &snapshot_response[0] else {
             panic!("expected analyze response");
         };
         let analysis_id = payload

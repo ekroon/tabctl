@@ -531,6 +531,15 @@ impl HostState {
                 }
                 let mut resp = base_response(true, Some(action.to_string()), request_id);
                 let mut data = value_object(Some(response));
+
+                // Cache analysis for close --apply
+                if action == "analyze" {
+                    let analysis_id = create_id("analysis");
+                    self.analyses
+                        .insert(analysis_id.clone(), AnalysisRecord { data: data.clone() });
+                    data.insert("analysisId".to_string(), Value::String(analysis_id));
+                }
+
                 if let Some(txid_str) = txid {
                     data.insert("txid".to_string(), Value::String(txid_str));
                 }
