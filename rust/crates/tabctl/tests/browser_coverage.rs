@@ -1,7 +1,7 @@
 //! Browser-backed integration tests for features not covered by the original
 //! `browser_integration.rs` harness.
 //!
-//! Uses a shared Chrome instance (via `LazyLock`) so each test function
+//! Uses a shared Chrome instance (initialized once via `shared_browser()`) so each test function
 //! doesn't pay the ~30 s bootstrap cost. Run with `--test-threads=1`.
 
 mod common;
@@ -115,14 +115,14 @@ fn test_group_operations() {
     // Verify: group should no longer exist
     let groups_after = b.run(&["group-list", "--window", &win_str]);
     assert_ok("group-list after ungroup", &groups_after);
-    let groups_arr2 = response_data(&groups_after)
+    let still_exists = response_data(&groups_after)
         .pointer("/groups")
         .and_then(Value::as_array)
-        .unwrap_or(&Vec::new())
-        .clone();
-    let still_exists = groups_arr2
-        .iter()
-        .any(|g| g.get("title").and_then(Value::as_str) == Some(&group_name));
+        .is_some_and(|groups_arr2| {
+            groups_arr2
+                .iter()
+                .any(|g| g.get("title").and_then(Value::as_str) == Some(&group_name))
+        });
     assert!(
         !still_exists,
         "group should be removed after ungroup: {groups_after}"

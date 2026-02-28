@@ -1,7 +1,7 @@
 //! Shared integration-test infrastructure.
 //!
 //! Provides helpers for running CLI commands and a `SharedBrowser` fixture that
-//! boots Chrome + extension exactly once (via `LazyLock`) and exposes a
+//! boots Chrome + extension exactly once (via `OnceLock`) and exposes a
 //! convenient API for browser-backed tests.
 
 #![allow(dead_code, unused_imports)]
@@ -252,6 +252,35 @@ mod cleanup {
     pub const SIGTERM: std::ffi::c_int = 15;
 }
 
+#[cfg(windows)]
+mod cleanup {
+    extern "C" {
+        pub fn atexit(func: extern "C" fn()) -> std::ffi::c_int;
+    }
+
+    extern "system" {
+        fn OpenProcess(
+            desired_access: u32,
+            inherit_handle: i32,
+            process_id: u32,
+        ) -> *mut std::ffi::c_void;
+        fn TerminateProcess(handle: *mut std::ffi::c_void, exit_code: u32) -> i32;
+        fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+    }
+
+    /// Terminate the bootstrap process on Windows via `TerminateProcess`.
+    pub fn terminate_pid(pid: u32) {
+        const PROCESS_TERMINATE: u32 = 0x0001;
+        unsafe {
+            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if !handle.is_null() {
+                TerminateProcess(handle, 1);
+                CloseHandle(handle);
+            }
+        }
+    }
+}
+
 #[cfg(unix)]
 extern "C" fn cleanup_bootstrap() {
     let pid = BOOTSTRAP_PID.load(Ordering::SeqCst);
@@ -262,9 +291,17 @@ extern "C" fn cleanup_bootstrap() {
     }
 }
 
+#[cfg(windows)]
+extern "C" fn cleanup_bootstrap() {
+    let pid = BOOTSTRAP_PID.load(Ordering::SeqCst);
+    if pid != 0 {
+        cleanup::terminate_pid(pid);
+    }
+}
+
 /// Shared browser fixture: tabctl binary, profile, and sandbox paths.
 ///
-/// Created once via `LazyLock` and reused across all browser-backed tests.
+/// Created once via `OnceLock` and reused across all browser-backed tests.
 /// Tests should use `shared_browser()` to obtain a reference.
 pub struct SharedBrowser {
     pub tabctl_bin: PathBuf,
@@ -438,7 +475,6 @@ fn init_browser() -> SharedBrowser {
     let pid = bootstrap_child.id();
     BOOTSTRAP_PID.store(pid, Ordering::SeqCst);
 
-    #[cfg(unix)]
     unsafe {
         cleanup::atexit(cleanup_bootstrap);
     }

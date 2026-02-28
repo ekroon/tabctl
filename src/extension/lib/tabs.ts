@@ -204,7 +204,7 @@ export async function refreshTabs(params: Record<string, unknown>) {
       : null;
 
   if (!tabId) {
-    throw new Error("Missing tabId");
+    throw new Error("Missing tabId or tabIds");
   }
 
   await chrome.tabs.reload(tabId);

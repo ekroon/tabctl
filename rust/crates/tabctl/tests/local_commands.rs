@@ -6,8 +6,6 @@
 mod common;
 
 use common::*;
-#[allow(unused_imports)]
-use serde_json::Value;
 use std::fs;
 
 // ── help ────────────────────────────────────────────────────────────────────
@@ -42,6 +40,7 @@ fn test_profile_lifecycle() {
     let root = repo_root();
     let bin = rust_tabctl_bin(&root);
     let sandbox = create_sandbox();
+    let _sandbox_guard = TempDirGuard::new(sandbox.clone());
     let config_home = sandbox.join("c");
     let state_home = sandbox.join("s");
     fs::create_dir_all(&config_home).unwrap();
@@ -151,9 +150,6 @@ fn test_profile_lifecycle() {
     )
     .expect("profile-list after remove should succeed");
     assert_ok("profile-list after remove", &list_after);
-
-    // Cleanup
-    let _ = fs::remove_dir_all(&sandbox);
 }
 
 // ── doctor ──────────────────────────────────────────────────────────────────
@@ -164,6 +160,7 @@ fn test_doctor_command() {
     let root = repo_root();
     let bin = rust_tabctl_bin(&root);
     let sandbox = create_sandbox();
+    let _sandbox_guard = TempDirGuard::new(sandbox.clone());
     let config_home = sandbox.join("c");
     let state_home = sandbox.join("s");
     fs::create_dir_all(&config_home).unwrap();
@@ -198,8 +195,6 @@ fn test_doctor_command() {
         "doctor should not crash: {:?}",
         doctor.err()
     );
-
-    let _ = fs::remove_dir_all(&sandbox);
 }
 
 // ── policy ──────────────────────────────────────────────────────────────────
@@ -210,6 +205,7 @@ fn test_policy_command() {
     let root = repo_root();
     let bin = rust_tabctl_bin(&root);
     let sandbox = create_sandbox();
+    let _sandbox_guard = TempDirGuard::new(sandbox.clone());
     let config_home = sandbox.join("c");
     let state_home = sandbox.join("s");
     fs::create_dir_all(&config_home).unwrap();
@@ -258,6 +254,4 @@ fn test_policy_command() {
         "policy --init should not crash: {:?}",
         policy_init.err()
     );
-
-    let _ = fs::remove_dir_all(&sandbox);
 }
