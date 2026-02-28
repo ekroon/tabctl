@@ -240,7 +240,7 @@ impl MoveGroupOrchestration {
             self.phase = Phase::CreateWindow;
             OrchStep::SendPrimitive {
                 action: "p:window-create".to_string(),
-                params: serde_json::json!({"tabId": tab_ids[0]}),
+                params: serde_json::json!({"tabId": tab_ids[0], "focused": false}),
             }
         } else {
             let tw = target_window_id.unwrap();

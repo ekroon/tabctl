@@ -147,7 +147,7 @@ impl MoveTabOrchestration {
             self.phase = Phase::WindowCreated;
             OrchStep::SendPrimitive {
                 action: "p:window-create".to_string(),
-                params: serde_json::json!({"tabId": tab_id}),
+                params: serde_json::json!({"tabId": tab_id, "focused": false}),
             }
         } else {
             let target_window_id = self

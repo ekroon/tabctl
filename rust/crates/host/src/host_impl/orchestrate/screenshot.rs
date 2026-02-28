@@ -58,19 +58,24 @@ impl ScreenshotOrchestration {
 
     fn screenshot_options(&self) -> Value {
         let mut opts = Map::new();
-        // mode: default to "viewport"
-        if let Some(mode) = self.params.get("mode").and_then(Value::as_str) {
-            opts.insert("mode".to_string(), Value::String(mode.to_string()));
-        } else {
-            opts.insert("mode".to_string(), Value::String("viewport".to_string()));
-        }
-        // format: default to "png"
+        // mode: only allow "viewport" or "full", default to "viewport"
+        let mode = self
+            .params
+            .get("mode")
+            .and_then(Value::as_str)
+            .map(|s| s.to_ascii_lowercase())
+            .filter(|s| s == "viewport" || s == "full")
+            .unwrap_or_else(|| "viewport".to_string());
+        opts.insert("mode".to_string(), Value::String(mode));
+        // format: only allow "png" or "jpeg", default to "png"
         let format = self
             .params
             .get("format")
             .and_then(Value::as_str)
-            .unwrap_or("png");
-        opts.insert("format".to_string(), Value::String(format.to_string()));
+            .map(|s| s.to_ascii_lowercase())
+            .filter(|s| s == "png" || s == "jpeg")
+            .unwrap_or_else(|| "png".to_string());
+        opts.insert("format".to_string(), Value::String(format));
         // quality: default 80, clamp [1, 100]
         let quality = self
             .params

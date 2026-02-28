@@ -263,15 +263,14 @@ async function handleAction(action: string, params: Record<string, unknown>, req
 
     case "p:screenshot-tile": {
       const opts = params.options as Record<string, unknown> ?? {};
+      const mode = (opts.mode === "viewport" || opts.mode === "full") ? opts.mode : "viewport";
+      const fmt = (opts.format === "png" || opts.format === "jpeg") ? opts.format : "png";
+      const quality = typeof opts.quality === "number" ? Math.max(1, Math.min(100, opts.quality)) : 80;
+      const tileMaxDim = typeof opts.tileMaxDim === "number" ? Math.max(50, opts.tileMaxDim) : 50;
+      const maxBytes = typeof opts.maxBytes === "number" ? Math.max(50_000, opts.maxBytes) : 50_000;
       return await screenshot.captureTabTiles(
         params.tab as Record<string, unknown>,
-        {
-          mode: (opts.mode as "viewport" | "full") ?? "viewport",
-          format: (opts.format as "png" | "jpeg") ?? "png",
-          quality: typeof opts.quality === "number" ? opts.quality : 80,
-          tileMaxDim: typeof opts.tileMaxDim === "number" ? opts.tileMaxDim : 50,
-          maxBytes: typeof opts.maxBytes === "number" ? opts.maxBytes : 50_000,
-        },
+        { mode, format: fmt, quality, tileMaxDim, maxBytes },
         { delay, executeWithTimeout },
       );
     }
