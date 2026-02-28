@@ -139,7 +139,7 @@ pub(crate) fn resolve_window_id(snapshot: &Value, raw: &Value) -> Option<i64> {
     }
     if let Some(s) = raw.as_str() {
         let normalized = s.trim().to_lowercase();
-        if normalized == "active" || normalized == "last-focused" {
+        if normalized == "active" {
             return snapshot
                 .get("windows")
                 .and_then(Value::as_array)
@@ -152,6 +152,32 @@ pub(crate) fn resolve_window_id(snapshot: &Value, raw: &Value) -> Option<i64> {
                         }
                     })
                 });
+        }
+        if normalized == "last-focused" {
+            // Find window containing the tab with highest lastFocusedAt
+            let best = snapshot
+                .get("windows")
+                .and_then(Value::as_array)
+                .and_then(|wins| {
+                    wins.iter()
+                        .filter_map(|w| {
+                            let max_ts =
+                                w.get("tabs").and_then(Value::as_array).and_then(|tabs| {
+                                    tabs.iter()
+                                        .filter_map(|t| {
+                                            t.get("lastFocusedAt").and_then(Value::as_f64)
+                                        })
+                                        .reduce(f64::max)
+                                })?;
+                            let wid = w.get("windowId").and_then(Value::as_i64)?;
+                            Some((wid, max_ts))
+                        })
+                        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                        .map(|(wid, _)| wid)
+                });
+            // Fall back to focused window if no lastFocusedAt data
+            return best
+                .or_else(|| resolve_window_id(snapshot, &Value::String("active".to_string())));
         }
         return s.trim().parse::<i64>().ok();
     }
@@ -229,10 +255,43 @@ mod tests {
             resolve_window_id(&snap, &Value::String("active".to_string())),
             Some(100)
         );
+        // Without lastFocusedAt data, last-focused falls back to active (focused window)
         assert_eq!(
             resolve_window_id(&snap, &Value::String("last-focused".to_string())),
             Some(100)
         );
         assert_eq!(resolve_window_id(&snap, &serde_json::json!(200)), Some(200));
+    }
+
+    #[test]
+    fn resolve_last_focused_uses_last_focused_at() {
+        // Window 200 has the most recently focused tab despite not being focused
+        let snap = serde_json::json!({
+            "windows": [{
+                "windowId": 100,
+                "focused": true,
+                "tabs": [
+                    {"tabId": 1, "windowId": 100, "lastFocusedAt": 1000.0}
+                ],
+                "groups": []
+            }, {
+                "windowId": 200,
+                "focused": false,
+                "tabs": [
+                    {"tabId": 2, "windowId": 200, "lastFocusedAt": 2000.0}
+                ],
+                "groups": []
+            }]
+        });
+        assert_eq!(
+            resolve_window_id(&snap, &Value::String("active".to_string())),
+            Some(100),
+            "active should return focused window"
+        );
+        assert_eq!(
+            resolve_window_id(&snap, &Value::String("last-focused".to_string())),
+            Some(200),
+            "last-focused should return window with highest lastFocusedAt"
+        );
     }
 }

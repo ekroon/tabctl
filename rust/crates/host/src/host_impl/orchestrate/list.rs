@@ -1,5 +1,6 @@
 use serde_json::{Map, Value};
 
+use super::resolve::resolve_window_id;
 use super::OrchStep;
 
 /// Orchestration for the `list` command.
@@ -122,25 +123,10 @@ impl super::Orchestration for GroupListOrchestration {
         };
 
         // Resolve windowId filter
-        let filter_window_id = self.window_id_param.as_ref().and_then(|v| {
-            if let Some(n) = v.as_i64() {
-                return Some(n);
-            }
-            if let Some(s) = v.as_str() {
-                let normalized = s.trim().to_lowercase();
-                if normalized == "active" || normalized == "last-focused" {
-                    return windows.iter().find_map(|w| {
-                        if w.get("focused").and_then(Value::as_bool) == Some(true) {
-                            w.get("windowId").and_then(Value::as_i64)
-                        } else {
-                            None
-                        }
-                    });
-                }
-                return s.trim().parse::<i64>().ok();
-            }
-            None
-        });
+        let filter_window_id = self
+            .window_id_param
+            .as_ref()
+            .and_then(|v| resolve_window_id(&response, v));
 
         let mut groups_out: Vec<Value> = Vec::new();
 

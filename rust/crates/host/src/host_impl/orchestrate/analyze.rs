@@ -118,6 +118,7 @@ impl AnalyzeOrchestration {
             }
         }
 
+        let unique_domain_count = domain_counts.len();
         let domains: Map<String, Value> = domain_counts
             .into_iter()
             .map(|(k, v)| (k, Value::Number(v.into())))
@@ -143,7 +144,7 @@ impl AnalyzeOrchestration {
                 "totalTabs": tabs.len(),
                 "staleTabs": stale_tabs.len(),
                 "duplicateGroups": duplicates.len(),
-                "uniqueDomains": url_groups.len(),
+                "uniqueDomains": unique_domain_count,
             },
             "candidates": candidates,
         });

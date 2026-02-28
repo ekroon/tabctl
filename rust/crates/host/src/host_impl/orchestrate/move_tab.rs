@@ -200,13 +200,29 @@ impl MoveTabOrchestration {
                 state.to_index = Some(target_index);
             }
 
+            // When moving within the same window, removing the source tab shifts
+            // subsequent indices left by 1. Adjust target to compensate.
+            let adjusted_index = if target_index > 0 && source_tab.window_id == target_window_id {
+                if let Some(src_idx) = source_tab.index {
+                    if src_idx < target_index {
+                        target_index - 1
+                    } else {
+                        target_index
+                    }
+                } else {
+                    target_index
+                }
+            } else {
+                target_index
+            };
+
             self.phase = Phase::MoveTab;
             OrchStep::SendPrimitive {
                 action: "p:tab-move".to_string(),
                 params: serde_json::json!({
                     "tabIds": [tab_id],
                     "windowId": target_window_id,
-                    "index": target_index,
+                    "index": adjusted_index,
                 }),
             }
         }
