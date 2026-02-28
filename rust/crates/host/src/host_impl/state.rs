@@ -388,7 +388,8 @@ impl HostState {
 
         // Orchestration path — feed response to the state machine
         if let Some(mut orch) = pending.orchestration.take() {
-            let step = orch.step(Value::Object(message_data));
+            // Pass original data shape (may be array, object, or null)
+            let step = orch.step(message.data.clone().unwrap_or(Value::Object(message_data)));
             return self.process_orch_step(
                 pending.client_id,
                 &pending.action.clone(),
