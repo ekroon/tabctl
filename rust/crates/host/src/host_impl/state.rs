@@ -470,7 +470,8 @@ impl HostState {
         }
 
         let mut resp = base_response(true, Some(pending.action), Some(message_id));
-        resp.data = Some(Value::Object(message_data));
+        // Preserve original data shape (arrays, objects, etc.)
+        resp.data = Some(message.data.unwrap_or(Value::Object(message_data)));
         vec![HostEffect::Respond {
             client_id: pending.client_id,
             payload: resp,
