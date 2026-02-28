@@ -24,6 +24,7 @@ struct ScreenshotState {
     results: Vec<Value>,
     total_tiles: usize,
     options: Value,
+    emit_progress: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -164,6 +165,11 @@ impl ScreenshotOrchestration {
             results: Vec::new(),
             total_tiles: 0,
             options,
+            emit_progress: self
+                .params
+                .get("progress")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         });
 
         self.advance_to_next_scriptable()
@@ -305,7 +311,7 @@ impl ScreenshotOrchestration {
             };
         }
 
-        if state.tab_index > 0 {
+        if state.tab_index > 0 && state.emit_progress {
             self.phase = Phase::AfterProgress;
             OrchStep::Progress {
                 data: serde_json::json!({
@@ -413,7 +419,7 @@ mod tests {
 
     #[test]
     fn screenshot_includes_non_scriptable_with_error() {
-        let params = serde_json::json!({});
+        let params = serde_json::json!({"progress": true});
         let mut orch = ScreenshotOrchestration::new(&params);
         let _ = orch.start();
 

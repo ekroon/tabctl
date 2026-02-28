@@ -28,6 +28,7 @@ struct ReportState {
     tabs: Vec<ReportTab>,
     index: usize,
     results: Vec<Value>,
+    emit_progress: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +133,11 @@ impl ReportOrchestration {
             tabs: tabs.clone(),
             index: 0,
             results: Vec::new(),
+            emit_progress: self
+                .params
+                .get("progress")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         });
 
         self.advance_to_next_scriptable()
@@ -192,7 +198,7 @@ impl ReportOrchestration {
         }
 
         let tab = &state.tabs[state.index];
-        if state.index > 0 {
+        if state.index > 0 && state.emit_progress {
             OrchStep::Progress {
                 data: serde_json::json!({
                     "done": state.index,
@@ -242,7 +248,7 @@ mod tests {
 
     #[test]
     fn report_includes_non_scriptable_with_empty_desc() {
-        let params = serde_json::json!({});
+        let params = serde_json::json!({"progress": true});
         let mut orch = ReportOrchestration::new(&params);
         let _ = orch.start();
         let snap = snapshot_with(vec![
@@ -264,7 +270,7 @@ mod tests {
 
     #[test]
     fn report_extracts_descriptions() {
-        let params = serde_json::json!({});
+        let params = serde_json::json!({"progress": true});
         let mut orch = ReportOrchestration::new(&params);
         let _ = orch.start();
         let snap = snapshot_with(vec![

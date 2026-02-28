@@ -24,6 +24,7 @@ struct InspectState {
     signals: Vec<Signal>,
     /// Collected results keyed by tab_id → signal_name → value.
     results: HashMap<i64, Vec<(String, Value)>>,
+    emit_progress: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +41,7 @@ struct Signal {
     name: String,
     selector: Option<String>,
     attr: Option<String>,
+    timeout_ms: Option<i64>,
 }
 
 impl Signal {
@@ -59,6 +61,7 @@ impl Signal {
             name,
             selector: v.get("selector").and_then(Value::as_str).map(String::from),
             attr: v.get("attr").and_then(Value::as_str).map(String::from),
+            timeout_ms: None,
         })
     }
 
@@ -75,6 +78,7 @@ impl Signal {
                 .and_then(Value::as_str)
                 .map(String::from),
             attr: spec.get("attr").and_then(Value::as_str).map(String::from),
+            timeout_ms: None,
         })
     }
 
@@ -84,6 +88,7 @@ impl Signal {
             name: "page-meta".to_string(),
             selector: None,
             attr: None,
+            timeout_ms: None,
         }
     }
 
@@ -95,18 +100,26 @@ impl Signal {
                     "selector": self.selector,
                     "attr": self.attr.as_deref().unwrap_or("text"),
                 })];
-                serde_json::json!({
+                let mut params = serde_json::json!({
                     "tabId": tab_id,
                     "func": "extractSelectorSignal",
                     "args": [selectors],
-                })
+                });
+                if let Some(ms) = self.timeout_ms {
+                    params["timeoutMs"] = serde_json::json!(ms);
+                }
+                params
             }
             _ => {
                 // page-meta or other → extractPageMeta
-                serde_json::json!({
+                let mut params = serde_json::json!({
                     "tabId": tab_id,
                     "func": "extractPageMeta",
-                })
+                });
+                if let Some(ms) = self.timeout_ms {
+                    params["timeoutMs"] = serde_json::json!(ms);
+                }
+                params
             }
         }
     }
@@ -186,6 +199,7 @@ impl InspectOrchestration {
                                     name: id.clone(),
                                     selector: None,
                                     attr: None,
+                                    timeout_ms: None,
                                 });
                             }
                         }
@@ -204,10 +218,23 @@ impl InspectOrchestration {
 
         if tabs.is_empty() {
             return OrchStep::Complete {
-                response: serde_json::json!({ "tabs": [] }),
+                response: serde_json::json!({
+                    "totals": { "tabs": 0, "signals": signals.len(), "tasks": 0 },
+                    "entries": [],
+                }),
                 undo: None,
             };
         }
+
+        // Apply signal timeout to all signals
+        let timeout_ms = self.params.get("signalTimeoutMs").and_then(Value::as_i64);
+        let signals: Vec<Signal> = signals
+            .into_iter()
+            .map(|mut s| {
+                s.timeout_ms = timeout_ms;
+                s
+            })
+            .collect();
 
         // Build linearized task list: (tab_index, signal_index)
         let mut tasks = Vec::new();
@@ -222,12 +249,19 @@ impl InspectOrchestration {
         let first_signal = &signals[first_task.1];
         let exec_params = first_signal.to_execute_params(first_tab_id);
 
+        let emit_progress = self
+            .params
+            .get("progress")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
         self.state = Some(InspectState {
             tasks,
             task_index: 0,
             tabs,
             signals,
             results: HashMap::new(),
+            emit_progress,
         });
 
         OrchStep::SendPrimitive {
@@ -267,11 +301,21 @@ impl InspectOrchestration {
             return self.complete();
         }
 
-        OrchStep::Progress {
-            data: serde_json::json!({
-                "done": state.task_index,
-                "total": state.tasks.len(),
-            }),
+        if state.emit_progress {
+            OrchStep::Progress {
+                data: serde_json::json!({
+                    "done": state.task_index,
+                    "total": state.tasks.len(),
+                }),
+            }
+        } else {
+            let (ti, si) = state.tasks[state.task_index];
+            let tab = &state.tabs[ti];
+            let signal = &state.signals[si];
+            OrchStep::SendPrimitive {
+                action: "p:execute-script".to_string(),
+                params: signal.to_execute_params(tab.tab_id),
+            }
         }
     }
 
@@ -304,7 +348,14 @@ impl InspectOrchestration {
             .collect();
 
         OrchStep::Complete {
-            response: serde_json::json!({ "tabs": tab_results }),
+            response: serde_json::json!({
+                "totals": {
+                    "tabs": state.tabs.len(),
+                    "signals": state.signals.len(),
+                    "tasks": state.tasks.len(),
+                },
+                "entries": tab_results,
+            }),
             undo: None,
         }
     }
@@ -335,7 +386,7 @@ mod tests {
         let OrchStep::Complete { response, .. } = step else {
             panic!("expected Complete");
         };
-        assert_eq!(response["tabs"].as_array().unwrap().len(), 0);
+        assert_eq!(response["entries"].as_array().unwrap().len(), 0);
     }
 
     #[test]
@@ -364,7 +415,7 @@ mod tests {
         let OrchStep::Complete { response, .. } = step else {
             panic!("expected Complete");
         };
-        let tabs = response["tabs"].as_array().unwrap();
+        let tabs = response["entries"].as_array().unwrap();
         assert_eq!(tabs.len(), 1);
         assert!(tabs[0]["signals"]["page-meta"].is_object());
     }
@@ -375,7 +426,8 @@ mod tests {
             "signals": [
                 {"type": "page-meta"},
                 {"type": "selector", "name": "price", "selector": ".price", "attr": "textContent"}
-            ]
+            ],
+            "progress": true
         });
         let mut orch = InspectOrchestration::new(&params);
         let _ = orch.start();
@@ -406,7 +458,46 @@ mod tests {
         let OrchStep::Complete { response, .. } = step else {
             panic!("expected Complete");
         };
-        let tabs = response["tabs"].as_array().unwrap();
+        let tabs = response["entries"].as_array().unwrap();
+        assert_eq!(tabs.len(), 1);
+        assert!(tabs[0]["signals"]["page-meta"].is_object());
+        assert!(tabs[0]["signals"]["price"].is_object());
+    }
+
+    #[test]
+    fn inspect_no_progress_skips_progress_step() {
+        let params = serde_json::json!({
+            "signals": [
+                {"type": "page-meta"},
+                {"type": "selector", "name": "price", "selector": ".price", "attr": "textContent"}
+            ]
+        });
+        let mut orch = InspectOrchestration::new(&params);
+        let _ = orch.start();
+
+        let snap = snapshot_with(vec![
+            serde_json::json!({"tabId": 1, "windowId": 100, "url": "https://a.com", "title": "A", "groupId": -1}),
+        ]);
+
+        // Snapshot → first signal (page-meta)
+        let step = orch.step(snap);
+        assert!(matches!(&step, OrchStep::SendPrimitive { action, params }
+            if action == "p:execute-script" && params["func"] == "extractPageMeta"));
+
+        // First signal result → directly to SendPrimitive (no Progress)
+        let step = orch.step(serde_json::json!({"description": "desc"}));
+        let OrchStep::SendPrimitive { action, params } = &step else {
+            panic!("expected SendPrimitive (no Progress), got {step:?}");
+        };
+        assert_eq!(action, "p:execute-script");
+        assert_eq!(params["func"], "extractSelectorSignal");
+
+        // Second signal result → Complete
+        let step = orch.step(serde_json::json!({"price": "$9.99"}));
+        let OrchStep::Complete { response, .. } = step else {
+            panic!("expected Complete");
+        };
+        let tabs = response["entries"].as_array().unwrap();
         assert_eq!(tabs.len(), 1);
         assert!(tabs[0]["signals"]["page-meta"].is_object());
         assert!(tabs[0]["signals"]["price"].is_object());
