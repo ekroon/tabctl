@@ -248,7 +248,9 @@ impl MoveTabOrchestration {
         OrchStep::Complete {
             response: serde_json::json!({
                 "tabId": state.tab_id,
-                "windowId": state.to_window_id,
+                "fromWindowId": state.from_window_id,
+                "toWindowId": state.to_window_id,
+                "toIndex": state.to_index,
                 "summary": {
                     "movedTabs": 1,
                 },

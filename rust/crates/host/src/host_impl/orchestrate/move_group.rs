@@ -403,14 +403,20 @@ impl MoveGroupOrchestration {
     fn complete(&self) -> OrchStep {
         let state = self.state.as_ref().unwrap();
 
+        let mut response = serde_json::json!({
+            "groupId": state.new_group_id.unwrap_or(state.source_group_id),
+            "windowId": state.source_window_id,
+            "movedToWindowId": state.target_window_id,
+            "summary": {
+                "movedTabs": state.tab_ids.len(),
+            },
+        });
+        if let Some(new_gid) = state.new_group_id {
+            response["newGroupId"] = serde_json::json!(new_gid);
+        }
+
         OrchStep::Complete {
-            response: serde_json::json!({
-                "groupId": state.new_group_id.unwrap_or(state.source_group_id),
-                "windowId": state.target_window_id,
-                "summary": {
-                    "movedTabs": state.tab_ids.len(),
-                },
-            }),
+            response,
             undo: Some(serde_json::json!({
                 "action": "move-group",
                 "groupId": state.source_group_id,
