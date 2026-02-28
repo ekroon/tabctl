@@ -105,6 +105,24 @@ pub(super) fn build_cli() -> Command {
                 .arg(Arg::new("out").long("out").value_name("path")),
         )
         .subcommand(command_with_scope("reload"))
+        .subcommand(command_raw())
+}
+
+pub(super) fn command_raw() -> Command {
+    Command::new("raw")
+        .hide(true)
+        .arg(
+            Arg::new("action")
+                .long("action")
+                .required(true)
+                .value_name("name"),
+        )
+        .arg(
+            Arg::new("params")
+                .long("params")
+                .value_name("json")
+                .default_value("{}"),
+        )
 }
 
 pub(super) fn command_list() -> Command {
