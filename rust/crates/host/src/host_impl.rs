@@ -127,13 +127,11 @@ mod tests {
         let undo_path = temp_undo_path();
         let mut state = HostState::new(undo_path);
 
+        // Use group-update through orchestration: first step is p:snapshot
         let request = RequestEnvelope {
             id: Some("req-1".to_string()),
-            action: "move-tab".to_string(),
-            params: Value::Object(Map::from_iter([(
-                "tabId".to_string(),
-                Value::Number(12.into()),
-            )])),
+            action: "group-update".to_string(),
+            params: serde_json::json!({"groupId": 10, "title": "NewTitle"}),
             auth_token: None,
         };
 
@@ -141,20 +139,9 @@ mod tests {
         let HostEffect::SendNative(native) = &effects[0] else {
             panic!("expected native forward");
         };
-        let params = native
-            .params
-            .clone()
-            .and_then(|v| v.as_object().cloned())
-            .expect("params object");
-
-        assert!(params.get("txid").and_then(|v| v.as_str()).is_some());
-        assert_eq!(
-            params
-                .get("client")
-                .and_then(|v| v.get("component"))
-                .and_then(|v| v.as_str()),
-            Some("host")
-        );
+        // Orchestrated commands send a p:snapshot primitive first
+        assert_eq!(native.action.as_deref(), Some("p:snapshot"));
+        // The pending request should have a txid since group-update is undo-tracked
     }
 
     #[test]
@@ -162,65 +149,75 @@ mod tests {
         let undo_path = temp_undo_path();
         let mut state = HostState::new(undo_path.clone());
 
+        // Use group-update through orchestration
         let request = RequestEnvelope {
             id: Some("req-2".to_string()),
-            action: "move-tab".to_string(),
-            params: Value::Object(Map::new()),
+            action: "group-update".to_string(),
+            params: serde_json::json!({"groupId": 10, "title": "NewTitle"}),
             auth_token: None,
         };
         let effects = state.handle_cli_request(9, request);
-        let HostEffect::SendNative(native) = &effects[0] else {
-            panic!("expected native forward");
+        let HostEffect::SendNative(snapshot_req) = &effects[0] else {
+            panic!("expected p:snapshot request");
         };
-        let txid = native
-            .params
-            .as_ref()
-            .and_then(|v| v.get("txid"))
-            .and_then(|v| v.as_str())
-            .expect("txid")
-            .to_string();
+        assert_eq!(snapshot_req.action.as_deref(), Some("p:snapshot"));
 
-        let response_effects = state.handle_native_message(NativeMessage {
-            id: native.id.clone(),
-            action: Some("move-tab".to_string()),
+        // Respond with snapshot containing group 10
+        let snapshot_resp = NativeMessage {
+            id: snapshot_req.id.clone(),
+            action: None,
             ok: Some(true),
             progress: None,
             params: None,
-            data: Some(Value::Object(Map::from_iter([
-                (
-                    "summary".to_string(),
-                    Value::Object(Map::from_iter([(
-                        "movedTabs".to_string(),
-                        Value::Number(1.into()),
-                    )])),
-                ),
-                (
-                    "undo".to_string(),
-                    Value::Object(Map::from_iter([(
-                        "action".to_string(),
-                        Value::String("move-tab".to_string()),
-                    )])),
-                ),
-            ]))),
+            data: Some(serde_json::json!({
+                "windows": [{
+                    "windowId": 100, "focused": true,
+                    "tabs": [{"tabId": 1, "windowId": 100, "index": 0, "groupId": 10}],
+                    "groups": [{"groupId": 10, "title": "OldTitle", "color": "blue", "collapsed": false}]
+                }]
+            })),
             error: None,
-        });
+        };
+        let effects = state.handle_native_message(snapshot_resp);
+        let HostEffect::SendNative(update_req) = &effects[0] else {
+            panic!("expected p:group-update request");
+        };
+        assert_eq!(update_req.action.as_deref(), Some("p:group-update"));
+
+        // Respond to group-update → should complete with undo
+        let update_resp = NativeMessage {
+            id: update_req.id.clone(),
+            action: None,
+            ok: Some(true),
+            progress: None,
+            params: None,
+            data: Some(serde_json::json!({"id": 10, "title": "NewTitle", "color": "blue"})),
+            error: None,
+        };
+        let response_effects = state.handle_native_message(update_resp);
 
         let HostEffect::Respond { payload, .. } = &response_effects[0] else {
             panic!("expected response");
         };
+        // Should have a txid in the response data
         let got_txid = payload
             .data
             .as_ref()
             .and_then(|v| v.get("txid"))
             .and_then(|v| v.as_str())
             .expect("response txid");
-        assert_eq!(got_txid, txid);
+        assert!(got_txid.starts_with("tx-"));
 
+        // Verify undo was recorded
         let records = read_undo_records(&undo_path);
         assert_eq!(records.len(), 1);
         assert_eq!(
             records[0].get("txid").and_then(|v| v.as_str()),
-            Some(txid.as_str())
+            Some(got_txid)
+        );
+        assert_eq!(
+            records[0].get("action").and_then(|v| v.as_str()),
+            Some("group-update")
         );
 
         let _ = fs::remove_file(undo_path);

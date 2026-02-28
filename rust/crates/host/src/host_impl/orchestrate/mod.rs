@@ -1,5 +1,6 @@
 use serde_json::Value;
 
+mod archive;
 mod close;
 mod focus;
 mod group_assign;
@@ -7,6 +8,9 @@ mod group_gather;
 mod group_ungroup;
 mod group_update;
 mod list;
+mod merge_window;
+mod move_group;
+mod move_tab;
 mod open;
 mod refresh;
 pub(crate) mod resolve;
@@ -77,6 +81,12 @@ pub(super) fn orchestration_for(action: &str, params: &Value) -> Option<Box<dyn 
             params,
         ))),
         "open" => Some(Box::new(open::OpenOrchestration::new(params))),
+        "move-tab" => Some(Box::new(move_tab::MoveTabOrchestration::new(params))),
+        "move-group" => Some(Box::new(move_group::MoveGroupOrchestration::new(params))),
+        "archive" => Some(Box::new(archive::ArchiveOrchestration::new(params))),
+        "merge-window" => Some(Box::new(merge_window::MergeWindowOrchestration::new(
+            params,
+        ))),
         _ => None,
     }
 }
