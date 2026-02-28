@@ -57,23 +57,43 @@ impl ScreenshotOrchestration {
 
     fn screenshot_options(&self) -> Value {
         let mut opts = Map::new();
+        // mode: default to "viewport"
         if let Some(mode) = self.params.get("mode").and_then(Value::as_str) {
             opts.insert("mode".to_string(), Value::String(mode.to_string()));
         } else {
             opts.insert("mode".to_string(), Value::String("viewport".to_string()));
         }
-        if let Some(format) = self.params.get("format").and_then(Value::as_str) {
-            opts.insert("format".to_string(), Value::String(format.to_string()));
-        }
-        if let Some(quality) = self.params.get("quality") {
-            opts.insert("quality".to_string(), quality.clone());
-        }
-        if let Some(tile_max) = self.params.get("tileMaxDim") {
-            opts.insert("tileMaxDim".to_string(), tile_max.clone());
-        }
-        if let Some(max_bytes) = self.params.get("maxBytes") {
-            opts.insert("maxBytes".to_string(), max_bytes.clone());
-        }
+        // format: default to "png"
+        let format = self
+            .params
+            .get("format")
+            .and_then(Value::as_str)
+            .unwrap_or("png");
+        opts.insert("format".to_string(), Value::String(format.to_string()));
+        // quality: default 80, clamp [1, 100]
+        let quality = self
+            .params
+            .get("quality")
+            .and_then(Value::as_i64)
+            .unwrap_or(80)
+            .clamp(1, 100);
+        opts.insert("quality".to_string(), Value::Number(quality.into()));
+        // tileMaxDim: default 50, clamp >= 50
+        let tile_max_dim = self
+            .params
+            .get("tileMaxDim")
+            .and_then(Value::as_i64)
+            .unwrap_or(50)
+            .max(50);
+        opts.insert("tileMaxDim".to_string(), Value::Number(tile_max_dim.into()));
+        // maxBytes: default 50_000, clamp >= 50_000
+        let max_bytes = self
+            .params
+            .get("maxBytes")
+            .and_then(Value::as_i64)
+            .unwrap_or(50_000)
+            .max(50_000);
+        opts.insert("maxBytes".to_string(), Value::Number(max_bytes.into()));
         Value::Object(opts)
     }
 }
@@ -414,5 +434,17 @@ mod tests {
         };
         assert_eq!(action, "p:tab-query");
         assert_eq!(params["query"]["windowId"], 100);
+    }
+
+    #[test]
+    fn screenshot_options_defaults() {
+        let params = serde_json::json!({});
+        let orch = ScreenshotOrchestration::new(&params);
+        let opts = orch.screenshot_options();
+        assert_eq!(opts["mode"], "viewport");
+        assert_eq!(opts["format"], "png");
+        assert_eq!(opts["quality"], 80);
+        assert_eq!(opts["tileMaxDim"], 50);
+        assert_eq!(opts["maxBytes"], 50_000);
     }
 }

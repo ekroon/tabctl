@@ -38,6 +38,8 @@ struct ReportTab {
     title: Option<String>,
     group_id: i64,
     group_title: Option<String>,
+    group_color: Option<String>,
+    last_focused_at: Option<i64>,
     scriptable: bool,
 }
 
@@ -67,7 +69,7 @@ impl super::Orchestration for ReportOrchestration {
 }
 
 fn build_report_entry(tab: &ReportTab, description: &str) -> Value {
-    serde_json::json!({
+    let mut entry = serde_json::json!({
         "tabId": tab.tab_id,
         "windowId": tab.window_id,
         "url": tab.url,
@@ -75,7 +77,14 @@ fn build_report_entry(tab: &ReportTab, description: &str) -> Value {
         "groupId": tab.group_id,
         "groupTitle": tab.group_title,
         "description": description,
-    })
+    });
+    if let Some(ref color) = tab.group_color {
+        entry["groupColor"] = Value::String(color.clone());
+    }
+    if let Some(ts) = tab.last_focused_at {
+        entry["lastFocusedAt"] = Value::Number(ts.into());
+    }
+    entry
 }
 
 impl ReportOrchestration {
@@ -101,6 +110,8 @@ impl ReportOrchestration {
                     title: t.title.clone(),
                     group_id: t.group_id,
                     group_title: t.group_title.clone(),
+                    group_color: t.group_color.clone(),
+                    last_focused_at: t.last_focused_at,
                     scriptable,
                 }
             })

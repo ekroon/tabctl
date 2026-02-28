@@ -62,13 +62,38 @@ impl Signal {
         })
     }
 
+    fn from_selector_spec(spec: &Value) -> Option<Self> {
+        let name = spec
+            .get("name")
+            .and_then(Value::as_str)
+            .or_else(|| spec.get("selector").and_then(Value::as_str))?;
+        Some(Self {
+            signal_type: "selector".to_string(),
+            name: name.to_string(),
+            selector: spec
+                .get("selector")
+                .and_then(Value::as_str)
+                .map(String::from),
+            attr: spec.get("attr").and_then(Value::as_str).map(String::from),
+        })
+    }
+
+    fn default_page_meta() -> Self {
+        Self {
+            signal_type: "page-meta".to_string(),
+            name: "page-meta".to_string(),
+            selector: None,
+            attr: None,
+        }
+    }
+
     fn to_execute_params(&self, tab_id: i64) -> Value {
         match self.signal_type.as_str() {
             "selector" => {
                 let selectors = vec![serde_json::json!({
                     "name": self.name,
                     "selector": self.selector,
-                    "attr": self.attr.as_deref().unwrap_or("textContent"),
+                    "attr": self.attr.as_deref().unwrap_or("text"),
                 })];
                 serde_json::json!({
                     "tabId": tab_id,
@@ -134,19 +159,48 @@ impl InspectOrchestration {
             })
             .collect();
 
-        let signals: Vec<Signal> = self
-            .params
-            .get("signals")
-            .and_then(Value::as_array)
-            .map(|arr| arr.iter().filter_map(Signal::from_value).collect())
-            .unwrap_or_else(|| {
-                vec![Signal {
-                    signal_type: "page-meta".to_string(),
-                    name: "page-meta".to_string(),
-                    selector: None,
-                    attr: None,
-                }]
-            });
+        let signals: Vec<Signal> = {
+            if let Some(arr) = self.params.get("signals").and_then(Value::as_array) {
+                let mut out: Vec<Signal> = Vec::new();
+                for v in arr {
+                    match v {
+                        Value::Object(_) => {
+                            if let Some(sig) = Signal::from_value(v) {
+                                out.push(sig);
+                            }
+                        }
+                        Value::String(id) => {
+                            if id == "selector" {
+                                if let Some(specs) =
+                                    self.params.get("selectorSpecs").and_then(Value::as_array)
+                                {
+                                    for spec in specs {
+                                        if let Some(sig) = Signal::from_selector_spec(spec) {
+                                            out.push(sig);
+                                        }
+                                    }
+                                }
+                            } else {
+                                out.push(Signal {
+                                    signal_type: id.clone(),
+                                    name: id.clone(),
+                                    selector: None,
+                                    attr: None,
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if out.is_empty() {
+                    vec![Signal::default_page_meta()]
+                } else {
+                    out
+                }
+            } else {
+                vec![Signal::default_page_meta()]
+            }
+        };
 
         if tabs.is_empty() {
             return OrchStep::Complete {
@@ -356,5 +410,29 @@ mod tests {
         assert_eq!(tabs.len(), 1);
         assert!(tabs[0]["signals"]["page-meta"].is_object());
         assert!(tabs[0]["signals"]["price"].is_object());
+    }
+
+    #[test]
+    fn inspect_parses_string_signals_with_selector_specs() {
+        let params = serde_json::json!({
+            "signals": ["page-meta", "selector"],
+            "selectorSpecs": [
+                {"name": "price", "selector": ".price", "attr": "text"},
+                {"name": "link", "selector": "a[href]", "attr": "href-url"},
+            ],
+        });
+        let mut orch = InspectOrchestration::new(&params);
+        let _ = orch.start();
+        let snap = snapshot_with(vec![
+            serde_json::json!({"tabId": 1, "windowId": 100, "url": "https://example.com", "title": "Ex", "groupId": -1}),
+        ]);
+        let step = orch.step(snap);
+        // Should have 3 tasks: page-meta + 2 selectors for 1 tab
+        let OrchStep::SendPrimitive { action, params } = &step else {
+            panic!("expected SendPrimitive, got {step:?}");
+        };
+        assert_eq!(action, "p:execute-script");
+        // First task should be page-meta
+        assert_eq!(params["func"], "extractPageMeta");
     }
 }

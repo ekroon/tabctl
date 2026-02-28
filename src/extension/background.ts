@@ -261,12 +261,20 @@ async function handleAction(action: string, params: Record<string, unknown>, req
       }
     }
 
-    case "p:screenshot-tile":
+    case "p:screenshot-tile": {
+      const opts = params.options as Record<string, unknown> ?? {};
       return await screenshot.captureTabTiles(
         params.tab as Record<string, unknown>,
-        params.options as { mode: "viewport" | "full"; format: "png" | "jpeg"; quality: number; tileMaxDim: number; maxBytes: number },
+        {
+          mode: (opts.mode as "viewport" | "full") ?? "viewport",
+          format: (opts.format as "png" | "jpeg") ?? "png",
+          quality: typeof opts.quality === "number" ? opts.quality : 80,
+          tileMaxDim: typeof opts.tileMaxDim === "number" ? opts.tileMaxDim : 50,
+          maxBytes: typeof opts.maxBytes === "number" ? opts.maxBytes : 50_000,
+        },
         { delay, executeWithTimeout },
       );
+    }
 
     default:
       throw new Error(`Unknown action: ${action}`);
