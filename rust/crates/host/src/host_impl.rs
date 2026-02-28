@@ -1,4 +1,5 @@
 mod dispatch;
+mod orchestrate;
 mod protocol;
 mod runtime;
 mod state;
@@ -8,6 +9,8 @@ pub fn run() {
     runtime::run();
 }
 
+#[cfg(test)]
+use orchestrate::{OrchStep, Orchestration};
 #[cfg(test)]
 use protocol::{
     create_id, host_version, now_ms, read_native_message, write_native_message,
@@ -795,5 +798,192 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── Orchestration framework tests ───────────────────────────────────────
+
+    #[derive(Debug)]
+    struct TwoStepOrch {
+        phase: u8,
+    }
+
+    impl TwoStepOrch {
+        fn new() -> Self {
+            Self { phase: 0 }
+        }
+    }
+
+    impl Orchestration for TwoStepOrch {
+        fn start(&mut self) -> OrchStep {
+            self.phase = 1;
+            OrchStep::SendPrimitive {
+                action: "p:snapshot".to_string(),
+                params: Value::Object(Map::new()),
+            }
+        }
+        fn step(&mut self, response: Value) -> OrchStep {
+            match self.phase {
+                1 => {
+                    self.phase = 2;
+                    // Second step: send another primitive
+                    OrchStep::SendPrimitive {
+                        action: "p:tab-query".to_string(),
+                        params: serde_json::json!({"query": {"active": true}}),
+                    }
+                }
+                _ => {
+                    // Complete with aggregated response
+                    OrchStep::Complete {
+                        response: serde_json::json!({"result": "done", "input": response}),
+                        undo: None,
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn orchestration_two_step_sequence_sends_primitives_then_completes() {
+        let undo_path = temp_undo_path();
+        let mut state = HostState::new(undo_path);
+
+        // Simulate: start orchestration manually (since orchestration_for
+        // returns None, we inject directly via process_orch_step)
+        let mut orch = TwoStepOrch::new();
+        let step = orch.start();
+
+        let effects = state.process_orch_step(
+            42,
+            "test-action",
+            Some("req-orch".to_string()),
+            None,
+            step,
+            Box::new(orch),
+        );
+
+        // Step 1: should send p:snapshot
+        assert_eq!(effects.len(), 1);
+        let HostEffect::SendNative(native1) = &effects[0] else {
+            panic!("expected SendNative for step 1");
+        };
+        assert_eq!(native1.action.as_deref(), Some("p:snapshot"));
+
+        // Feed snapshot response back
+        let effects2 = state.handle_native_message(NativeMessage {
+            id: native1.id.clone(),
+            action: None,
+            ok: Some(true),
+            progress: None,
+            params: None,
+            data: Some(serde_json::json!({"windows": []})),
+            error: None,
+        });
+
+        // Step 2: should send p:tab-query
+        assert_eq!(effects2.len(), 1);
+        let HostEffect::SendNative(native2) = &effects2[0] else {
+            panic!("expected SendNative for step 2");
+        };
+        assert_eq!(native2.action.as_deref(), Some("p:tab-query"));
+
+        // Feed tab-query response back
+        let effects3 = state.handle_native_message(NativeMessage {
+            id: native2.id.clone(),
+            action: None,
+            ok: Some(true),
+            progress: None,
+            params: None,
+            data: Some(serde_json::json!([{"id": 1, "active": true}])),
+            error: None,
+        });
+
+        // Should complete with final response
+        assert_eq!(effects3.len(), 1);
+        let HostEffect::Respond { client_id, payload } = &effects3[0] else {
+            panic!("expected Respond after completion");
+        };
+        assert_eq!(*client_id, 42);
+        assert!(payload.ok);
+        assert_eq!(payload.action.as_deref(), Some("test-action"));
+        let data = payload.data.as_ref().expect("response data");
+        assert_eq!(data.get("result").and_then(Value::as_str), Some("done"));
+    }
+
+    #[test]
+    fn orchestration_error_step_returns_error_response() {
+        let undo_path = temp_undo_path();
+        let mut state = HostState::new(undo_path);
+
+        let step = OrchStep::Error {
+            message: "test error".to_string(),
+            hint: Some("try again".to_string()),
+        };
+
+        let effects = state.process_orch_step(
+            99,
+            "failing-action",
+            Some("req-fail".to_string()),
+            None,
+            step,
+            Box::new(TwoStepOrch::new()),
+        );
+
+        let HostEffect::Respond { payload, .. } = &effects[0] else {
+            panic!("expected error response");
+        };
+        assert!(!payload.ok);
+        assert_eq!(
+            payload.error.as_ref().map(|e| e.message.as_str()),
+            Some("test error")
+        );
+        assert_eq!(
+            payload.error.as_ref().and_then(|e| e.hint.as_deref()),
+            Some("try again")
+        );
+    }
+
+    #[test]
+    fn orchestration_extension_error_aborts_orchestration() {
+        let undo_path = temp_undo_path();
+        let mut state = HostState::new(undo_path);
+
+        // Start a 2-step orchestration
+        let mut orch = TwoStepOrch::new();
+        let step = orch.start();
+        let effects = state.process_orch_step(
+            50,
+            "test-abort",
+            Some("req-abort".to_string()),
+            None,
+            step,
+            Box::new(orch),
+        );
+        let HostEffect::SendNative(native) = &effects[0] else {
+            panic!("expected SendNative");
+        };
+
+        // Extension returns error
+        let effects2 = state.handle_native_message(NativeMessage {
+            id: native.id.clone(),
+            action: None,
+            ok: Some(false),
+            progress: None,
+            params: None,
+            data: None,
+            error: Some(ProtocolError {
+                message: "chrome api failed".to_string(),
+                hint: None,
+            }),
+        });
+
+        // Should abort and return error to client
+        let HostEffect::Respond { payload, .. } = &effects2[0] else {
+            panic!("expected error response on abort");
+        };
+        assert!(!payload.ok);
+        assert_eq!(
+            payload.error.as_ref().map(|e| e.message.as_str()),
+            Some("chrome api failed")
+        );
     }
 }

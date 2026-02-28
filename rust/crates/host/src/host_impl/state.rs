@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tabctl_shared::{ClientInfo, NativeMessage, ProtocolError, RequestEnvelope, ResponseEnvelope};
 
+use super::orchestrate::{orchestration_for, OrchStep, Orchestration};
 use super::protocol::{
     add_host_metadata, add_ping_metadata, base_response, create_id, host_version, local_actions,
     now_ms, undo_actions, value_object, version_info_value, REQUEST_TIMEOUT_MS,
@@ -14,12 +15,13 @@ use super::undo::{
 
 const HISTORY_LIMIT_DEFAULT: usize = 20;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct PendingRequest {
     client_id: u64,
     action: String,
     txid: Option<String>,
     created_at: u64,
+    orchestration: Option<Box<dyn Orchestration>>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +60,16 @@ impl HostState {
         request: &RequestEnvelope,
         txid: Option<String>,
     ) -> Vec<HostEffect> {
+        self.forward_to_extension_with_orch(client_id, request, txid, None)
+    }
+
+    fn forward_to_extension_with_orch(
+        &mut self,
+        client_id: u64,
+        request: &RequestEnvelope,
+        txid: Option<String>,
+        orchestration: Option<Box<dyn Orchestration>>,
+    ) -> Vec<HostEffect> {
         let request_id = request.id.clone().unwrap_or_else(|| create_id("req"));
         let mut params = value_object(Some(request.params.clone()));
 
@@ -83,6 +95,7 @@ impl HostState {
                 action: request.action.clone(),
                 txid,
                 created_at: now_ms(),
+                orchestration,
             },
         );
 
@@ -296,12 +309,19 @@ impl HostState {
             return self.forward_to_extension(client_id, &request, Some(create_id("tx")));
         }
 
+        // Check for orchestration — new primitive-based path
+        if let Some(mut orch) = orchestration_for(&action, &request.params) {
+            let step = orch.start();
+            return self.process_orch_step(client_id, &action, request.id, None, step, orch);
+        }
+
         self.forward_to_extension(client_id, &request, None)
     }
 
     pub(super) fn handle_native_message(&mut self, message: NativeMessage) -> Vec<HostEffect> {
         let message_id = message.id.clone();
 
+        // Timeout check
         if let Some(pending) = self.pending.get(&message_id) {
             if now_ms().saturating_sub(pending.created_at) > REQUEST_TIMEOUT_MS {
                 let timed_out = self.pending.remove(&message_id).expect("pending exists");
@@ -317,12 +337,12 @@ impl HostState {
             }
         }
 
-        let Some(pending) = self.pending.get(&message_id).cloned() else {
-            return Vec::new();
-        };
-
+        // Progress passthrough (don't remove pending)
         if message.progress.unwrap_or(false) {
-            let mut resp = base_response(true, Some(pending.action), Some(message_id));
+            let Some(pending) = self.pending.get(&message_id) else {
+                return Vec::new();
+            };
+            let mut resp = base_response(true, Some(pending.action.clone()), Some(message_id));
             resp.progress = Some(true);
             resp.data = message.data;
             return vec![HostEffect::Respond {
@@ -331,8 +351,12 @@ impl HostState {
             }];
         }
 
-        let pending = self.pending.remove(&message_id).expect("pending exists");
+        // Remove pending for main processing
+        let Some(mut pending) = self.pending.remove(&message_id) else {
+            return Vec::new();
+        };
 
+        // Extension error — abort orchestration if active
         if !message.ok.unwrap_or(false) {
             let mut resp = base_response(false, Some(pending.action), Some(message_id));
             resp.error = message.error.or(Some(ProtocolError {
@@ -346,6 +370,21 @@ impl HostState {
         }
 
         let message_data = value_object(message.data.clone());
+
+        // Orchestration path — feed response to the state machine
+        if let Some(mut orch) = pending.orchestration.take() {
+            let step = orch.step(Value::Object(message_data));
+            return self.process_orch_step(
+                pending.client_id,
+                &pending.action.clone(),
+                Some(message_id),
+                pending.txid,
+                step,
+                orch,
+            );
+        }
+
+        // Legacy path — no orchestration
 
         if pending.action == "ping" {
             let data = add_ping_metadata(message_data);
@@ -421,5 +460,81 @@ impl HostState {
             client_id: pending.client_id,
             payload: resp,
         }]
+    }
+
+    /// Process an orchestration step result: send the next primitive, complete,
+    /// or return an error.
+    pub(super) fn process_orch_step(
+        &mut self,
+        client_id: u64,
+        action: &str,
+        request_id: Option<String>,
+        txid: Option<String>,
+        step: OrchStep,
+        orch: Box<dyn Orchestration>,
+    ) -> Vec<HostEffect> {
+        match step {
+            OrchStep::SendPrimitive {
+                action: prim_action,
+                params,
+            } => {
+                let new_id = create_id("orch");
+                self.pending.insert(
+                    new_id.clone(),
+                    PendingRequest {
+                        client_id,
+                        action: action.to_string(),
+                        txid,
+                        created_at: now_ms(),
+                        orchestration: Some(orch),
+                    },
+                );
+                vec![HostEffect::SendNative(NativeMessage {
+                    id: new_id,
+                    action: Some(prim_action),
+                    ok: None,
+                    progress: None,
+                    params: Some(params),
+                    data: None,
+                    error: None,
+                })]
+            }
+            OrchStep::Complete { response, undo } => {
+                if let Some(ref undo_data) = undo {
+                    if let Some(ref txid_str) = txid {
+                        let summary = response
+                            .as_object()
+                            .and_then(|o| o.get("summary"))
+                            .cloned()
+                            .unwrap_or_else(|| Value::Object(Map::new()));
+                        let mut record = Map::new();
+                        record.insert("txid".to_string(), Value::String(txid_str.clone()));
+                        record.insert("createdAt".to_string(), Value::Number(now_ms().into()));
+                        record.insert("action".to_string(), Value::String(action.to_string()));
+                        record.insert("summary".to_string(), summary);
+                        record.insert("undo".to_string(), undo_data.clone());
+                        append_undo_record(&self.undo_log, &record);
+                    }
+                }
+                let mut resp = base_response(true, Some(action.to_string()), request_id);
+                let mut data = value_object(Some(response));
+                if let Some(txid_str) = txid {
+                    data.insert("txid".to_string(), Value::String(txid_str));
+                }
+                resp.data = Some(Value::Object(data));
+                vec![HostEffect::Respond {
+                    client_id,
+                    payload: resp,
+                }]
+            }
+            OrchStep::Error { message, hint } => {
+                let mut resp = base_response(false, Some(action.to_string()), request_id);
+                resp.error = Some(ProtocolError { message, hint });
+                vec![HostEffect::Respond {
+                    client_id,
+                    payload: resp,
+                }]
+            }
+        }
     }
 }
