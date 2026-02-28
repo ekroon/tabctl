@@ -3,198 +3,15 @@
 //! Rust drives the scenario assertions; a thin Node bootstrap keeps Chrome +
 //! extension session management isolated to CDP orchestration.
 
+mod common;
+
+use common::*;
 use serde_json::Value;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::thread::sleep;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-fn repo_root() -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .and_then(|p| p.parent())
-        .expect("failed to resolve repository root from CARGO_MANIFEST_DIR")
-        .to_path_buf()
-}
-
-fn rust_tabctl_bin(root: &Path) -> PathBuf {
-    let mut bin = root
-        .join("rust")
-        .join("target")
-        .join("debug")
-        .join("tabctl");
-    if cfg!(windows) {
-        bin.set_extension("exe");
-    }
-    bin
-}
-
-fn integration_bootstrap_script(root: &Path) -> PathBuf {
-    std::env::var("TABCTL_INTEGRATION_BOOTSTRAP")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            root.join("scripts")
-                .join("ci")
-                .join("integration-bootstrap.js")
-        })
-}
-
-fn now_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before unix epoch")
-        .as_millis()
-}
-
-fn run_tabctl_json_with_timeout(
-    tabctl_bin: &Path,
-    root: &Path,
-    profile: &str,
-    config_home: &Path,
-    state_home: &Path,
-    args: &[&str],
-    timeout: Duration,
-) -> Result<Value, String> {
-    let mut command = Command::new(tabctl_bin);
-    command
-        .arg("--json")
-        .arg("--no-pretty")
-        .arg("--profile")
-        .arg(profile)
-        .args(args)
-        .current_dir(root)
-        .env("XDG_CONFIG_HOME", config_home)
-        .env("XDG_STATE_HOME", state_home)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if cfg!(windows) {
-        command.env("TABCTL_TRANSPORT", "tcp");
-    }
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("failed to execute tabctl {:?}: {e}", args))?;
-    let start = Instant::now();
-    loop {
-        if let Some(_status) = child
-            .try_wait()
-            .map_err(|e| format!("failed to poll tabctl {:?}: {e}", args))?
-        {
-            break;
-        }
-        if start.elapsed() > timeout {
-            let _ = child.kill();
-            let output = child
-                .wait_with_output()
-                .map_err(|e| format!("failed to capture timed-out tabctl {:?}: {e}", args))?;
-            return Err(format!(
-                "tabctl {:?} timed out after {}s.\nstdout: {}\nstderr: {}",
-                args,
-                timeout.as_secs(),
-                String::from_utf8_lossy(&output.stdout).trim(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        sleep(Duration::from_millis(100));
-    }
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("failed to capture tabctl {:?} output: {e}", args))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !output.status.success() {
-        return Err(format!(
-            "tabctl {:?} failed with status {}.\nstdout: {}\nstderr: {}",
-            args, output.status, stdout, stderr
-        ));
-    }
-    serde_json::from_str::<Value>(&stdout).map_err(|e| {
-        format!(
-            "tabctl {:?} returned non-JSON output ({e}). raw stdout: {}",
-            args, stdout
-        )
-    })
-}
-
-fn run_tabctl_json(
-    tabctl_bin: &Path,
-    root: &Path,
-    profile: &str,
-    config_home: &Path,
-    state_home: &Path,
-    args: &[&str],
-) -> Result<Value, String> {
-    run_tabctl_json_with_timeout(
-        tabctl_bin,
-        root,
-        profile,
-        config_home,
-        state_home,
-        args,
-        Duration::from_secs(30),
-    )
-}
-
-fn assert_ok(action: &str, payload: &Value) {
-    if payload.get("ok").is_some() {
-        assert_eq!(
-            payload.get("ok").and_then(Value::as_bool),
-            Some(true),
-            "tabctl {action} returned non-ok payload: {payload}"
-        );
-    } else {
-        assert!(
-            payload.get("error").is_none(),
-            "tabctl {action} returned error payload: {payload}"
-        );
-    }
-}
-
-fn response_data(payload: &Value) -> &Value {
-    payload.get("data").unwrap_or(payload)
-}
-
-struct ChildGuard {
-    child: Child,
-}
-
-impl ChildGuard {
-    fn new(child: Child) -> Self {
-        Self { child }
-    }
-
-    fn child_mut(&mut self) -> &mut Child {
-        &mut self.child
-    }
-}
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        if let Ok(None) = self.child.try_wait() {
-            let _ = self.child.kill();
-        }
-        let _ = self.child.wait();
-    }
-}
-
-struct TempDirGuard {
-    path: PathBuf,
-}
-
-impl TempDirGuard {
-    fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-}
-
-impl Drop for TempDirGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
+use std::time::{Duration, Instant};
 
 #[test]
 #[ignore = "requires built dist artifacts and Chrome"]
@@ -226,7 +43,7 @@ fn real_browser_integration_harness_passes() {
         PathBuf::from(format!("/tmp/tbi-{}", now_ms()))
     };
     fs::create_dir_all(&sandbox).expect("create test sandbox");
-    let _sandbox_guard = TempDirGuard::new(sandbox.clone());
+    let _sandbox_guard = common::TempDirGuard::new(sandbox.clone());
     let config_home = sandbox.join("c");
     let state_home = sandbox.join("s");
     fs::create_dir_all(&config_home).expect("create XDG config dir");
@@ -279,7 +96,7 @@ fn real_browser_integration_harness_passes() {
         .stderr(Stdio::inherit())
         .spawn()
         .expect("failed to execute integration bootstrap");
-    let mut bootstrap = ChildGuard::new(bootstrap_child);
+    let mut bootstrap = common::ChildGuard::new(bootstrap_child);
 
     let mut bootstrap_ready = false;
     let mut last_ping_error = String::new();
