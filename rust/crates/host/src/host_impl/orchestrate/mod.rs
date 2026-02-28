@@ -7,6 +7,7 @@ mod group_gather;
 mod group_ungroup;
 mod group_update;
 mod list;
+mod open;
 mod refresh;
 pub(crate) mod resolve;
 pub(crate) mod scope;
@@ -75,6 +76,7 @@ pub(super) fn orchestration_for(action: &str, params: &Value) -> Option<Box<dyn 
         "group-gather" => Some(Box::new(group_gather::GroupGatherOrchestration::new(
             params,
         ))),
+        "open" => Some(Box::new(open::OpenOrchestration::new(params))),
         _ => None,
     }
 }
