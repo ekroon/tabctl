@@ -196,12 +196,15 @@ export async function focusTab(params: Record<string, unknown>) {
 }
 
 export async function refreshTabs(params: Record<string, unknown>) {
+  const tabIds = Array.isArray(params.tabIds) ? params.tabIds.map(Number) : [];
   const tabId = Number.isFinite(params.tabId as number)
     ? Number(params.tabId)
-    : null;
+    : tabIds.length
+      ? Number(tabIds[0])
+      : null;
 
   if (!tabId) {
-    throw new Error("Missing tabId");
+    throw new Error("Missing tabId or tabIds");
   }
 
   await chrome.tabs.reload(tabId);
