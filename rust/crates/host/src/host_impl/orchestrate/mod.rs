@@ -1,6 +1,11 @@
 use serde_json::Value;
 
+mod focus;
+mod group_ungroup;
+mod group_update;
 mod list;
+mod refresh;
+pub(crate) mod resolve;
 
 /// Multi-step orchestration of extension primitives for a single CLI request.
 ///
@@ -43,6 +48,41 @@ pub(super) fn orchestration_for(action: &str, params: &Value) -> Option<Box<dyn 
     match action {
         "list" => Some(Box::new(list::ListOrchestration::new(params))),
         "group-list" => Some(Box::new(list::GroupListOrchestration::new(params))),
+        "focus" => match focus::FocusOrchestration::new(params) {
+            Ok(o) => Some(Box::new(o)),
+            Err(_) => Some(Box::new(ErrorOrchestration("Missing tabId".to_string()))),
+        },
+        "refresh" => match refresh::RefreshOrchestration::new(params) {
+            Ok(o) => Some(Box::new(o)),
+            Err(_) => Some(Box::new(ErrorOrchestration(
+                "Missing tabId or tabIds".to_string(),
+            ))),
+        },
+        "group-update" => Some(Box::new(group_update::GroupUpdateOrchestration::new(
+            params,
+        ))),
+        "group-ungroup" => Some(Box::new(group_ungroup::GroupUngroupOrchestration::new(
+            params,
+        ))),
         _ => None,
+    }
+}
+
+/// Helper orchestration that immediately errors on start.
+#[derive(Debug)]
+struct ErrorOrchestration(String);
+
+impl Orchestration for ErrorOrchestration {
+    fn start(&mut self) -> OrchStep {
+        OrchStep::Error {
+            message: self.0.clone(),
+            hint: None,
+        }
+    }
+    fn step(&mut self, _response: Value) -> OrchStep {
+        OrchStep::Error {
+            message: self.0.clone(),
+            hint: None,
+        }
     }
 }

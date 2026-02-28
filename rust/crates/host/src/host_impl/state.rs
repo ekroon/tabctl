@@ -305,14 +305,22 @@ impl HostState {
             return self.forward_to_extension(client_id, &close_request, Some(create_id("tx")));
         }
 
-        if undo_actions().contains(action.as_str()) {
-            return self.forward_to_extension(client_id, &request, Some(create_id("tx")));
+        // Check for orchestration — new primitive-based path
+        // Must come before undo_actions legacy forward so migrated commands
+        // use the orchestration path. Undo-tracked orchestrated commands get
+        // a txid generated here.
+        if let Some(mut orch) = orchestration_for(&action, &request.params) {
+            let txid = if undo_actions().contains(action.as_str()) {
+                Some(create_id("tx"))
+            } else {
+                None
+            };
+            let step = orch.start();
+            return self.process_orch_step(client_id, &action, request.id, txid, step, orch);
         }
 
-        // Check for orchestration — new primitive-based path
-        if let Some(mut orch) = orchestration_for(&action, &request.params) {
-            let step = orch.start();
-            return self.process_orch_step(client_id, &action, request.id, None, step, orch);
+        if undo_actions().contains(action.as_str()) {
+            return self.forward_to_extension(client_id, &request, Some(create_id("tx")));
         }
 
         self.forward_to_extension(client_id, &request, None)
