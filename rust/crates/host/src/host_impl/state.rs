@@ -207,13 +207,18 @@ impl HostState {
                 }];
             };
 
+            let undo_params = Value::Object(Map::from_iter([(
+                "record".to_string(),
+                Value::Object(record),
+            )]));
+            if let Some(mut orch) = orchestration_for("undo", &undo_params) {
+                let step = orch.start();
+                return self.process_orch_step(client_id, "undo", request.id, None, step, orch);
+            }
             let undo_request = RequestEnvelope {
                 id: request.id,
                 action: "undo".to_string(),
-                params: Value::Object(Map::from_iter([(
-                    "record".to_string(),
-                    Value::Object(record),
-                )])),
+                params: undo_params,
                 auth_token: None,
             };
             return self.forward_to_extension(client_id, &undo_request, None);
@@ -479,7 +484,7 @@ impl HostState {
         request_id: Option<String>,
         txid: Option<String>,
         step: OrchStep,
-        orch: Box<dyn Orchestration>,
+        mut orch: Box<dyn Orchestration>,
     ) -> Vec<HostEffect> {
         match step {
             OrchStep::SendPrimitive {
@@ -542,6 +547,20 @@ impl HostState {
                     client_id,
                     payload: resp,
                 }]
+            }
+            OrchStep::Progress { data } => {
+                let mut resp = base_response(true, Some(action.to_string()), request_id.clone());
+                resp.progress = Some(true);
+                resp.data = Some(data);
+                let mut effects = vec![HostEffect::Respond {
+                    client_id,
+                    payload: resp,
+                }];
+                let next_step = orch.step(Value::Null);
+                effects.extend(
+                    self.process_orch_step(client_id, action, request_id, txid, next_step, orch),
+                );
+                effects
             }
         }
     }

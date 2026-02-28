@@ -15,6 +15,7 @@ mod open;
 mod refresh;
 pub(crate) mod resolve;
 pub(crate) mod scope;
+mod undo;
 
 /// Multi-step orchestration of extension primitives for a single CLI request.
 ///
@@ -46,6 +47,9 @@ pub(super) enum OrchStep {
         message: String,
         hint: Option<String>,
     },
+    /// Emit a progress event without completing — the orchestration
+    /// continues by immediately calling `step(Value::Null)`.
+    Progress { data: Value },
 }
 
 /// Factory: returns an Orchestration impl for the given CLI action, or `None`
@@ -87,6 +91,7 @@ pub(super) fn orchestration_for(action: &str, params: &Value) -> Option<Box<dyn 
         "merge-window" => Some(Box::new(merge_window::MergeWindowOrchestration::new(
             params,
         ))),
+        "undo" => Some(Box::new(undo::UndoOrchestration::new(params))),
         _ => None,
     }
 }
