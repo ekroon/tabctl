@@ -94,7 +94,7 @@ impl HostState {
             PendingRequest {
                 client_id,
                 action: request.action.clone(),
-                request_id: request.id.clone(),
+                request_id: Some(request_id.clone()),
                 txid,
                 created_at: now_ms(),
                 orchestration,

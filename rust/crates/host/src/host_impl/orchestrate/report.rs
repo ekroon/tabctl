@@ -4,13 +4,10 @@ use super::scope::select_tabs_by_scope;
 use super::OrchStep;
 use crate::host_impl::protocol::now_ms;
 
-/// Returns true for URLs that cannot be scripted (browser-internal pages).
+/// Returns true for URLs that cannot be scripted (non-http(s) pages).
 pub(super) fn is_non_scriptable(url: &str) -> bool {
-    url.starts_with("chrome://")
-        || url.starts_with("edge://")
-        || url.starts_with("about:")
-        || url.starts_with("chrome-extension://")
-        || url.starts_with("devtools://")
+    let lower = url.to_ascii_lowercase();
+    !(lower.starts_with("http://") || lower.starts_with("https://"))
 }
 
 /// Orchestration for the `report` command.
