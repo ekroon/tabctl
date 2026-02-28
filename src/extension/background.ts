@@ -244,8 +244,12 @@ async function handleAction(action: string, params: Record<string, unknown>, req
       switch (funcName) {
         case "extractPageMeta":
           return await content.extractPageMeta(targetTabId, timeoutMs, (funcArgs[0] as number) || DESCRIPTION_MAX_LENGTH);
-        case "extractSelectorSignal":
-          return await content.extractSelectorSignal(targetTabId, funcArgs[0] as Array<Record<string, unknown>>, timeoutMs, (funcArgs[1] as number) || DESCRIPTION_MAX_LENGTH);
+        case "extractSelectorSignal": {
+          const specs = funcArgs[0] as Array<Record<string, unknown>> | undefined;
+          if (!Array.isArray(specs)) throw new Error("extractSelectorSignal requires specs array as first arg");
+          const selectorMaxLen = (funcArgs[1] as number) || 500;
+          return await content.extractSelectorSignal(targetTabId, specs, timeoutMs, selectorMaxLen);
+        }
         default:
           throw new Error(`Unknown execute-script func: ${funcName}`);
       }

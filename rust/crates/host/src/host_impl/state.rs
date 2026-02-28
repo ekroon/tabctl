@@ -19,6 +19,7 @@ const HISTORY_LIMIT_DEFAULT: usize = 20;
 struct PendingRequest {
     client_id: u64,
     action: String,
+    request_id: Option<String>,
     txid: Option<String>,
     created_at: u64,
     orchestration: Option<Box<dyn Orchestration>>,
@@ -93,6 +94,7 @@ impl HostState {
             PendingRequest {
                 client_id,
                 action: request.action.clone(),
+                request_id: request.id.clone(),
                 txid,
                 created_at: now_ms(),
                 orchestration,
@@ -390,7 +392,7 @@ impl HostState {
             return self.process_orch_step(
                 pending.client_id,
                 &pending.action.clone(),
-                Some(message_id),
+                pending.request_id,
                 pending.txid,
                 step,
                 orch,
@@ -497,6 +499,7 @@ impl HostState {
                     PendingRequest {
                         client_id,
                         action: action.to_string(),
+                        request_id: request_id.clone(),
                         txid,
                         created_at: now_ms(),
                         orchestration: Some(orch),

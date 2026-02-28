@@ -136,9 +136,12 @@ pub(super) fn route_command(matches: &ArgMatches) -> Result<RoutedCommand, Strin
                 action = a.to_string();
             }
             if let Some(json_str) = sub.get_one::<String>("params") {
-                if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(json_str) {
-                    params.extend(obj);
-                }
+                let value = serde_json::from_str::<Value>(json_str)
+                    .map_err(|e| format!("Invalid JSON for --params: {e}"))?;
+                let obj = value
+                    .as_object()
+                    .ok_or_else(|| "--params must be a JSON object".to_string())?;
+                params.extend(obj.clone());
             }
         }
         _ => {}

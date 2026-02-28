@@ -156,7 +156,8 @@ impl AnalyzeOrchestration {
             .unwrap_or(false);
         let confirm = self
             .params
-            .get("confirm")
+            .get("confirmed")
+            .or_else(|| self.params.get("confirm"))
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
