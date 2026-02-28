@@ -58,11 +58,7 @@ pub fn now_ms() -> u128 {
 
 /// Create an isolated sandbox directory for tests. Caller is responsible for cleanup.
 pub fn create_sandbox() -> PathBuf {
-    let sandbox = if cfg!(windows) {
-        std::env::temp_dir().join(format!("tbi-local-{}", now_ms()))
-    } else {
-        PathBuf::from(format!("/tmp/tbi-local-{}", now_ms()))
-    };
+    let sandbox = std::env::temp_dir().join(format!("tbi-local-{}", now_ms()));
     fs::create_dir_all(&sandbox).expect("create test sandbox");
     sandbox
 }
@@ -284,7 +280,7 @@ mod cleanup {
 #[cfg(unix)]
 extern "C" fn cleanup_bootstrap() {
     let pid = BOOTSTRAP_PID.load(Ordering::SeqCst);
-    if pid != 0 {
+    if pid != 0 && pid <= i32::MAX as u32 {
         unsafe {
             cleanup::kill(pid as std::ffi::c_int, cleanup::SIGTERM);
         }
