@@ -22,6 +22,7 @@ struct ScreenshotState {
     tab_index: usize,
     restore_tab_id: Option<i64>,
     results: Vec<Value>,
+    total_tiles: usize,
     options: Value,
 }
 
@@ -29,8 +30,10 @@ struct ScreenshotState {
 struct ScreenshotTab {
     tab_id: i64,
     window_id: i64,
+    group_id: i64,
     url: String,
     title: Option<String>,
+    scriptable: bool,
 }
 
 #[derive(Debug)]
@@ -108,18 +111,26 @@ impl ScreenshotOrchestration {
         let tabs: Vec<ScreenshotTab> = scope_result
             .tabs
             .iter()
-            .filter(|t| !is_non_scriptable(t.url.as_deref().unwrap_or("")))
-            .map(|t| ScreenshotTab {
-                tab_id: t.tab_id,
-                window_id: t.window_id,
-                url: t.url.clone().unwrap_or_default(),
-                title: t.title.clone(),
+            .map(|t| {
+                let url = t.url.clone().unwrap_or_default();
+                let scriptable = !is_non_scriptable(&url);
+                ScreenshotTab {
+                    tab_id: t.tab_id,
+                    window_id: t.window_id,
+                    group_id: t.group_id,
+                    url,
+                    title: t.title.clone(),
+                    scriptable,
+                }
             })
             .collect();
 
         if tabs.is_empty() {
             return OrchStep::Complete {
-                response: serde_json::json!({ "tabs": [] }),
+                response: serde_json::json!({
+                    "totals": { "tabs": 0, "tiles": 0 },
+                    "entries": [],
+                }),
                 undo: None,
             };
         }
@@ -131,10 +142,11 @@ impl ScreenshotOrchestration {
             tab_index: 0,
             restore_tab_id: None,
             results: Vec::new(),
+            total_tiles: 0,
             options,
         });
 
-        self.query_active_tab()
+        self.advance_to_next_scriptable()
     }
 
     fn query_active_tab(&mut self) -> OrchStep {
@@ -200,12 +212,17 @@ impl ScreenshotOrchestration {
         let state = self.state.as_mut().unwrap();
         let tab = &state.tabs[state.tab_index];
 
+        // response is an array of tile objects from captureTabTiles
+        let tiles = response.as_array().cloned().unwrap_or_default();
+        state.total_tiles += tiles.len();
+
         state.results.push(serde_json::json!({
             "tabId": tab.tab_id,
             "windowId": tab.window_id,
+            "groupId": tab.group_id,
             "url": tab.url,
             "title": tab.title,
-            "capture": response,
+            "tiles": tiles,
         }));
 
         // Restore previously active tab if we switched
@@ -234,20 +251,50 @@ impl ScreenshotOrchestration {
         let state = self.state.as_mut().unwrap();
         state.tab_index += 1;
 
+        self.advance_to_next_scriptable()
+    }
+
+    /// Add error entries for non-scriptable tabs and find the next scriptable one.
+    fn advance_to_next_scriptable(&mut self) -> OrchStep {
+        let state = self.state.as_mut().unwrap();
+
+        while state.tab_index < state.tabs.len() && !state.tabs[state.tab_index].scriptable {
+            let tab = &state.tabs[state.tab_index];
+            state.results.push(serde_json::json!({
+                "tabId": tab.tab_id,
+                "windowId": tab.window_id,
+                "groupId": tab.group_id,
+                "url": tab.url,
+                "title": tab.title,
+                "error": { "message": "unsupported_url" },
+                "tiles": [],
+            }));
+            state.tab_index += 1;
+        }
+
         if state.tab_index >= state.tabs.len() {
-            let final_results = std::mem::take(&mut state.results);
+            let entries = std::mem::take(&mut state.results);
+            let total_tiles = state.total_tiles;
+            let total_tabs = entries.len();
             return OrchStep::Complete {
-                response: serde_json::json!({ "tabs": final_results }),
+                response: serde_json::json!({
+                    "totals": { "tabs": total_tabs, "tiles": total_tiles },
+                    "entries": entries,
+                }),
                 undo: None,
             };
         }
 
-        self.phase = Phase::AfterProgress;
-        OrchStep::Progress {
-            data: serde_json::json!({
-                "done": state.tab_index,
-                "total": state.tabs.len(),
-            }),
+        if state.tab_index > 0 {
+            self.phase = Phase::AfterProgress;
+            OrchStep::Progress {
+                data: serde_json::json!({
+                    "done": state.tab_index,
+                    "total": state.tabs.len(),
+                }),
+            }
+        } else {
+            self.query_active_tab()
         }
     }
 
@@ -281,7 +328,9 @@ mod tests {
         let OrchStep::Complete { response, .. } = step else {
             panic!("expected Complete");
         };
-        assert_eq!(response["tabs"].as_array().unwrap().len(), 0);
+        assert_eq!(response["entries"].as_array().unwrap().len(), 0);
+        assert_eq!(response["totals"]["tabs"], 0);
+        assert_eq!(response["totals"]["tiles"], 0);
     }
 
     #[test]
@@ -320,8 +369,9 @@ mod tests {
         assert_eq!(params["tab"]["tabId"], 1);
         assert_eq!(params["options"]["mode"], "viewport");
 
-        // Captured → restore tab 5
-        let step = orch.step(serde_json::json!({"tiles": [{"data": "base64..."}], "tileCount": 1}));
+        // Captured → restore tab 5 (response is array of tiles)
+        let step = orch
+            .step(serde_json::json!([{"data": "base64...", "x": 0, "y": 0, "w": 100, "h": 100}]));
         let OrchStep::SendPrimitive { action, params } = &step else {
             panic!("expected tab-update restore, got {step:?}");
         };
@@ -333,14 +383,16 @@ mod tests {
         let OrchStep::Complete { response, .. } = step else {
             panic!("expected Complete");
         };
-        let tabs = response["tabs"].as_array().unwrap();
-        assert_eq!(tabs.len(), 1);
-        assert_eq!(tabs[0]["tabId"], 1);
-        assert!(tabs[0]["capture"].is_object());
+        let entries = response["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["tabId"], 1);
+        assert!(entries[0]["tiles"].is_array());
+        assert_eq!(response["totals"]["tabs"], 1);
+        assert_eq!(response["totals"]["tiles"], 1);
     }
 
     #[test]
-    fn screenshot_skips_non_scriptable() {
+    fn screenshot_includes_non_scriptable_with_error() {
         let params = serde_json::json!({});
         let mut orch = ScreenshotOrchestration::new(&params);
         let _ = orch.start();
@@ -350,13 +402,17 @@ mod tests {
             serde_json::json!({"tabId": 2, "windowId": 100, "url": "https://example.com", "title": "Example", "groupId": -1}),
         ]);
 
-        // Snapshot → should skip chrome:// and start with tab 2
+        // Non-scriptable tab 1 auto-added with error → index advances to 1 → Progress
         let step = orch.step(snap);
+        let OrchStep::Progress { .. } = &step else {
+            panic!("expected Progress, got {step:?}");
+        };
+        // After progress → tab-query for scriptable tab 2
+        let step = orch.step(Value::Null);
         let OrchStep::SendPrimitive { action, params } = &step else {
             panic!("expected SendPrimitive, got {step:?}");
         };
         assert_eq!(action, "p:tab-query");
-        // Only tab 2 should be in the list
         assert_eq!(params["query"]["windowId"], 100);
     }
 }
