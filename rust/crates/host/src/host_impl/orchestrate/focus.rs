@@ -65,7 +65,7 @@ impl super::Orchestration for FocusOrchestration {
                     action: "p:window-update".to_string(),
                     params: serde_json::json!({
                         "windowId": window_id,
-                        "updateProperties": { "focused": true }
+                        "focused": true
                     }),
                 }
             }
@@ -75,7 +75,7 @@ impl super::Orchestration for FocusOrchestration {
                     action: "p:tab-update".to_string(),
                     params: serde_json::json!({
                         "tabId": self.tab_id,
-                        "updateProperties": { "active": true }
+                        "active": true
                     }),
                 }
             }

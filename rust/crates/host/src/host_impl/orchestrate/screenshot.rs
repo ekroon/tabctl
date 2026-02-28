@@ -177,7 +177,7 @@ impl ScreenshotOrchestration {
             action: "p:tab-update".to_string(),
             params: serde_json::json!({
                 "tabId": tab.tab_id,
-                "updateProperties": {"active": true},
+                "active": true,
             }),
         }
     }
@@ -217,7 +217,7 @@ impl ScreenshotOrchestration {
                     action: "p:tab-update".to_string(),
                     params: serde_json::json!({
                         "tabId": restore_id,
-                        "updateProperties": {"active": true},
+                        "active": true,
                     }),
                 };
             }

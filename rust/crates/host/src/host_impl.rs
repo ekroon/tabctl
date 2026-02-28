@@ -281,6 +281,9 @@ mod tests {
             .expect("analysis id")
             .to_string();
 
+        // Now close --apply with the analysis ID.
+        // The host enriches params (tabIds + expectedUrls) and falls through
+        // to CloseOrchestration which sends p:snapshot first.
         let close_request = RequestEnvelope {
             id: Some("req-close".to_string()),
             action: "close".to_string(),
@@ -293,29 +296,10 @@ mod tests {
 
         let close_effects = state.handle_cli_request(3, close_request);
         let HostEffect::SendNative(close_native) = &close_effects[0] else {
-            panic!("expected close forward");
+            panic!("expected p:snapshot for close orchestration");
         };
-
-        let params = close_native
-            .params
-            .as_ref()
-            .and_then(|v| v.as_object())
-            .expect("close params object");
-        assert_eq!(
-            params
-                .get("tabIds")
-                .and_then(|v| v.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|v| v.as_i64()),
-            Some(12)
-        );
-        assert_eq!(
-            params
-                .get("expectedUrls")
-                .and_then(|v| v.get("12"))
-                .and_then(|v| v.as_str()),
-            Some("https://example.com")
-        );
+        // close --apply goes through CloseOrchestration which starts with p:snapshot
+        assert_eq!(close_native.action.as_deref(), Some("p:snapshot"));
     }
 
     #[test]

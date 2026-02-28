@@ -113,7 +113,7 @@ impl HostState {
     pub(super) fn handle_cli_request(
         &mut self,
         client_id: u64,
-        request: RequestEnvelope,
+        mut request: RequestEnvelope,
     ) -> Vec<HostEffect> {
         if request.action.is_empty() {
             let mut resp = base_response(false, None, request.id);
@@ -301,13 +301,13 @@ impl HostState {
             params.insert("mode".to_string(), Value::String("apply".to_string()));
             params.insert("tabIds".to_string(), Value::Array(tab_ids));
             params.insert("expectedUrls".to_string(), Value::Object(expected_urls));
-            let close_request = RequestEnvelope {
+            // Fall through to orchestration below with enriched params
+            request = RequestEnvelope {
                 id: request.id,
-                action,
+                action: action.clone(),
                 params: Value::Object(params),
                 auth_token: None,
             };
-            return self.forward_to_extension(client_id, &close_request, Some(create_id("tx")));
         }
 
         // Check for orchestration — new primitive-based path

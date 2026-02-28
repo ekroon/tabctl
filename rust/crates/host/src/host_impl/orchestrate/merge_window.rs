@@ -285,12 +285,10 @@ impl MergeWindowOrchestration {
         if !update.is_empty() {
             if let Some(gid) = group_id {
                 self.phase = Phase::UpdateBatch;
+                update.insert("groupId".to_string(), serde_json::json!(gid));
                 return OrchStep::SendPrimitive {
                     action: "p:group-update".to_string(),
-                    params: serde_json::json!({
-                        "groupId": gid,
-                        "updateProperties": Value::Object(update),
-                    }),
+                    params: Value::Object(update),
                 };
             }
         }
@@ -462,7 +460,7 @@ mod tests {
             panic!("expected group-update, got {step:?}");
         };
         assert_eq!(action, "p:group-update");
-        assert_eq!(params["updateProperties"]["title"], "Dev");
+        assert_eq!(params["title"], "Dev");
 
         // Updated → move ungrouped tabs
         let step = orch.step(serde_json::json!({}));

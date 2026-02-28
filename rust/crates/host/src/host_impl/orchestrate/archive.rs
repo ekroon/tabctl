@@ -169,7 +169,7 @@ impl ArchiveOrchestration {
             self.phase = Phase::CreateArchiveWindow;
             OrchStep::SendPrimitive {
                 action: "p:window-create".to_string(),
-                params: serde_json::json!({"createData": {"focused": false}}),
+                params: serde_json::json!({"focused": false}),
             }
         }
     }
@@ -250,12 +250,13 @@ impl ArchiveOrchestration {
         update.insert("collapsed".to_string(), Value::Bool(true));
 
         self.phase = Phase::UpdateBatch;
+        update.insert(
+            "groupId".to_string(),
+            serde_json::json!(state.current_group_id),
+        );
         OrchStep::SendPrimitive {
             action: "p:group-update".to_string(),
-            params: serde_json::json!({
-                "groupId": state.current_group_id,
-                "updateProperties": Value::Object(update),
-            }),
+            params: Value::Object(update),
         }
     }
 
@@ -276,6 +277,7 @@ impl ArchiveOrchestration {
                 "summary": {
                     "archivedTabs": total_tabs,
                     "archivedGroups": state.batches.len(),
+                    "movedTabs": total_tabs,
                 },
             }),
             undo: Some(serde_json::json!({
@@ -398,8 +400,8 @@ mod tests {
             panic!("expected group-update, got {step:?}");
         };
         assert_eq!(action, "p:group-update");
-        assert_eq!(params["updateProperties"]["title"], "W1 - Dev");
-        assert_eq!(params["updateProperties"]["collapsed"], true);
+        assert_eq!(params["title"], "W1 - Dev");
+        assert_eq!(params["collapsed"], true);
 
         // Updated → move second batch (ungrouped)
         let step = orch.step(serde_json::json!({}));
@@ -419,7 +421,7 @@ mod tests {
             panic!("expected group-update, got {step:?}");
         };
         assert_eq!(action, "p:group-update");
-        assert_eq!(params["updateProperties"]["title"], "W1 - Ungrouped");
+        assert_eq!(params["title"], "W1 - Ungrouped");
 
         // Updated → Complete
         let step = orch.step(serde_json::json!({}));

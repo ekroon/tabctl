@@ -3,6 +3,22 @@ use serde_json::{Map, Value};
 use super::resolve::{resolve_group, resolve_window_id};
 use super::OrchStep;
 
+/// Find a tab's index in the snapshot.
+fn find_tab_index(snapshot: &Value, tab_id: i64) -> Option<i64> {
+    snapshot
+        .get("windows")
+        .and_then(Value::as_array)?
+        .iter()
+        .flat_map(|w| {
+            w.get("tabs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .find(|t| t.get("tabId").and_then(Value::as_i64) == Some(tab_id))
+        .and_then(|t| t.get("index").and_then(Value::as_i64))
+}
+
 /// Orchestration for the `move-group` command.
 ///
 /// p:snapshot → resolve source group → p:tab-move or p:window-create →
@@ -29,6 +45,7 @@ struct MoveGroupState {
     target_window_id: Option<i64>,
     new_group_id: Option<i64>,
     needs_regroup: bool,
+    verify_attempts: u8,
 }
 
 #[derive(Debug)]
@@ -39,6 +56,8 @@ enum Phase {
     MoveTabs,
     GroupTabs,
     UpdateGroup,
+    Verify,
+    RegroupStragglers,
 }
 
 impl MoveGroupOrchestration {
@@ -66,7 +85,9 @@ impl super::Orchestration for MoveGroupOrchestration {
             Phase::MoveRemaining => self.after_move(),
             Phase::MoveTabs => self.after_move(),
             Phase::GroupTabs => self.handle_grouped(response),
-            Phase::UpdateGroup => self.complete(),
+            Phase::UpdateGroup => self.verify_grouping(),
+            Phase::Verify => self.handle_verify(response),
+            Phase::RegroupStragglers => self.handle_regroup(response),
         }
     }
 }
@@ -149,7 +170,57 @@ impl MoveGroupOrchestration {
             Some(gm.window_id)
         };
 
-        let needs_regroup = !matches!(target_window_id, Some(tw) if tw == gm.window_id);
+        let is_cross_window = !matches!(target_window_id, Some(tw) if tw == gm.window_id);
+
+        // Resolve positioning: afterGroupTitle, beforeGroupTitle, afterTabId, beforeTabId, index
+        let has_positioning = self.params.get("afterGroupTitle").is_some()
+            || self.params.get("beforeGroupTitle").is_some()
+            || self.params.get("afterTabId").is_some()
+            || self.params.get("beforeTabId").is_some();
+
+        let target_index = if is_cross_window {
+            -1
+        } else if let Some(after_title) = self.params.get("afterGroupTitle").and_then(Value::as_str)
+        {
+            // Find anchor group's last tab index, move after it
+            match resolve_group(&snapshot, None, Some(after_title), target_window_id) {
+                Ok(anchor) => anchor
+                    .tabs
+                    .iter()
+                    .filter_map(|t| t.index)
+                    .max()
+                    .map(|i| i + 1)
+                    .unwrap_or(-1),
+                Err(e) => return e,
+            }
+        } else if let Some(before_title) =
+            self.params.get("beforeGroupTitle").and_then(Value::as_str)
+        {
+            match resolve_group(&snapshot, None, Some(before_title), target_window_id) {
+                Ok(anchor) => anchor
+                    .tabs
+                    .iter()
+                    .filter_map(|t| t.index)
+                    .min()
+                    .unwrap_or(-1),
+                Err(e) => return e,
+            }
+        } else if let Some(after_tab) = self.params.get("afterTabId").and_then(Value::as_i64) {
+            find_tab_index(&snapshot, after_tab)
+                .map(|i| i + 1)
+                .unwrap_or(-1)
+        } else if let Some(before_tab) = self.params.get("beforeTabId").and_then(Value::as_i64) {
+            find_tab_index(&snapshot, before_tab).unwrap_or(-1)
+        } else {
+            self.params
+                .get("index")
+                .and_then(Value::as_i64)
+                .unwrap_or(-1)
+        };
+
+        // Chrome ungroups tabs when moved within the same window if they leave
+        // their group's contiguous block, so re-group after any positioned move.
+        let needs_regroup = is_cross_window || has_positioning;
 
         self.state = Some(MoveGroupState {
             source_group_id: gm.group_id,
@@ -162,31 +233,24 @@ impl MoveGroupOrchestration {
             target_window_id,
             new_group_id: None,
             needs_regroup,
+            verify_attempts: 0,
         });
 
         if new_window {
             self.phase = Phase::CreateWindow;
             OrchStep::SendPrimitive {
                 action: "p:window-create".to_string(),
-                params: serde_json::json!({"createData": {"tabId": tab_ids[0]}}),
+                params: serde_json::json!({"tabId": tab_ids[0]}),
             }
         } else {
             let tw = target_window_id.unwrap();
-            let index = if needs_regroup {
-                -1
-            } else {
-                self.params
-                    .get("index")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(-1)
-            };
             self.phase = Phase::MoveTabs;
             OrchStep::SendPrimitive {
                 action: "p:tab-move".to_string(),
                 params: serde_json::json!({
                     "tabIds": tab_ids,
                     "windowId": tw,
-                    "index": index,
+                    "index": target_index,
                 }),
             }
         }
@@ -270,17 +334,70 @@ impl MoveGroupOrchestration {
         if let Some(gid) = group_id {
             if !update.is_empty() {
                 self.phase = Phase::UpdateGroup;
+                update.insert("groupId".to_string(), serde_json::json!(gid));
                 return OrchStep::SendPrimitive {
                     action: "p:group-update".to_string(),
-                    params: serde_json::json!({
-                        "groupId": gid,
-                        "updateProperties": Value::Object(update),
-                    }),
+                    params: Value::Object(update),
                 };
             }
         }
 
         self.complete()
+    }
+
+    fn verify_grouping(&mut self) -> OrchStep {
+        let state = self.state.as_ref().unwrap();
+        if let Some(window_id) = state.target_window_id {
+            self.phase = Phase::Verify;
+            OrchStep::SendPrimitive {
+                action: "p:tab-query".to_string(),
+                params: serde_json::json!({"query": {"windowId": window_id}}),
+            }
+        } else {
+            self.complete()
+        }
+    }
+
+    fn handle_verify(&mut self, response: Value) -> OrchStep {
+        let state = self.state.as_mut().unwrap();
+        let group_id = match state.new_group_id {
+            Some(gid) => gid,
+            None => return self.complete(),
+        };
+
+        state.verify_attempts += 1;
+
+        let tabs = response.as_array();
+        let straggler_ids: Vec<i64> = state
+            .tab_ids
+            .iter()
+            .filter(|&&tid| {
+                if let Some(tabs) = tabs {
+                    tabs.iter().any(|t| {
+                        t.get("id").and_then(Value::as_i64) == Some(tid)
+                            && t.get("groupId").and_then(Value::as_i64) != Some(group_id)
+                    })
+                } else {
+                    false
+                }
+            })
+            .copied()
+            .collect();
+
+        if straggler_ids.is_empty() || state.verify_attempts > 3 {
+            return self.complete();
+        }
+
+        self.phase = Phase::RegroupStragglers;
+        OrchStep::SendPrimitive {
+            action: "p:tab-group".to_string(),
+            params: serde_json::json!({"groupId": group_id, "tabIds": straggler_ids}),
+        }
+    }
+
+    fn handle_regroup(&mut self, _response: Value) -> OrchStep {
+        // After regrouping stragglers, verify again
+        self.verify_grouping()
     }
 
     fn complete(&self) -> OrchStep {
@@ -367,11 +484,21 @@ mod tests {
             panic!("expected group-update, got {step:?}");
         };
         assert_eq!(action, "p:group-update");
-        assert_eq!(params["updateProperties"]["title"], "Dev");
-        assert_eq!(params["updateProperties"]["color"], "blue");
+        assert_eq!(params["title"], "Dev");
+        assert_eq!(params["color"], "blue");
 
-        // Updated → Complete
+        // Updated → Verify (p:tab-query)
         let step = orch.step(serde_json::json!({}));
+        let OrchStep::SendPrimitive { action, .. } = &step else {
+            panic!("expected tab-query for verify, got {step:?}");
+        };
+        assert_eq!(action, "p:tab-query");
+
+        // Verify → Complete (all tabs grouped, no stragglers)
+        let step = orch.step(serde_json::json!([
+            {"id": 1, "groupId": 50},
+            {"id": 2, "groupId": 50}
+        ]));
         let OrchStep::Complete { response, undo } = step else {
             panic!("expected Complete");
         };
@@ -392,7 +519,7 @@ mod tests {
             panic!("expected window-create, got {step:?}");
         };
         assert_eq!(action, "p:window-create");
-        assert_eq!(params["createData"]["tabId"], 1);
+        assert_eq!(params["tabId"], 1);
 
         // Window created → move remaining tabs
         let step = orch.step(serde_json::json!({"id": 300}));
@@ -433,5 +560,69 @@ mod tests {
         assert!(
             matches!(&step, OrchStep::Error { message, .. } if message.contains("Missing group"))
         );
+    }
+
+    #[test]
+    fn move_group_after_group_title_regroups() {
+        // Move group 10 ("Dev") after a second group in the same window.
+        // Adds a second group to the snapshot.
+        let snap = serde_json::json!({
+            "windows": [{
+                "windowId": 100,
+                "focused": true,
+                "tabs": [
+                    {"tabId": 1, "windowId": 100, "index": 0, "groupId": 10, "groupTitle": "Dev", "groupColor": "blue", "groupCollapsed": false},
+                    {"tabId": 2, "windowId": 100, "index": 1, "groupId": 10, "groupTitle": "Dev", "groupColor": "blue", "groupCollapsed": false},
+                    {"tabId": 3, "windowId": 100, "index": 2, "groupId": -1},
+                    {"tabId": 4, "windowId": 100, "index": 3, "groupId": 20, "groupTitle": "Anchor", "groupColor": "red", "groupCollapsed": false},
+                    {"tabId": 5, "windowId": 100, "index": 4, "groupId": 20, "groupTitle": "Anchor", "groupColor": "red", "groupCollapsed": false},
+                ],
+                "groups": [
+                    {"groupId": 10, "title": "Dev", "color": "blue", "collapsed": false},
+                    {"groupId": 20, "title": "Anchor", "color": "red", "collapsed": false}
+                ]
+            }]
+        });
+
+        let params = serde_json::json!({"groupId": 10, "afterGroupTitle": "Anchor"});
+        let mut orch = MoveGroupOrchestration::new(&params);
+        let _ = orch.start();
+
+        // Snapshot → tab-move with index 5 (after Anchor's last tab at index 4)
+        let step = orch.step(snap);
+        let OrchStep::SendPrimitive { action, params } = &step else {
+            panic!("expected tab-move, got {step:?}");
+        };
+        assert_eq!(action, "p:tab-move");
+        assert_eq!(params["windowId"], 100);
+        assert_eq!(params["index"], 5);
+        assert_eq!(params["tabIds"], serde_json::json!([1, 2]));
+
+        // After move → tab-group (needs_regroup is true for positioned moves)
+        let step = orch.step(serde_json::json!({}));
+        let OrchStep::SendPrimitive { action, .. } = &step else {
+            panic!("expected tab-group, got {step:?}");
+        };
+        assert_eq!(action, "p:tab-group");
+
+        // After group → group-update
+        let step = orch.step(serde_json::json!({"groupId": 50}));
+        let OrchStep::SendPrimitive { action, params } = &step else {
+            panic!("expected group-update, got {step:?}");
+        };
+        assert_eq!(action, "p:group-update");
+        assert_eq!(params["title"], "Dev");
+        assert_eq!(params["color"], "blue");
+
+        // After update → verify
+        let step = orch.step(serde_json::json!({}));
+        assert!(matches!(&step, OrchStep::SendPrimitive { action, .. } if action == "p:tab-query"));
+
+        // Verify → Complete
+        let step = orch.step(serde_json::json!([
+            {"id": 1, "groupId": 50},
+            {"id": 2, "groupId": 50}
+        ]));
+        assert!(matches!(&step, OrchStep::Complete { .. }));
     }
 }

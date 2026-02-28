@@ -110,8 +110,7 @@ impl ReportOrchestration {
             action: "p:execute-script".to_string(),
             params: serde_json::json!({
                 "tabId": first_tab_id,
-                "signal": "description",
-                "func": "extractDescription",
+                "func": "extractPageMeta",
             }),
         }
     }
@@ -126,18 +125,14 @@ impl ReportOrchestration {
                 action: "p:execute-script".to_string(),
                 params: serde_json::json!({
                     "tabId": tab.tab_id,
-                    "signal": "description",
-                    "func": "extractDescription",
+                    "func": "extractPageMeta",
                 }),
             };
         }
 
-        // Process execute-script response
+        // Process execute-script response — extractPageMeta returns {description, ...}
         let description = response
-            .get("result")
-            .and_then(Value::as_array)
-            .and_then(|arr| arr.first())
-            .and_then(|r| r.get("result"))
+            .get("description")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
@@ -234,7 +229,7 @@ mod tests {
             if action == "p:execute-script" && params["tabId"] == 1));
 
         // Tab 1 result → Progress
-        let step = orch.step(serde_json::json!({"result": [{"result": "Description A"}]}));
+        let step = orch.step(serde_json::json!({"description": "Description A", "h1": ""}));
         let OrchStep::Progress { data } = &step else {
             panic!("expected Progress, got {step:?}");
         };
@@ -247,7 +242,7 @@ mod tests {
             if action == "p:execute-script" && params["tabId"] == 2));
 
         // Tab 2 result → Complete
-        let step = orch.step(serde_json::json!({"result": [{"result": "Description B"}]}));
+        let step = orch.step(serde_json::json!({"description": "Description B", "h1": ""}));
         let OrchStep::Complete { response, .. } = step else {
             panic!("expected Complete");
         };

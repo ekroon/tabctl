@@ -103,12 +103,10 @@ impl super::Orchestration for GroupUpdateOrchestration {
                 });
 
                 self.phase = GroupUpdatePhase::UpdateGroup;
+                update.insert("groupId".to_string(), serde_json::json!(matched.group_id));
                 OrchStep::SendPrimitive {
                     action: "p:group-update".to_string(),
-                    params: serde_json::json!({
-                        "groupId": matched.group_id,
-                        "updateProperties": Value::Object(update),
-                    }),
+                    params: Value::Object(update),
                 }
             }
             GroupUpdatePhase::UpdateGroup => {
@@ -179,8 +177,8 @@ mod tests {
         };
         assert_eq!(action, "p:group-update");
         assert_eq!(params["groupId"], 10);
-        assert_eq!(params["updateProperties"]["title"], "NewTitle");
-        assert_eq!(params["updateProperties"]["color"], "red");
+        assert_eq!(params["title"], "NewTitle");
+        assert_eq!(params["color"], "red");
 
         // Step 3: group updated → complete with undo
         let step = orch.step(serde_json::json!({"id": 10, "title": "NewTitle", "color": "red"}));
@@ -204,7 +202,7 @@ mod tests {
         let _ = orch.start();
         let step = orch.step(snapshot());
         assert!(matches!(&step, OrchStep::SendPrimitive { action, params }
-            if action == "p:group-update" && params["updateProperties"]["collapsed"] == true));
+            if action == "p:group-update" && params["collapsed"] == true));
     }
 
     #[test]

@@ -298,12 +298,10 @@ impl GroupAssignOrchestration {
             if !update.is_empty() {
                 if let Some(gid) = state.target_group_id {
                     self.phase = Phase::UpdateGroup;
+                    update.insert("groupId".to_string(), serde_json::json!(gid));
                     return OrchStep::SendPrimitive {
                         action: "p:group-update".to_string(),
-                        params: serde_json::json!({
-                            "groupId": gid,
-                            "updateProperties": Value::Object(update),
-                        }),
+                        params: Value::Object(update),
                     };
                 }
             }
@@ -445,8 +443,8 @@ mod tests {
             panic!("expected group-update, got {step:?}");
         };
         assert_eq!(action, "p:group-update");
-        assert_eq!(params["updateProperties"]["title"], "NewGroup");
-        assert_eq!(params["updateProperties"]["color"], "red");
+        assert_eq!(params["title"], "NewGroup");
+        assert_eq!(params["color"], "red");
     }
 
     #[test]

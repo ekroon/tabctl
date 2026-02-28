@@ -1,7 +1,23 @@
 use serde_json::{Map, Value};
 
-use super::resolve::resolve_window_id;
+use super::resolve::{resolve_group, resolve_window_id};
 use super::OrchStep;
+
+/// Find a tab's index in the snapshot.
+fn find_tab_index(snapshot: &Value, tab_id: i64) -> Option<i64> {
+    snapshot
+        .get("windows")
+        .and_then(Value::as_array)?
+        .iter()
+        .flat_map(|w| {
+            w.get("tabs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .find(|t| t.get("tabId").and_then(Value::as_i64) == Some(tab_id))
+        .and_then(|t| t.get("index").and_then(Value::as_i64))
+}
 
 /// Orchestration for the `move-tab` command.
 ///
@@ -65,12 +81,21 @@ impl MoveTabOrchestration {
     fn handle_snapshot(&mut self, snapshot: Value) -> OrchStep {
         let tab_id = match self.params.get("tabId").and_then(Value::as_i64) {
             Some(id) => id,
-            None => {
-                return OrchStep::Error {
-                    message: "Missing tabId".to_string(),
-                    hint: None,
+            None => match self
+                .params
+                .get("tabIds")
+                .and_then(Value::as_array)
+                .and_then(|a| a.first())
+                .and_then(Value::as_i64)
+            {
+                Some(id) => id,
+                None => {
+                    return OrchStep::Error {
+                        message: "Missing tabId".to_string(),
+                        hint: None,
+                    }
                 }
-            }
+            },
         };
 
         // Find the source tab in the snapshot
@@ -122,7 +147,7 @@ impl MoveTabOrchestration {
             self.phase = Phase::WindowCreated;
             OrchStep::SendPrimitive {
                 action: "p:window-create".to_string(),
-                params: serde_json::json!({"createData": {"tabId": tab_id}}),
+                params: serde_json::json!({"tabId": tab_id}),
             }
         } else {
             let target_window_id = self
@@ -131,11 +156,44 @@ impl MoveTabOrchestration {
                 .and_then(|v| resolve_window_id(&snapshot, v))
                 .unwrap_or(source_tab.window_id);
 
-            let target_index = self
-                .params
-                .get("index")
-                .and_then(Value::as_i64)
-                .unwrap_or(-1);
+            let target_index = if let Some(after_title) =
+                self.params.get("afterGroupTitle").and_then(Value::as_str)
+            {
+                match resolve_group(&snapshot, None, Some(after_title), Some(target_window_id)) {
+                    Ok(anchor) => anchor
+                        .tabs
+                        .iter()
+                        .filter_map(|t| t.index)
+                        .max()
+                        .map(|i| i + 1)
+                        .unwrap_or(-1),
+                    Err(e) => return e,
+                }
+            } else if let Some(before_title) =
+                self.params.get("beforeGroupTitle").and_then(Value::as_str)
+            {
+                match resolve_group(&snapshot, None, Some(before_title), Some(target_window_id)) {
+                    Ok(anchor) => anchor
+                        .tabs
+                        .iter()
+                        .filter_map(|t| t.index)
+                        .min()
+                        .unwrap_or(-1),
+                    Err(e) => return e,
+                }
+            } else if let Some(after_tab) = self.params.get("afterTabId").and_then(Value::as_i64) {
+                find_tab_index(&snapshot, after_tab)
+                    .map(|i| i + 1)
+                    .unwrap_or(-1)
+            } else if let Some(before_tab) = self.params.get("beforeTabId").and_then(Value::as_i64)
+            {
+                find_tab_index(&snapshot, before_tab).unwrap_or(-1)
+            } else {
+                self.params
+                    .get("index")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(-1)
+            };
 
             if let Some(state) = self.state.as_mut() {
                 state.to_window_id = Some(target_window_id);
@@ -304,7 +362,7 @@ mod tests {
             panic!("expected window-create, got {step:?}");
         };
         assert_eq!(action, "p:window-create");
-        assert_eq!(params["createData"]["tabId"], 2);
+        assert_eq!(params["tabId"], 2);
 
         let step = orch.step(serde_json::json!({"id": 300}));
         let OrchStep::Complete { undo, .. } = step else {

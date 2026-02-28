@@ -217,12 +217,10 @@ impl UndoOrchestration {
         }
 
         self.phase = Phase::GroupUpdateDone;
+        update.insert("groupId".to_string(), serde_json::json!(group_id));
         OrchStep::SendPrimitive {
             action: "p:group-update".to_string(),
-            params: serde_json::json!({
-                "groupId": group_id,
-                "updateProperties": Value::Object(update),
-            }),
+            params: Value::Object(update),
         }
     }
 
@@ -256,7 +254,7 @@ impl UndoOrchestration {
             self.phase = Phase::CreateWindow;
             return OrchStep::SendPrimitive {
                 action: "p:window-create".to_string(),
-                params: serde_json::json!({"createData": {"focused": false}}),
+                params: serde_json::json!({"focused": false}),
             };
         }
 
@@ -279,7 +277,7 @@ impl UndoOrchestration {
         if self.state.window_create_idx < self.state.windows_to_create.len() {
             return OrchStep::SendPrimitive {
                 action: "p:window-create".to_string(),
-                params: serde_json::json!({"createData": {"focused": false}}),
+                params: serde_json::json!({"focused": false}),
             };
         }
 
@@ -484,12 +482,10 @@ impl UndoOrchestration {
         if !update.is_empty() {
             if let Some(gid) = group_id {
                 self.phase = Phase::UpdateGroup;
+                update.insert("groupId".to_string(), serde_json::json!(gid));
                 return OrchStep::SendPrimitive {
                     action: "p:group-update".to_string(),
-                    params: serde_json::json!({
-                        "groupId": gid,
-                        "updateProperties": Value::Object(update),
-                    }),
+                    params: Value::Object(update),
                 };
             }
         }
@@ -700,8 +696,8 @@ mod tests {
             panic!("expected group-update, got {step:?}");
         };
         assert_eq!(action, "p:group-update");
-        assert_eq!(params["updateProperties"]["title"], "Dev");
-        assert_eq!(params["updateProperties"]["color"], "blue");
+        assert_eq!(params["title"], "Dev");
+        assert_eq!(params["color"], "blue");
 
         // Updated → Complete
         let step = orch.step(serde_json::json!({}));
@@ -731,9 +727,9 @@ mod tests {
         };
         assert_eq!(action, "p:group-update");
         assert_eq!(params["groupId"], 10);
-        assert_eq!(params["updateProperties"]["title"], "OldTitle");
-        assert_eq!(params["updateProperties"]["color"], "red");
-        assert_eq!(params["updateProperties"]["collapsed"], true);
+        assert_eq!(params["title"], "OldTitle");
+        assert_eq!(params["color"], "red");
+        assert_eq!(params["collapsed"], true);
 
         // Updated → Complete
         let step = orch.step(serde_json::json!({}));
@@ -782,7 +778,7 @@ mod tests {
             panic!("expected group-update, got {step:?}");
         };
         assert_eq!(action, "p:group-update");
-        assert_eq!(params["updateProperties"]["title"], "Dev");
+        assert_eq!(params["title"], "Dev");
 
         // Updated → Complete
         let step = orch.step(serde_json::json!({}));

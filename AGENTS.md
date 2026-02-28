@@ -24,20 +24,19 @@ The single `tabctl` binary (Rust) serves as both the CLI and the native messagin
 rust/
   crates/
     tabctl/      # Single binary: CLI + host entry point
-    host/        # Native messaging host logic
+    host/        # Native messaging host logic + command orchestration
     shared/      # Shared utilities (config, profiles, WSL support)
 src/
   extension/     # Chrome extension (background service worker) — only TypeScript component
     lib/
-      tabs.ts    # Tab operations (open, focus, refresh)
-      groups.ts  # Group management (list, update, assign, gather)
-      move.ts    # Tab/group movement
-      archive.ts # Archive operations
-      undo-handlers.ts  # Undo logic for all mutations
+      content.ts     # Content-script functions for execute-script primitive
+      screenshot.ts  # Screenshot capture + OffscreenCanvas tiling
   tests/unit/    # Unit tests (no browser required)
 ```
 
-**Data flow:** CLI → Unix socket/named pipe → Host (`tabctl host`) → Native messaging → Extension → Chrome APIs
+**Architecture:** The extension is a thin primitive layer (~16 Chrome API wrappers with `p:` prefix). All command orchestration lives in the Rust host (`rust/crates/host/src/host_impl/orchestrate/`), which sequences primitives per CLI request. This makes orchestration logic unit-testable without a browser.
+
+**Data flow:** CLI → Unix socket/named pipe → Host (`tabctl host`) → orchestration → primitive sequence → Native messaging → Extension → Chrome APIs
 
 ## CLI Usage Rules for Agents
 

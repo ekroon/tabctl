@@ -112,7 +112,7 @@ impl super::Orchestration for OpenOrchestration {
             self.phase = OpenPhase::Init;
             OrchStep::SendPrimitive {
                 action: "p:window-create".to_string(),
-                params: serde_json::json!({"createData": {"focused": false}}),
+                params: serde_json::json!({"focused": false}),
             }
         } else {
             self.phase = OpenPhase::Snapshot;
@@ -470,12 +470,10 @@ impl OpenOrchestration {
                 }
                 if !update.is_empty() {
                     self.phase = OpenPhase::UpdateGroup;
+                    update.insert("groupId".to_string(), serde_json::json!(gid));
                     return OrchStep::SendPrimitive {
                         action: "p:group-update".to_string(),
-                        params: serde_json::json!({
-                            "groupId": gid,
-                            "updateProperties": Value::Object(update),
-                        }),
+                        params: Value::Object(update),
                     };
                 }
             }
@@ -541,12 +539,19 @@ impl OpenOrchestration {
 
     fn complete(&self) -> OrchStep {
         let group_id = self.state.new_group_id.or(self.state.existing_group_id);
+        let created_tab_ids: Vec<Value> = self
+            .state
+            .created
+            .iter()
+            .filter_map(|c| c.get("tabId").cloned())
+            .collect();
 
         OrchStep::Complete {
             response: serde_json::json!({
                 "windowId": self.state.window_id,
                 "groupId": group_id,
                 "created": self.state.created,
+                "createdTabIds": created_tab_ids,
                 "skipped": self.state.skipped,
                 "summary": {
                     "createdTabs": self.state.created.len(),
@@ -621,7 +626,7 @@ mod tests {
         // grouped → update group
         let step = orch.step(serde_json::json!({"groupId": 50}));
         assert!(matches!(&step, OrchStep::SendPrimitive { action, params }
-                if action == "p:group-update" && params["updateProperties"]["title"] == "Test"));
+                if action == "p:group-update" && params["title"] == "Test"));
 
         // updated → verify query
         let step = orch.step(serde_json::json!({"id": 50}));
