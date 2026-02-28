@@ -1,11 +1,15 @@
 use serde_json::Value;
 
+mod close;
 mod focus;
+mod group_assign;
+mod group_gather;
 mod group_ungroup;
 mod group_update;
 mod list;
 mod refresh;
 pub(crate) mod resolve;
+pub(crate) mod scope;
 
 /// Multi-step orchestration of extension primitives for a single CLI request.
 ///
@@ -62,6 +66,13 @@ pub(super) fn orchestration_for(action: &str, params: &Value) -> Option<Box<dyn 
             params,
         ))),
         "group-ungroup" => Some(Box::new(group_ungroup::GroupUngroupOrchestration::new(
+            params,
+        ))),
+        "close" => Some(Box::new(close::CloseOrchestration::new(params))),
+        "group-assign" => Some(Box::new(group_assign::GroupAssignOrchestration::new(
+            params,
+        ))),
+        "group-gather" => Some(Box::new(group_gather::GroupGatherOrchestration::new(
             params,
         ))),
         _ => None,
