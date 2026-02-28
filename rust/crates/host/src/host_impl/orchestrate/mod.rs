@@ -1,5 +1,7 @@
 use serde_json::Value;
 
+mod list;
+
 /// Multi-step orchestration of extension primitives for a single CLI request.
 ///
 /// Each implementation encodes a state machine: `start()` produces the first
@@ -37,7 +39,10 @@ pub(super) enum OrchStep {
 ///
 /// Commands are registered here as they migrate from thick extension handlers
 /// to host-side orchestration.
-pub(super) fn orchestration_for(_action: &str, _params: &Value) -> Option<Box<dyn Orchestration>> {
-    // No commands use orchestration yet — they will be added in subsequent steps.
-    None
+pub(super) fn orchestration_for(action: &str, params: &Value) -> Option<Box<dyn Orchestration>> {
+    match action {
+        "list" => Some(Box::new(list::ListOrchestration::new(params))),
+        "group-list" => Some(Box::new(list::GroupListOrchestration::new(params))),
+        _ => None,
+    }
 }

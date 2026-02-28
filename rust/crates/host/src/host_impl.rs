@@ -497,9 +497,10 @@ mod tests {
             },
         );
         let HostEffect::SendNative(native_req) = &effects[0] else {
-            panic!("expected list forward");
+            panic!("expected snapshot primitive");
         };
-        assert_eq!(native_req.id, "req-list");
+        // list now goes through orchestration — sends p:snapshot
+        assert_eq!(native_req.action.as_deref(), Some("p:snapshot"));
 
         let native_resp = NativeMessage {
             id: native_req.id.clone(),
