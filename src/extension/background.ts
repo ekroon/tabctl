@@ -246,6 +246,88 @@ async function handleAction(action: string, params: Record<string, unknown>, req
       // Defer reload to allow the response to be sent first
       setTimeout(() => chrome.runtime.reload(), 100);
       return { reloading: true };
+
+    // --- Primitives: thin Chrome API wrappers (p: prefix) ---
+
+    case "p:snapshot":
+      return await getTabSnapshot();
+
+    case "p:tab-get":
+      return await chrome.tabs.get(Number(params.tabId));
+
+    case "p:tab-query":
+      return await chrome.tabs.query(params.query as chrome.tabs.QueryInfo);
+
+    case "p:tab-create":
+      return await chrome.tabs.create(params as chrome.tabs.CreateProperties);
+
+    case "p:tab-update": {
+      const { tabId: rawTabId, ...updateProps } = params;
+      return await chrome.tabs.update(Number(rawTabId), updateProps as chrome.tabs.UpdateProperties);
+    }
+
+    case "p:tab-move": {
+      const { tabIds: moveTabIds, ...moveProps } = params;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return await (chrome.tabs.move as any)(moveTabIds, moveProps);
+    }
+
+    case "p:tab-remove":
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (chrome.tabs.remove as any)(params.tabIds);
+      return { removed: true };
+
+    case "p:tab-reload":
+      await chrome.tabs.reload(Number(params.tabId));
+      return { reloaded: true };
+
+    case "p:tab-group":
+      return { groupId: await chrome.tabs.group(params as chrome.tabs.GroupOptions) };
+
+    case "p:tab-ungroup":
+      await chrome.tabs.ungroup(params.tabIds as number[]);
+      return { ungrouped: true };
+
+    case "p:group-update": {
+      const { groupId: rawGroupId, ...groupProps } = params;
+      return await chrome.tabGroups.update(Number(rawGroupId), groupProps as chrome.tabGroups.UpdateProperties);
+    }
+
+    case "p:window-create":
+      return await chrome.windows.create(params as chrome.windows.CreateData);
+
+    case "p:window-remove":
+      await chrome.windows.remove(Number(params.windowId));
+      return { removed: true };
+
+    case "p:window-update": {
+      const { windowId: rawWinId, ...winProps } = params;
+      return await chrome.windows.update(Number(rawWinId), winProps as chrome.windows.UpdateInfo);
+    }
+
+    case "p:execute-script": {
+      const targetTabId = Number(params.tabId);
+      const funcName = params.func as string;
+      const funcArgs = (params.args || []) as Array<unknown>;
+      const timeoutMs = Number(params.timeoutMs) || 8000;
+
+      switch (funcName) {
+        case "extractPageMeta":
+          return await content.extractPageMeta(targetTabId, timeoutMs, (funcArgs[0] as number) || DESCRIPTION_MAX_LENGTH);
+        case "extractSelectorSignal":
+          return await content.extractSelectorSignal(targetTabId, funcArgs[0] as Array<Record<string, unknown>>, timeoutMs, (funcArgs[1] as number) || DESCRIPTION_MAX_LENGTH);
+        default:
+          throw new Error(`Unknown execute-script func: ${funcName}`);
+      }
+    }
+
+    case "p:screenshot-tile":
+      return await screenshot.captureTabTiles(
+        params.tab as Record<string, unknown>,
+        params.options as { mode: "viewport" | "full"; format: "png" | "jpeg"; quality: number; tileMaxDim: number; maxBytes: number },
+        deps,
+      );
+
     default:
       throw new Error(`Unknown action: ${action}`);
   }
