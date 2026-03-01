@@ -2022,6 +2022,10 @@ mod tests {
                 "4096",
                 "--max-bytes",
                 "500000",
+                "--wait-for",
+                "load",
+                "--wait-timeout-ms",
+                "2000",
                 "--out",
                 "/tmp/shots",
             ])
@@ -2034,6 +2038,8 @@ mod tests {
         assert_eq!(routed.params["quality"], json!(80));
         assert_eq!(routed.params["tileMaxDim"], json!(4096));
         assert_eq!(routed.params["maxBytes"], json!(500000));
+        assert_eq!(routed.params["waitFor"], json!("load"));
+        assert_eq!(routed.params["waitTimeoutMs"], json!(2000));
         assert_eq!(routed.params["out"], json!("/tmp/shots"));
         assert_eq!(routed.params["progress"], json!(true));
     }

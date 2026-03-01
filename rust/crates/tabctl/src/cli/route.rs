@@ -117,7 +117,8 @@ pub(super) fn route_command(matches: &ArgMatches) -> Result<RoutedCommand, Strin
             copy_opt_u64(sub, "quality", &mut params, "quality");
             copy_opt_u64(sub, "tile-max-dim", &mut params, "tileMaxDim");
             copy_opt_u64(sub, "max-bytes", &mut params, "maxBytes");
-            // Note: waitFor/waitTimeoutMs not yet supported in primitive-based orchestration
+            copy_opt_string(sub, "wait-for", &mut params, "waitFor");
+            copy_opt_u64(sub, "wait-timeout-ms", &mut params, "waitTimeoutMs");
             copy_opt_string(sub, "out", &mut params, "out");
             if progress {
                 params.insert("progress".to_string(), Value::Bool(true));

@@ -7,13 +7,32 @@ use super::OrchStep;
 /// Orchestration for the `screenshot` command.
 ///
 /// p:snapshot → select tabs → for each tab: p:tab-query (save active) →
-/// p:tab-update (switch) → p:screenshot-tile → p:tab-update (restore) →
+/// p:tab-update (switch) → [wait phase] → p:screenshot-tile → p:tab-update (restore) →
 /// progress → aggregate → respond.
 #[derive(Debug)]
 pub(crate) struct ScreenshotOrchestration {
     params: Value,
     state: Option<ScreenshotState>,
     phase: Phase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum WaitFor {
+    None,
+    Load,
+    Dom,
+    Settle,
+}
+
+impl WaitFor {
+    fn from_str(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "load" => Self::Load,
+            "dom" => Self::Dom,
+            "settle" => Self::Settle,
+            _ => Self::None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -25,6 +44,13 @@ struct ScreenshotState {
     total_tiles: usize,
     options: Value,
     emit_progress: bool,
+    wait_for: WaitFor,
+    wait_timeout_ms: u64,
+    wait_started_at: u64,
+    // For settle mode: track last URL/title for stability
+    settle_last_url: String,
+    settle_last_title: String,
+    settle_stable_since: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +68,7 @@ enum Phase {
     GetSnapshot,
     QueryActiveTab,
     SwitchToTab,
+    WaitForTab,
     CaptureTab,
     RestoreTab,
     AfterProgress,
@@ -117,6 +144,7 @@ impl super::Orchestration for ScreenshotOrchestration {
             Phase::GetSnapshot => self.handle_snapshot(response),
             Phase::QueryActiveTab => self.handle_query_active(response),
             Phase::SwitchToTab => self.handle_switched(),
+            Phase::WaitForTab => self.handle_wait_response(response),
             Phase::CaptureTab => self.handle_captured(response),
             Phase::RestoreTab => self.handle_restored(),
             Phase::AfterProgress => self.start_next_tab(),
@@ -175,6 +203,21 @@ impl ScreenshotOrchestration {
                 .get("progress")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            wait_for: WaitFor::from_str(
+                self.params
+                    .get("waitFor")
+                    .and_then(Value::as_str)
+                    .unwrap_or("none"),
+            ),
+            wait_timeout_ms: self
+                .params
+                .get("waitTimeoutMs")
+                .and_then(Value::as_u64)
+                .unwrap_or(10_000),
+            wait_started_at: 0,
+            settle_last_url: String::new(),
+            settle_last_title: String::new(),
+            settle_stable_since: 0,
         });
 
         self.advance_to_next_scriptable()
@@ -204,14 +247,7 @@ impl ScreenshotOrchestration {
 
         // If target tab is already active, skip the switch
         if active_tab_id == Some(tab.tab_id) {
-            self.phase = Phase::CaptureTab;
-            return OrchStep::SendPrimitive {
-                action: "p:screenshot-tile".to_string(),
-                params: serde_json::json!({
-                    "tab": {"tabId": tab.tab_id, "windowId": tab.window_id},
-                    "options": state.options,
-                }),
-            };
+            return self.start_wait_or_capture();
         }
 
         // Switch to target tab
@@ -226,9 +262,89 @@ impl ScreenshotOrchestration {
     }
 
     fn handle_switched(&mut self) -> OrchStep {
+        self.start_wait_or_capture()
+    }
+
+    fn start_wait_or_capture(&mut self) -> OrchStep {
+        let state = self.state.as_ref().unwrap();
+        if state.wait_for == WaitFor::None {
+            return self.capture_current_tab();
+        }
+        let state = self.state.as_mut().unwrap();
+        state.wait_started_at = now_ms();
+        state.settle_last_url = String::new();
+        state.settle_last_title = String::new();
+        state.settle_stable_since = state.wait_started_at;
+        self.poll_wait()
+    }
+
+    fn poll_wait(&mut self) -> OrchStep {
         let state = self.state.as_ref().unwrap();
         let tab = &state.tabs[state.tab_index];
+        self.phase = Phase::WaitForTab;
+        // All wait modes use p:tab-get to poll tab status
+        OrchStep::SendPrimitive {
+            action: "p:tab-get".to_string(),
+            params: serde_json::json!({"tabId": tab.tab_id}),
+        }
+    }
 
+    fn handle_wait_response(&mut self, response: Value) -> OrchStep {
+        let state = self.state.as_mut().unwrap();
+        let now = now_ms();
+        let elapsed = now.saturating_sub(state.wait_started_at);
+
+        if elapsed >= state.wait_timeout_ms {
+            return self.capture_current_tab();
+        }
+
+        match state.wait_for {
+            WaitFor::Load => {
+                let status = response.get("status").and_then(Value::as_str).unwrap_or("");
+                if status == "complete" {
+                    return self.capture_current_tab();
+                }
+                self.poll_wait()
+            }
+            WaitFor::Dom => {
+                let status = response.get("status").and_then(Value::as_str).unwrap_or("");
+                // DOM is ready once status is "complete" (load fired implies DOM ready)
+                if status == "complete" {
+                    return self.capture_current_tab();
+                }
+                self.poll_wait()
+            }
+            WaitFor::Settle => {
+                let url = response
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let title = response
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let status = response.get("status").and_then(Value::as_str).unwrap_or("");
+
+                if url != state.settle_last_url || title != state.settle_last_title {
+                    state.settle_last_url = url;
+                    state.settle_last_title = title;
+                    state.settle_stable_since = now;
+                } else if status == "complete"
+                    && now.saturating_sub(state.settle_stable_since) >= 500
+                {
+                    return self.capture_current_tab();
+                }
+                self.poll_wait()
+            }
+            WaitFor::None => self.capture_current_tab(),
+        }
+    }
+
+    fn capture_current_tab(&mut self) -> OrchStep {
+        let state = self.state.as_ref().unwrap();
+        let tab = &state.tabs[state.tab_index];
         self.phase = Phase::CaptureTab;
         OrchStep::SendPrimitive {
             action: "p:screenshot-tile".to_string(),
@@ -332,6 +448,13 @@ impl ScreenshotOrchestration {
     fn start_next_tab(&mut self) -> OrchStep {
         self.query_active_tab()
     }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 #[cfg(test)]
@@ -457,5 +580,63 @@ mod tests {
         assert_eq!(opts["quality"], 80);
         assert_eq!(opts["tileMaxDim"], 50);
         assert_eq!(opts["maxBytes"], 50_000);
+    }
+
+    #[test]
+    fn screenshot_wait_for_load() {
+        let params =
+            serde_json::json!({"mode": "viewport", "waitFor": "load", "waitTimeoutMs": 5000});
+        let mut orch = ScreenshotOrchestration::new(&params);
+        let _ = orch.start();
+
+        let snap = snapshot_with(vec![serde_json::json!({
+            "tabId": 1, "windowId": 100, "url": "https://a.com",
+            "title": "A", "groupId": -1, "active": true
+        })]);
+
+        // Snapshot → tab-query (save active)
+        let step = orch.step(snap);
+        assert!(matches!(&step, OrchStep::SendPrimitive { action, .. } if action == "p:tab-query"));
+
+        // Active tab is already tab 1 → enters wait, polls p:tab-get
+        let step = orch.step(serde_json::json!([{"id": 1, "windowId": 100, "active": true}]));
+        let OrchStep::SendPrimitive { action, .. } = &step else {
+            panic!("expected p:tab-get, got {step:?}");
+        };
+        assert_eq!(action, "p:tab-get");
+
+        // Tab still loading → poll again
+        let step = orch.step(serde_json::json!({"status": "loading"}));
+        assert!(matches!(&step, OrchStep::SendPrimitive { action, .. } if action == "p:tab-get"));
+
+        // Tab complete → capture
+        let step = orch.step(serde_json::json!({"status": "complete"}));
+        let OrchStep::SendPrimitive { action, .. } = &step else {
+            panic!("expected screenshot-tile, got {step:?}");
+        };
+        assert_eq!(action, "p:screenshot-tile");
+    }
+
+    #[test]
+    fn screenshot_wait_for_none_skips_wait() {
+        let params = serde_json::json!({"mode": "viewport", "waitFor": "none"});
+        let mut orch = ScreenshotOrchestration::new(&params);
+        let _ = orch.start();
+
+        let snap = snapshot_with(vec![serde_json::json!({
+            "tabId": 1, "windowId": 100, "url": "https://a.com",
+            "title": "A", "groupId": -1, "active": true
+        })]);
+
+        // Snapshot → tab-query
+        let step = orch.step(snap);
+        assert!(matches!(&step, OrchStep::SendPrimitive { action, .. } if action == "p:tab-query"));
+
+        // Active tab is tab 1 → skip wait, go directly to capture
+        let step = orch.step(serde_json::json!([{"id": 1, "windowId": 100, "active": true}]));
+        let OrchStep::SendPrimitive { action, .. } = &step else {
+            panic!("expected screenshot-tile, got {step:?}");
+        };
+        assert_eq!(action, "p:screenshot-tile");
     }
 }
