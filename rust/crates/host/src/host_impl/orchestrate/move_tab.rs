@@ -265,8 +265,18 @@ impl MoveTabOrchestration {
             .or_else(|| response.get("windowId"))
             .and_then(Value::as_i64);
 
+        let window_id = match window_id {
+            Some(id) => id,
+            None => {
+                return OrchStep::Error {
+                    message: "p:window-create response missing window id".to_string(),
+                    hint: None,
+                };
+            }
+        };
+
         if let Some(state) = self.state.as_mut() {
-            state.to_window_id = window_id;
+            state.to_window_id = Some(window_id);
             state.to_index = Some(0);
         }
 
