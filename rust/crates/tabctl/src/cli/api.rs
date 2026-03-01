@@ -52,9 +52,18 @@ where
         routed.profile.as_deref(),
         routed.progress,
     )?;
-    let rendered = render_response(&response, routed.json, routed.pretty);
+    let rendered = if routed.action == "ping" && !routed.json {
+        render_ping_human(&response)
+    } else {
+        render_response(&response, routed.json, routed.pretty)
+    };
     if rendered.is_ok() {
-        maybe_runtime_extension_auto_sync(&routed.action, routed.profile.as_deref());
+        let prefetched = if routed.action == "ping" {
+            Some(&response)
+        } else {
+            None
+        };
+        maybe_runtime_extension_auto_sync(&routed.action, routed.profile.as_deref(), prefetched);
     }
     rendered
 }

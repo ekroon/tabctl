@@ -783,11 +783,13 @@ mod tests {
     }
 
     #[test]
-    fn compare_base_versions_ignores_prerelease_metadata() {
+    fn compare_base_versions_handles_prerelease_ordering() {
+        // pre-release < release with same triplet
         assert_eq!(
             compare_base_versions("0.6.0-alpha.5", "0.6.0"),
-            Some(std::cmp::Ordering::Equal)
+            Some(std::cmp::Ordering::Less)
         );
+        // higher triplet wins regardless of pre-release
         assert_eq!(
             compare_base_versions("0.6.1-rc.1", "0.6.0"),
             Some(std::cmp::Ordering::Greater)
@@ -796,6 +798,40 @@ mod tests {
             compare_base_versions("0.5.2", "0.6.0-alpha.1"),
             Some(std::cmp::Ordering::Less)
         );
+        // pre-release numeric ordering
+        assert_eq!(
+            compare_base_versions("0.6.0-alpha.10", "0.6.0-alpha.9"),
+            Some(std::cmp::Ordering::Greater)
+        );
+        assert_eq!(
+            compare_base_versions("0.6.0-alpha.9", "0.6.0-alpha.10"),
+            Some(std::cmp::Ordering::Less)
+        );
+        // same pre-release
+        assert_eq!(
+            compare_base_versions("0.6.0-alpha.10", "0.6.0-alpha.10"),
+            Some(std::cmp::Ordering::Equal)
+        );
+        // rc > alpha (lexicographic)
+        assert_eq!(
+            compare_base_versions("0.6.0-rc.1", "0.6.0-alpha.10"),
+            Some(std::cmp::Ordering::Greater)
+        );
+    }
+
+    #[test]
+    fn strip_dev_suffix_preserves_prerelease_tags() {
+        assert_eq!(
+            strip_dev_suffix("0.6.0-alpha.10-dev.f4ad4314"),
+            "0.6.0-alpha.10"
+        );
+        assert_eq!(
+            strip_dev_suffix("0.6.0-alpha.10-dev.f4ad4314.dirty"),
+            "0.6.0-alpha.10"
+        );
+        assert_eq!(strip_dev_suffix("0.6.0-alpha.10"), "0.6.0-alpha.10");
+        assert_eq!(strip_dev_suffix("0.6.0"), "0.6.0");
+        assert_eq!(strip_dev_suffix("1.0.0-rc.1-dev.abc123"), "1.0.0-rc.1");
     }
 
     #[test]
@@ -825,8 +861,8 @@ mod tests {
     }
 
     #[test]
-    fn should_runtime_auto_sync_skips_ping_and_reload() {
-        assert!(!should_runtime_auto_sync("ping"));
+    fn should_runtime_auto_sync_skips_reload() {
+        assert!(should_runtime_auto_sync("ping"));
         assert!(!should_runtime_auto_sync("reload"));
         assert!(should_runtime_auto_sync("list"));
     }
