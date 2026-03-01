@@ -13,14 +13,17 @@ Direct pushes to `main` are blocked by a branch ruleset. All releases go through
 
 ## Version files
 
-All five version files must stay in sync. The release workflow (`release.yml`) validates this:
+All version files must stay in sync. The `scripts/bump-version.js` script (exposed via `npm run bump:*`) updates all of them in one command. The release workflow (`release.yml`) validates they match:
 
-1. `package.json` — root package version
-2. `package-lock.json` — lockfile (updated automatically by `npm version`)
+1. `package.json` — root package version (single source of truth)
+2. `package-lock.json` — lockfile
 3. `packages/win32-x64/package.json` — Windows platform package
 4. `rust/crates/tabctl/Cargo.toml` — main Rust binary
 5. `rust/crates/host/Cargo.toml` — host crate
 6. `rust/crates/shared/Cargo.toml` — shared crate
+7. `rust/Cargo.lock` — Rust lockfile
+
+Never edit these version fields manually. Always use `npm run bump:<kind>`.
 
 ## Prerequisites
 
@@ -117,33 +120,24 @@ git checkout -b "chore/release-v${NEW}"
 
 ### Step 5: Update all version files
 
-**package.json + package-lock.json:**
+Use the bump script which updates all version files (package.json, package-lock.json, packages/win32-x64/package.json, 3× Cargo.toml, Cargo.lock) in one command:
+
 ```bash
-npm version "${NEW}" --no-git-tag-version
+# For the recommended bump type:
+npm run bump:alpha    # 0.6.0-alpha.9 → 0.6.0-alpha.10
+npm run bump:rc       # 0.6.0-alpha.10 → 0.6.0-rc.1
+npm run bump:stable   # 0.6.0-rc.1 → 0.6.0
+npm run bump:patch    # 0.6.0 → 0.6.1
+npm run bump:minor    # 0.6.1 → 0.7.0
+npm run bump:major    # 0.7.0 → 1.0.0
 ```
 
-**packages/win32-x64/package.json:**
+If the user chose a custom version that doesn't match a standard bump, update manually:
 ```bash
-node -e "
-  const fs = require('fs');
-  const p = './packages/win32-x64/package.json';
-  const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
-  pkg.version = '${NEW}';
-  fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
-"
+node scripts/bump-version.js <kind>
 ```
 
-**Rust Cargo.toml files (all three):**
-```bash
-for f in rust/crates/tabctl/Cargo.toml rust/crates/host/Cargo.toml rust/crates/shared/Cargo.toml; do
-  sed -i '' "s/^version = \".*\"/version = \"${NEW}\"/" "$f"
-done
-```
-
-After updating Cargo.toml files, update the lockfile:
-```bash
-cargo generate-lockfile --manifest-path rust/Cargo.toml
-```
+Verify the output matches the expected version.
 
 ### Step 6: Run tests
 
@@ -169,6 +163,8 @@ git add package.json package-lock.json packages/win32-x64/package.json \
        rust/crates/shared/Cargo.toml rust/Cargo.lock
 git commit -m "chore(release): v${NEW}"
 ```
+
+All these files are updated by `scripts/bump-version.js` in Step 5.
 
 ### Step 9: Push branch and open PR
 
