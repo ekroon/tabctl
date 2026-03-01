@@ -390,11 +390,13 @@ pub(super) fn run_policy(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), S
 
 pub(super) fn run_skill(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
     let mut args = vec![
+        "-y".to_string(),
         "skills".to_string(),
         "add".to_string(),
         "https://github.com/ekroon/tabctl".to_string(),
         "--skill".to_string(),
         "tabctl".to_string(),
+        "--yes".to_string(),
     ];
     if sub.get_flag("global") {
         args.push("--global".to_string());
