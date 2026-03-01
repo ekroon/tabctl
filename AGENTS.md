@@ -24,20 +24,19 @@ The single `tabctl` binary (Rust) serves as both the CLI and the native messagin
 rust/
   crates/
     tabctl/      # Single binary: CLI + host entry point
-    host/        # Native messaging host logic
+    host/        # Native messaging host logic + command orchestration
     shared/      # Shared utilities (config, profiles, WSL support)
 src/
   extension/     # Chrome extension (background service worker) — only TypeScript component
     lib/
-      tabs.ts    # Tab operations (open, focus, refresh)
-      groups.ts  # Group management (list, update, assign, gather)
-      move.ts    # Tab/group movement
-      archive.ts # Archive operations
-      undo-handlers.ts  # Undo logic for all mutations
+      content.ts     # Content-script functions for execute-script primitive
+      screenshot.ts  # Screenshot capture + OffscreenCanvas tiling
   tests/unit/    # Unit tests (no browser required)
 ```
 
-**Data flow:** CLI → Unix socket/named pipe → Host (`tabctl host`) → Native messaging → Extension → Chrome APIs
+**Architecture:** The extension is a thin primitive layer (~16 Chrome API wrappers with `p:` prefix). All command orchestration lives in the Rust host (`rust/crates/host/src/host_impl/orchestrate/`), which sequences primitives per CLI request. This makes orchestration logic unit-testable without a browser.
+
+**Data flow:** CLI → Unix socket/named pipe → Host (`tabctl host`) → orchestration → primitive sequence → Native messaging → Extension → Chrome APIs
 
 ## CLI Usage Rules for Agents
 
@@ -236,6 +235,10 @@ Run:
 
 This covers destructive paths (close, undo) safely. To test additional destructive commands (archive, dedupe), add Rust-side scenarios in `rust/crates/tabctl/tests/browser_integration.rs` (keep `scripts/ci/integration-bootstrap.js` as thin browser bootstrap only).
 On Windows, the Rust browser integration test uses TCP transport (`TABCTL_TRANSPORT=tcp`) for CLI requests because named-pipe transport can intermittently stall in CI.
+
+## Code architecture style
+
+This codebase follows the **progressive disclosure architecture** pattern (see the `agentic-progressive-disclosure-architecture` skill). Top-level files are declarative (module declarations + re-exports), with implementation in deeper modules. Each subtree has its own `AGENTS.md` describing its scope and constraints. When adding new modules, repeat this pattern: API shape first, forwarding second, implementation deepest.
 
 ## Hard stop rules
 - Never run `tabctl archive --all` or `tabctl close --apply` in a normal profile.

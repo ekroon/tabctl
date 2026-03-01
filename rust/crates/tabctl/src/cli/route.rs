@@ -13,7 +13,7 @@ pub(super) fn route_command(matches: &ArgMatches) -> Result<RoutedCommand, Strin
         .subcommand()
         .ok_or_else(|| "No command provided. Use --help for usage.".to_string())?;
 
-    let action = match command {
+    let mut action = match command {
         "dedupe" => "analyze".to_string(),
         "groups" | "group" => "group-list".to_string(),
         "list" if sub.get_flag("groups") => "group-list".to_string(),
@@ -130,6 +130,19 @@ pub(super) fn route_command(matches: &ArgMatches) -> Result<RoutedCommand, Strin
             copy_opt_string(sub, "before-group", &mut params, "beforeGroupTitle");
             copy_opt_string(sub, "after-group", &mut params, "afterGroupTitle");
             copy_opt_bool(sub, "new-window", &mut params, "newWindow");
+        }
+        "raw" => {
+            if let Some(a) = sub.get_one::<String>("action") {
+                action = a.to_string();
+            }
+            if let Some(json_str) = sub.get_one::<String>("params") {
+                let value = serde_json::from_str::<Value>(json_str)
+                    .map_err(|e| format!("Invalid JSON for --params: {e}"))?;
+                let obj = value
+                    .as_object()
+                    .ok_or_else(|| "--params must be a JSON object".to_string())?;
+                params.extend(obj.clone());
+            }
         }
         _ => {}
     }

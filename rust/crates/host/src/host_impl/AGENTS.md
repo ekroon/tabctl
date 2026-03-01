@@ -5,3 +5,4 @@
 - `undo.rs`: undo log read/append/find with retention filtering.
 - `dispatch.rs`: client IO handling and native message dispatch.
 - `runtime.rs`: socket/pipe/tcp runtime bootstrap and `run()` host entry wiring.
+- `orchestrate/`: command orchestrations — each sequences extension primitives per CLI request. See `orchestrate/AGENTS.md`.

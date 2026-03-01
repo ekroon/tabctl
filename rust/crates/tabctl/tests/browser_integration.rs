@@ -1,194 +1,40 @@
 //! Browser-backed integration smoke test.
 //!
-//! Rust drives the scenario assertions; a thin Node bootstrap keeps Chrome +
-//! extension session management isolated to CDP orchestration.
+//! Uses the shared Chrome instance from `common::shared_browser()` so the
+//! bootstrap cost is paid only once across all integration test files.
 
 mod common;
 
 use common::*;
 use serde_json::Value;
-use std::fs;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[test]
 #[ignore = "requires built dist artifacts and Chrome"]
 fn real_browser_integration_harness_passes() {
-    let root = repo_root();
-    let script = integration_bootstrap_script(&root);
-    assert!(
-        script.exists(),
-        "integration bootstrap not found at {}",
-        script.display()
-    );
+    let b = shared_browser();
 
-    let tabctl_bin = rust_tabctl_bin(&root);
-    assert!(
-        tabctl_bin.exists(),
-        "Rust tabctl binary not found at {} (run `npm run build` first)",
-        tabctl_bin.display()
-    );
-    let extension_dir = root.join("dist").join("extension");
-    assert!(
-        extension_dir.join("manifest.json").exists(),
-        "Built extension not found at {} (run `npm run build` first)",
-        extension_dir.display()
-    );
-
-    let sandbox = if cfg!(windows) {
-        std::env::temp_dir().join(format!("tbi-{}", now_ms()))
-    } else {
-        PathBuf::from(format!("/tmp/tbi-{}", now_ms()))
-    };
-    fs::create_dir_all(&sandbox).expect("create test sandbox");
-    let _sandbox_guard = common::TempDirGuard::new(sandbox.clone());
-    let config_home = sandbox.join("c");
-    let state_home = sandbox.join("s");
-    fs::create_dir_all(&config_home).expect("create XDG config dir");
-    fs::create_dir_all(&state_home).expect("create XDG state dir");
-
-    let profile_name = "itest-chrome";
-    let setup = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &[
-            "setup",
-            "--browser",
-            "chrome",
-            "--name",
-            profile_name,
-            "--extension-dir",
-            extension_dir.to_str().expect("extension path to utf8"),
-        ],
-    )
-    .expect("setup command should succeed");
-    assert_ok("setup", &setup);
-
-    let setup_data = response_data(&setup);
-    let active_extension_dir = setup_data
-        .pointer("/extensionSync/activePath")
-        .and_then(Value::as_str)
-        .map(PathBuf::from)
-        .unwrap_or(extension_dir);
-    let host_wrapper = setup_data
-        .pointer("/wrapperPath")
-        .and_then(Value::as_str)
-        .expect("setup payload missing data.wrapperPath");
-    assert!(
-        active_extension_dir.join("manifest.json").exists(),
-        "Active extension path is missing manifest: {}",
-        active_extension_dir.display()
-    );
-
-    let node = std::env::var("TABCTL_NODE_EXEC").unwrap_or_else(|_| "node".to_string());
-    let bootstrap_child = Command::new(node)
-        .arg(script)
-        .current_dir(&root)
-        .env("TABCTL_EXTENSION_DIR", &active_extension_dir)
-        .env("TABCTL_HOST_WRAPPER", host_wrapper)
-        .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("failed to execute integration bootstrap");
-    let mut bootstrap = common::ChildGuard::new(bootstrap_child);
-
-    let mut bootstrap_ready = false;
-    let mut last_ping_error = String::new();
-    let bootstrap_wait_timeout = Duration::from_secs(180);
-    let bootstrap_wait_start = Instant::now();
-    while bootstrap_wait_start.elapsed() < bootstrap_wait_timeout {
-        if let Some(status) = bootstrap
-            .child_mut()
-            .try_wait()
-            .expect("check bootstrap status")
-        {
-            panic!("integration bootstrap exited unexpectedly with status {status}");
-        }
-        match run_tabctl_json_with_timeout(
-            &tabctl_bin,
-            &root,
-            profile_name,
-            &config_home,
-            &state_home,
-            &["ping"],
-            Duration::from_secs(45),
-        ) {
-            Ok(ping) => {
-                if ping.get("ok").and_then(Value::as_bool) == Some(true)
-                    || (ping.get("ok").is_none() && ping.get("error").is_none())
-                {
-                    bootstrap_ready = true;
-                    break;
-                }
-                last_ping_error = format!("non-ok ping payload: {ping}");
-            }
-            Err(error) => last_ping_error = error,
-        }
-        sleep(Duration::from_millis(500));
-    }
-    assert!(
-        bootstrap_ready,
-        "integration bootstrap did not reach ready state before timeout; last ping error: {last_ping_error}"
-    );
-
-    let ping = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &["ping"],
-    )
-    .expect("ping command should succeed");
+    let ping = b.run(&["ping"]);
     assert_ok("ping", &ping);
 
-    let version = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &["version"],
-    )
-    .expect("version command should succeed");
+    let version = b.run(&["version"]);
     assert_ok("version", &version);
 
-    let list_all = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &["list", "--all"],
-    )
-    .expect("list --all should succeed");
+    let list_all = b.run(&["list", "--all"]);
     assert_ok("list --all", &list_all);
 
     let test_group = format!("TEST-Rust-Integration-{}", now_ms());
-    let open = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &[
-            "open",
-            "--new-window",
-            "--url",
-            "https://example.com",
-            "--url",
-            "https://example.org",
-            "--group",
-            test_group.as_str(),
-        ],
-    )
-    .expect("open should succeed");
+    let open = b.run(&[
+        "open",
+        "--new-window",
+        "--url",
+        "https://example.com",
+        "--url",
+        "https://example.org",
+        "--group",
+        test_group.as_str(),
+    ]);
     assert_ok("open", &open);
     let open_window_id = response_data(&open)
         .pointer("/windowId")
@@ -197,27 +43,19 @@ fn real_browser_integration_harness_passes() {
     let open_window_id_arg = open_window_id.to_string();
     sleep(Duration::from_secs(2));
 
-    let open_reuse_group = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &[
-            "open",
-            "--window",
-            open_window_id_arg.as_str(),
-            "--group",
-            test_group.as_str(),
-            "--color",
-            "blue",
-            "--url",
-            "https://example.com",
-            "--url",
-            "https://example.net",
-        ],
-    )
-    .expect("open into existing group should succeed");
+    let open_reuse_group = b.run(&[
+        "open",
+        "--window",
+        open_window_id_arg.as_str(),
+        "--group",
+        test_group.as_str(),
+        "--color",
+        "blue",
+        "--url",
+        "https://example.com",
+        "--url",
+        "https://example.net",
+    ]);
     assert_ok("open into existing group", &open_reuse_group);
     let open_reuse_data = response_data(&open_reuse_group);
     assert_eq!(
@@ -237,15 +75,7 @@ fn real_browser_integration_harness_passes() {
 
     sleep(Duration::from_secs(2));
 
-    let list_last_focused = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &["list", "--window", open_window_id_arg.as_str()],
-    )
-    .expect("list --window <open window> should succeed");
+    let list_last_focused = b.run(&["list", "--window", open_window_id_arg.as_str()]);
     assert_ok("list --window <open window>", &list_last_focused);
     let windows = response_data(&list_last_focused)
         .pointer("/windows")
@@ -287,63 +117,39 @@ fn real_browser_integration_harness_passes() {
     let move_url_a = format!("https://example.dev/?movea={busy_marker}");
     let move_url_b = format!("https://example.app/?moveb={busy_marker}");
 
-    let open_noise = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &[
-            "open",
-            "--window",
-            open_window_id_arg.as_str(),
-            "--url",
-            noise_url_a.as_str(),
-            "--url",
-            noise_url_b.as_str(),
-        ],
-    )
-    .expect("open ungrouped noise tabs should succeed");
+    let open_noise = b.run(&[
+        "open",
+        "--window",
+        open_window_id_arg.as_str(),
+        "--url",
+        noise_url_a.as_str(),
+        "--url",
+        noise_url_b.as_str(),
+    ]);
     assert_ok("open ungrouped noise tabs", &open_noise);
 
-    let open_anchor_group = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &[
-            "open",
-            "--window",
-            open_window_id_arg.as_str(),
-            "--group",
-            anchor_group.as_str(),
-            "--url",
-            anchor_url.as_str(),
-        ],
-    )
-    .expect("open anchor group should succeed");
+    let open_anchor_group = b.run(&[
+        "open",
+        "--window",
+        open_window_id_arg.as_str(),
+        "--group",
+        anchor_group.as_str(),
+        "--url",
+        anchor_url.as_str(),
+    ]);
     assert_ok("open anchor group", &open_anchor_group);
 
-    let open_busy_reuse = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &[
-            "open",
-            "--window",
-            open_window_id_arg.as_str(),
-            "--group",
-            test_group.as_str(),
-            "--url",
-            move_url_a.as_str(),
-            "--url",
-            move_url_b.as_str(),
-        ],
-    )
-    .expect("open into busy existing group should succeed");
+    let open_busy_reuse = b.run(&[
+        "open",
+        "--window",
+        open_window_id_arg.as_str(),
+        "--group",
+        test_group.as_str(),
+        "--url",
+        move_url_a.as_str(),
+        "--url",
+        move_url_b.as_str(),
+    ]);
     assert_ok("open into busy existing group", &open_busy_reuse);
     let open_busy_data = response_data(&open_busy_reuse);
     assert_eq!(
@@ -416,115 +222,51 @@ fn real_browser_integration_harness_passes() {
         }
     };
 
-    let list_busy_open = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &["list", "--window", open_window_id_arg.as_str()],
-    )
-    .expect("list busy window after open should succeed");
+    let list_busy_open = b.run(&["list", "--window", open_window_id_arg.as_str()]);
     assert_ok("list busy window after open", &list_busy_open);
     assert_move_tabs_grouped(&list_busy_open, "busy-open-immediate");
 
     sleep(Duration::from_secs(2));
-    let list_busy_open_delayed = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &["list", "--window", open_window_id_arg.as_str()],
-    )
-    .expect("list busy window after delayed open should succeed");
+    let list_busy_open_delayed = b.run(&["list", "--window", open_window_id_arg.as_str()]);
     assert_ok(
         "list busy window after delayed open",
         &list_busy_open_delayed,
     );
     assert_move_tabs_grouped(&list_busy_open_delayed, "busy-open-delayed");
 
-    let move_group = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &[
-            "move-group",
-            "--window",
-            open_window_id_arg.as_str(),
-            "--group",
-            test_group.as_str(),
-            "--after-group",
-            anchor_group.as_str(),
-        ],
-    )
-    .expect("move-group should succeed");
+    let move_group = b.run(&[
+        "move-group",
+        "--window",
+        open_window_id_arg.as_str(),
+        "--group",
+        test_group.as_str(),
+        "--after-group",
+        anchor_group.as_str(),
+    ]);
     assert_ok("move-group", &move_group);
 
-    let list_after_move = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &["list", "--window", open_window_id_arg.as_str()],
-    )
-    .expect("list after move-group should succeed");
+    let list_after_move = b.run(&["list", "--window", open_window_id_arg.as_str()]);
     assert_ok("list after move-group", &list_after_move);
     assert_move_tabs_grouped(&list_after_move, "move-group-immediate");
 
     sleep(Duration::from_secs(2));
-    let list_after_move_delayed = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &["list", "--window", open_window_id_arg.as_str()],
-    )
-    .expect("list after delayed move-group should succeed");
+    let list_after_move_delayed = b.run(&["list", "--window", open_window_id_arg.as_str()]);
     assert_ok("list after delayed move-group", &list_after_move_delayed);
     assert_move_tabs_grouped(&list_after_move_delayed, "move-group-delayed");
 
-    let groups = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &["group-list", "--window", open_window_id_arg.as_str()],
-    )
-    .expect("group-list should succeed");
+    let groups = b.run(&["group-list", "--window", open_window_id_arg.as_str()]);
     assert_ok("group-list", &groups);
 
-    let close_group = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &[
-            "close",
-            "--group",
-            test_group.as_str(),
-            "--window",
-            open_window_id_arg.as_str(),
-            "--confirm",
-        ],
-    )
-    .expect("close should succeed");
+    let close_group = b.run(&[
+        "close",
+        "--group",
+        test_group.as_str(),
+        "--window",
+        open_window_id_arg.as_str(),
+        "--confirm",
+    ]);
     assert_ok("close", &close_group);
 
-    let undo = run_tabctl_json(
-        &tabctl_bin,
-        &root,
-        profile_name,
-        &config_home,
-        &state_home,
-        &["undo", "--latest"],
-    )
-    .expect("undo should succeed");
+    let undo = b.run(&["undo", "--latest"]);
     assert_ok("undo --latest", &undo);
 }

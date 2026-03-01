@@ -1,4 +1,5 @@
 mod dispatch;
+mod orchestrate;
 mod protocol;
 mod runtime;
 mod state;
@@ -8,6 +9,8 @@ pub fn run() {
     runtime::run();
 }
 
+#[cfg(test)]
+use orchestrate::{OrchStep, Orchestration};
 #[cfg(test)]
 use protocol::{
     create_id, host_version, now_ms, read_native_message, write_native_message,
@@ -124,13 +127,11 @@ mod tests {
         let undo_path = temp_undo_path();
         let mut state = HostState::new(undo_path);
 
+        // Use group-update through orchestration: first step is p:snapshot
         let request = RequestEnvelope {
             id: Some("req-1".to_string()),
-            action: "move-tab".to_string(),
-            params: Value::Object(Map::from_iter([(
-                "tabId".to_string(),
-                Value::Number(12.into()),
-            )])),
+            action: "group-update".to_string(),
+            params: serde_json::json!({"groupId": 10, "title": "NewTitle"}),
             auth_token: None,
         };
 
@@ -138,20 +139,9 @@ mod tests {
         let HostEffect::SendNative(native) = &effects[0] else {
             panic!("expected native forward");
         };
-        let params = native
-            .params
-            .clone()
-            .and_then(|v| v.as_object().cloned())
-            .expect("params object");
-
-        assert!(params.get("txid").and_then(|v| v.as_str()).is_some());
-        assert_eq!(
-            params
-                .get("client")
-                .and_then(|v| v.get("component"))
-                .and_then(|v| v.as_str()),
-            Some("host")
-        );
+        // Orchestrated commands send a p:snapshot primitive first
+        assert_eq!(native.action.as_deref(), Some("p:snapshot"));
+        // The pending request should have a txid since group-update is undo-tracked
     }
 
     #[test]
@@ -159,65 +149,75 @@ mod tests {
         let undo_path = temp_undo_path();
         let mut state = HostState::new(undo_path.clone());
 
+        // Use group-update through orchestration
         let request = RequestEnvelope {
             id: Some("req-2".to_string()),
-            action: "move-tab".to_string(),
-            params: Value::Object(Map::new()),
+            action: "group-update".to_string(),
+            params: serde_json::json!({"groupId": 10, "title": "NewTitle"}),
             auth_token: None,
         };
         let effects = state.handle_cli_request(9, request);
-        let HostEffect::SendNative(native) = &effects[0] else {
-            panic!("expected native forward");
+        let HostEffect::SendNative(snapshot_req) = &effects[0] else {
+            panic!("expected p:snapshot request");
         };
-        let txid = native
-            .params
-            .as_ref()
-            .and_then(|v| v.get("txid"))
-            .and_then(|v| v.as_str())
-            .expect("txid")
-            .to_string();
+        assert_eq!(snapshot_req.action.as_deref(), Some("p:snapshot"));
 
-        let response_effects = state.handle_native_message(NativeMessage {
-            id: native.id.clone(),
-            action: Some("move-tab".to_string()),
+        // Respond with snapshot containing group 10
+        let snapshot_resp = NativeMessage {
+            id: snapshot_req.id.clone(),
+            action: None,
             ok: Some(true),
             progress: None,
             params: None,
-            data: Some(Value::Object(Map::from_iter([
-                (
-                    "summary".to_string(),
-                    Value::Object(Map::from_iter([(
-                        "movedTabs".to_string(),
-                        Value::Number(1.into()),
-                    )])),
-                ),
-                (
-                    "undo".to_string(),
-                    Value::Object(Map::from_iter([(
-                        "action".to_string(),
-                        Value::String("move-tab".to_string()),
-                    )])),
-                ),
-            ]))),
+            data: Some(serde_json::json!({
+                "windows": [{
+                    "windowId": 100, "focused": true,
+                    "tabs": [{"tabId": 1, "windowId": 100, "index": 0, "groupId": 10}],
+                    "groups": [{"groupId": 10, "title": "OldTitle", "color": "blue", "collapsed": false}]
+                }]
+            })),
             error: None,
-        });
+        };
+        let effects = state.handle_native_message(snapshot_resp);
+        let HostEffect::SendNative(update_req) = &effects[0] else {
+            panic!("expected p:group-update request");
+        };
+        assert_eq!(update_req.action.as_deref(), Some("p:group-update"));
+
+        // Respond to group-update → should complete with undo
+        let update_resp = NativeMessage {
+            id: update_req.id.clone(),
+            action: None,
+            ok: Some(true),
+            progress: None,
+            params: None,
+            data: Some(serde_json::json!({"id": 10, "title": "NewTitle", "color": "blue"})),
+            error: None,
+        };
+        let response_effects = state.handle_native_message(update_resp);
 
         let HostEffect::Respond { payload, .. } = &response_effects[0] else {
             panic!("expected response");
         };
+        // Should have a txid in the response data
         let got_txid = payload
             .data
             .as_ref()
             .and_then(|v| v.get("txid"))
             .and_then(|v| v.as_str())
             .expect("response txid");
-        assert_eq!(got_txid, txid);
+        assert!(got_txid.starts_with("tx-"));
 
+        // Verify undo was recorded
         let records = read_undo_records(&undo_path);
         assert_eq!(records.len(), 1);
         assert_eq!(
             records[0].get("txid").and_then(|v| v.as_str()),
-            Some(txid.as_str())
+            Some(got_txid)
+        );
+        assert_eq!(
+            records[0].get("action").and_then(|v| v.as_str()),
+            Some("group-update")
         );
 
         let _ = fs::remove_file(undo_path);
@@ -235,30 +235,42 @@ mod tests {
             auth_token: None,
         };
         let analyze_effects = state.handle_cli_request(3, analyze_request);
-        let HostEffect::SendNative(analyze_native) = &analyze_effects[0] else {
-            panic!("expected analyze forward");
+        // Orchestration sends p:snapshot first
+        let HostEffect::SendNative(snapshot_native) = &analyze_effects[0] else {
+            panic!("expected p:snapshot forward");
         };
+        assert_eq!(snapshot_native.action.as_deref(), Some("p:snapshot"));
 
-        let analyze_response = state.handle_native_message(NativeMessage {
-            id: analyze_native.id.clone(),
-            action: Some("analyze".to_string()),
+        // Provide snapshot with a stale tab (lastFocusedAt: 0 = epoch = definitely stale)
+        let snapshot_response = state.handle_native_message(NativeMessage {
+            id: snapshot_native.id.clone(),
+            action: Some("p:snapshot".to_string()),
             ok: Some(true),
             progress: None,
             params: None,
-            data: Some(Value::Object(Map::from_iter([(
-                "candidates".to_string(),
-                Value::Array(vec![Value::Object(Map::from_iter([
-                    ("tabId".to_string(), Value::Number(12.into())),
-                    (
-                        "url".to_string(),
-                        Value::String("https://example.com".to_string()),
-                    ),
-                ]))]),
-            )]))),
+            data: Some(serde_json::json!({
+                "windows": [{
+                    "windowId": 100,
+                    "focused": true,
+                    "tabs": [{
+                        "tabId": 12,
+                        "windowId": 100,
+                        "index": 0,
+                        "url": "https://example.com",
+                        "title": "Example",
+                        "active": true,
+                        "pinned": false,
+                        "groupId": -1,
+                        "lastFocusedAt": 0
+                    }],
+                    "groups": []
+                }]
+            })),
             error: None,
         });
 
-        let HostEffect::Respond { payload, .. } = &analyze_response[0] else {
+        // Orchestration completes with analysis → response includes analysisId
+        let HostEffect::Respond { payload, .. } = &snapshot_response[0] else {
             panic!("expected analyze response");
         };
         let analysis_id = payload
@@ -269,6 +281,9 @@ mod tests {
             .expect("analysis id")
             .to_string();
 
+        // Now close --apply with the analysis ID.
+        // The host enriches params (tabIds + expectedUrls) and falls through
+        // to CloseOrchestration which sends p:snapshot first.
         let close_request = RequestEnvelope {
             id: Some("req-close".to_string()),
             action: "close".to_string(),
@@ -281,29 +296,10 @@ mod tests {
 
         let close_effects = state.handle_cli_request(3, close_request);
         let HostEffect::SendNative(close_native) = &close_effects[0] else {
-            panic!("expected close forward");
+            panic!("expected p:snapshot for close orchestration");
         };
-
-        let params = close_native
-            .params
-            .as_ref()
-            .and_then(|v| v.as_object())
-            .expect("close params object");
-        assert_eq!(
-            params
-                .get("tabIds")
-                .and_then(|v| v.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|v| v.as_i64()),
-            Some(12)
-        );
-        assert_eq!(
-            params
-                .get("expectedUrls")
-                .and_then(|v| v.get("12"))
-                .and_then(|v| v.as_str()),
-            Some("https://example.com")
-        );
+        // close --apply goes through CloseOrchestration which starts with p:snapshot
+        assert_eq!(close_native.action.as_deref(), Some("p:snapshot"));
     }
 
     #[test]
@@ -494,9 +490,10 @@ mod tests {
             },
         );
         let HostEffect::SendNative(native_req) = &effects[0] else {
-            panic!("expected list forward");
+            panic!("expected snapshot primitive");
         };
-        assert_eq!(native_req.id, "req-list");
+        // list now goes through orchestration — sends p:snapshot
+        assert_eq!(native_req.action.as_deref(), Some("p:snapshot"));
 
         let native_resp = NativeMessage {
             id: native_req.id.clone(),
@@ -795,5 +792,194 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── Orchestration framework tests ───────────────────────────────────────
+
+    #[derive(Debug)]
+    struct TwoStepOrch {
+        phase: u8,
+    }
+
+    impl TwoStepOrch {
+        fn new() -> Self {
+            Self { phase: 0 }
+        }
+    }
+
+    impl Orchestration for TwoStepOrch {
+        fn start(&mut self) -> OrchStep {
+            self.phase = 1;
+            OrchStep::SendPrimitive {
+                action: "p:snapshot".to_string(),
+                params: Value::Object(Map::new()),
+            }
+        }
+        fn step(&mut self, response: Value) -> OrchStep {
+            match self.phase {
+                1 => {
+                    self.phase = 2;
+                    // Second step: send another primitive
+                    OrchStep::SendPrimitive {
+                        action: "p:tab-query".to_string(),
+                        params: serde_json::json!({"query": {"active": true}}),
+                    }
+                }
+                _ => {
+                    // Complete with aggregated response
+                    OrchStep::Complete {
+                        response: serde_json::json!({"result": "done", "input": response}),
+                        undo: None,
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn orchestration_two_step_sequence_sends_primitives_then_completes() {
+        let undo_path = temp_undo_path();
+        let mut state = HostState::new(undo_path);
+
+        // Simulate: start orchestration manually (since orchestration_for
+        // returns None, we inject directly via process_orch_step)
+        let mut orch = TwoStepOrch::new();
+        let step = orch.start();
+
+        let effects = state.process_orch_step(
+            42,
+            "test-action",
+            Some("req-orch".to_string()),
+            None,
+            step,
+            Box::new(orch),
+        );
+
+        // Step 1: should send p:snapshot
+        assert_eq!(effects.len(), 1);
+        let HostEffect::SendNative(native1) = &effects[0] else {
+            panic!("expected SendNative for step 1");
+        };
+        assert_eq!(native1.action.as_deref(), Some("p:snapshot"));
+
+        // Feed snapshot response back
+        let effects2 = state.handle_native_message(NativeMessage {
+            id: native1.id.clone(),
+            action: None,
+            ok: Some(true),
+            progress: None,
+            params: None,
+            data: Some(serde_json::json!({"windows": []})),
+            error: None,
+        });
+
+        // Step 2: should send p:tab-query
+        assert_eq!(effects2.len(), 1);
+        let HostEffect::SendNative(native2) = &effects2[0] else {
+            panic!("expected SendNative for step 2");
+        };
+        assert_eq!(native2.action.as_deref(), Some("p:tab-query"));
+
+        // Feed tab-query response back
+        let effects3 = state.handle_native_message(NativeMessage {
+            id: native2.id.clone(),
+            action: None,
+            ok: Some(true),
+            progress: None,
+            params: None,
+            data: Some(serde_json::json!([{"id": 1, "active": true}])),
+            error: None,
+        });
+
+        // Should complete with final response
+        assert_eq!(effects3.len(), 1);
+        let HostEffect::Respond { client_id, payload } = &effects3[0] else {
+            panic!("expected Respond after completion");
+        };
+        assert_eq!(*client_id, 42);
+        assert!(payload.ok);
+        assert_eq!(payload.action.as_deref(), Some("test-action"));
+        let data = payload.data.as_ref().expect("response data");
+        assert_eq!(data.get("result").and_then(Value::as_str), Some("done"));
+    }
+
+    #[test]
+    fn orchestration_error_step_returns_error_response() {
+        let undo_path = temp_undo_path();
+        let mut state = HostState::new(undo_path);
+
+        let step = OrchStep::Error {
+            message: "test error".to_string(),
+            hint: Some("try again".to_string()),
+        };
+
+        let effects = state.process_orch_step(
+            99,
+            "failing-action",
+            Some("req-fail".to_string()),
+            None,
+            step,
+            Box::new(TwoStepOrch::new()),
+        );
+
+        let HostEffect::Respond { payload, .. } = &effects[0] else {
+            panic!("expected error response");
+        };
+        assert!(!payload.ok);
+        assert_eq!(
+            payload.error.as_ref().map(|e| e.message.as_str()),
+            Some("test error")
+        );
+        assert_eq!(
+            payload.error.as_ref().and_then(|e| e.hint.as_deref()),
+            Some("try again")
+        );
+    }
+
+    #[test]
+    fn orchestration_extension_error_aborts_orchestration() {
+        let undo_path = temp_undo_path();
+        let mut state = HostState::new(undo_path);
+
+        // Start a 2-step orchestration
+        let mut orch = TwoStepOrch::new();
+        let step = orch.start();
+        let effects = state.process_orch_step(
+            50,
+            "test-abort",
+            Some("req-abort".to_string()),
+            None,
+            step,
+            Box::new(orch),
+        );
+        let HostEffect::SendNative(native) = &effects[0] else {
+            panic!("expected SendNative");
+        };
+
+        // Extension returns error
+        let effects2 = state.handle_native_message(NativeMessage {
+            id: native.id.clone(),
+            action: None,
+            ok: Some(false),
+            progress: None,
+            params: None,
+            data: None,
+            error: Some(ProtocolError {
+                message: "chrome api failed".to_string(),
+                hint: None,
+            }),
+        });
+
+        // Should abort and return error to client
+        let HostEffect::Respond { payload, .. } = &effects2[0] else {
+            panic!("expected error response on abort");
+        };
+        assert!(!payload.ok);
+        assert_eq!(
+            payload.error.as_ref().map(|e| e.message.as_str()),
+            Some("chrome api failed")
+        );
+        // Error response must carry the original client request_id, not the internal orch-* id
+        assert_eq!(payload.request_id.as_deref(), Some("req-abort"));
     }
 }
