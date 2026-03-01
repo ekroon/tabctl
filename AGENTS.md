@@ -236,6 +236,10 @@ Run:
 This covers destructive paths (close, undo) safely. To test additional destructive commands (archive, dedupe), add Rust-side scenarios in `rust/crates/tabctl/tests/browser_integration.rs` (keep `scripts/ci/integration-bootstrap.js` as thin browser bootstrap only).
 On Windows, the Rust browser integration test uses TCP transport (`TABCTL_TRANSPORT=tcp`) for CLI requests because named-pipe transport can intermittently stall in CI.
 
+## Code architecture style
+
+This codebase follows the **progressive disclosure architecture** pattern (see the `agentic-progressive-disclosure-architecture` skill). Top-level files are declarative (module declarations + re-exports), with implementation in deeper modules. Each subtree has its own `AGENTS.md` describing its scope and constraints. When adding new modules, repeat this pattern: API shape first, forwarding second, implementation deepest.
+
 ## Hard stop rules
 - Never run `tabctl archive --all` or `tabctl close --apply` in a normal profile.
 - Never run `tabctl close` without explicit `--tab`, `--group`, or `--window` targets.
