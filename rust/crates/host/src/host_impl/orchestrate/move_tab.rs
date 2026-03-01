@@ -70,7 +70,7 @@ impl super::Orchestration for MoveTabOrchestration {
     fn step(&mut self, response: Value) -> OrchStep {
         match self.phase {
             Phase::GetSnapshot => self.handle_snapshot(response),
-            Phase::MoveTab => self.complete(),
+            Phase::MoveTab => self.handle_move_response(response),
             Phase::WindowCreated => self.handle_window_created(response),
         }
     }
@@ -257,6 +257,19 @@ impl MoveTabOrchestration {
                 }),
             }
         }
+    }
+
+    fn handle_move_response(&mut self, response: Value) -> OrchStep {
+        // p:tab-move returns the moved tab object — capture actual index/windowId
+        if let Some(state) = self.state.as_mut() {
+            if let Some(idx) = response.get("index").and_then(Value::as_i64) {
+                state.to_index = Some(idx);
+            }
+            if let Some(wid) = response.get("windowId").and_then(Value::as_i64) {
+                state.to_window_id = Some(wid);
+            }
+        }
+        self.complete()
     }
 
     fn handle_window_created(&mut self, response: Value) -> OrchStep {

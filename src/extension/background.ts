@@ -26,6 +26,12 @@ const content = require("./lib/content") as typeof import("./lib/content");
 const { delay, executeWithTimeout } = content;
 const DESCRIPTION_MAX_LENGTH = 250;
 
+function requireFiniteId(value: unknown, name: string): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) throw new Error(`${name} must be a finite number, got: ${String(value)}`);
+  return n;
+}
+
 const state = {
   port: null,
   lastFocused: {},
@@ -189,7 +195,7 @@ async function handleAction(action: string, params: Record<string, unknown>, req
       return await getTabSnapshot();
 
     case "p:tab-get":
-      return await chrome.tabs.get(Number(params.tabId));
+      return await chrome.tabs.get(requireFiniteId(params.tabId, "tabId"));
 
     case "p:tab-query":
       return await chrome.tabs.query(params.query as chrome.tabs.QueryInfo);
@@ -199,7 +205,7 @@ async function handleAction(action: string, params: Record<string, unknown>, req
 
     case "p:tab-update": {
       const { tabId: rawTabId, ...updateProps } = params;
-      return await chrome.tabs.update(Number(rawTabId), updateProps as chrome.tabs.UpdateProperties);
+      return await chrome.tabs.update(requireFiniteId(rawTabId, "tabId"), updateProps as chrome.tabs.UpdateProperties);
     }
 
     case "p:tab-move": {
@@ -214,7 +220,7 @@ async function handleAction(action: string, params: Record<string, unknown>, req
       return { removed: true };
 
     case "p:tab-reload":
-      await chrome.tabs.reload(Number(params.tabId));
+      await chrome.tabs.reload(requireFiniteId(params.tabId, "tabId"));
       return { reloaded: true };
 
     case "p:tab-group":
@@ -226,23 +232,23 @@ async function handleAction(action: string, params: Record<string, unknown>, req
 
     case "p:group-update": {
       const { groupId: rawGroupId, ...groupProps } = params;
-      return await chrome.tabGroups.update(Number(rawGroupId), groupProps as chrome.tabGroups.UpdateProperties);
+      return await chrome.tabGroups.update(requireFiniteId(rawGroupId, "groupId"), groupProps as chrome.tabGroups.UpdateProperties);
     }
 
     case "p:window-create":
       return await chrome.windows.create(params as chrome.windows.CreateData);
 
     case "p:window-remove":
-      await chrome.windows.remove(Number(params.windowId));
+      await chrome.windows.remove(requireFiniteId(params.windowId, "windowId"));
       return { removed: true };
 
     case "p:window-update": {
       const { windowId: rawWinId, ...winProps } = params;
-      return await chrome.windows.update(Number(rawWinId), winProps as chrome.windows.UpdateInfo);
+      return await chrome.windows.update(requireFiniteId(rawWinId, "windowId"), winProps as chrome.windows.UpdateInfo);
     }
 
     case "p:execute-script": {
-      const targetTabId = Number(params.tabId);
+      const targetTabId = requireFiniteId(params.tabId, "tabId");
       const funcName = params.func as string;
       const funcArgs = (params.args || []) as Array<unknown>;
       const timeoutMs = Number(params.timeoutMs) || 8000;
