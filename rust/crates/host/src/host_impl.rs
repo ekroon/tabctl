@@ -13,7 +13,7 @@ pub fn run() {
 use orchestrate::{OrchStep, Orchestration};
 #[cfg(test)]
 use protocol::{
-    create_id, host_version, now_ms, read_native_message, write_native_message,
+    add_ping_metadata, create_id, host_version, now_ms, read_native_message, write_native_message,
     MAX_NATIVE_MESSAGE_BYTES,
 };
 #[cfg(test)]
@@ -981,5 +981,50 @@ mod tests {
         );
         // Error response must carry the original client request_id, not the internal orch-* id
         assert_eq!(payload.request_id.as_deref(), Some("req-abort"));
+    }
+
+    #[test]
+    fn versions_in_sync_uses_dev_stripped_version() {
+        let host_ver = host_version();
+
+        // Extension version with -dev suffix matching host base version
+        let mut data = Map::new();
+        data.insert(
+            "version".to_string(),
+            Value::String(format!("{host_ver}-dev.abc123")),
+        );
+        data.insert(
+            "baseVersion".to_string(),
+            Value::String("0.6.0".to_string()),
+        );
+        let result = add_ping_metadata(data);
+        assert_eq!(
+            result.get("versionsInSync").and_then(|v| v.as_bool()),
+            Some(true),
+            "dev-stripped version should match host base version"
+        );
+
+        // Extension version without dev suffix matching host
+        let mut data2 = Map::new();
+        data2.insert("version".to_string(), Value::String(host_ver.to_string()));
+        let result2 = add_ping_metadata(data2);
+        assert_eq!(
+            result2.get("versionsInSync").and_then(|v| v.as_bool()),
+            Some(true),
+            "exact version match should be in sync"
+        );
+
+        // Extension version that does NOT match host
+        let mut data3 = Map::new();
+        data3.insert(
+            "version".to_string(),
+            Value::String("99.99.99-dev.xyz".to_string()),
+        );
+        let result3 = add_ping_metadata(data3);
+        assert_eq!(
+            result3.get("versionsInSync").and_then(|v| v.as_bool()),
+            Some(false),
+            "mismatched versions should not be in sync"
+        );
     }
 }

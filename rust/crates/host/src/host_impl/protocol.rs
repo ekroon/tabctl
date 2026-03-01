@@ -139,10 +139,6 @@ pub(super) fn value_object(input: Option<Value>) -> Map<String, Value> {
 }
 
 pub(super) fn add_ping_metadata(mut data: Map<String, Value>) -> Map<String, Value> {
-    let extension_base_version = data
-        .get("baseVersion")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
     let extension_version = data
         .get("version")
         .and_then(|v| v.as_str())
@@ -160,11 +156,18 @@ pub(super) fn add_ping_metadata(mut data: Map<String, Value>) -> Map<String, Val
         Value::String(git_sha().to_string()),
     );
     data.insert("hostDirty".to_string(), Value::Bool(is_dirty()));
-    let versions_in_sync = extension_base_version
+    let versions_in_sync = extension_version
         .as_deref()
-        .map(|v| v == base_version())
-        .or_else(|| extension_version.as_deref().map(|v| v == host_version()))
+        .map(|v| strip_dev_suffix(v) == base_version())
         .unwrap_or(false);
     data.insert("versionsInSync".to_string(), Value::Bool(versions_in_sync));
     data
+}
+
+fn strip_dev_suffix(version: &str) -> &str {
+    if let Some(idx) = version.find("-dev.") {
+        &version[..idx]
+    } else {
+        version
+    }
 }

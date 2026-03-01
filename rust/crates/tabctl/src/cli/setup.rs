@@ -107,6 +107,19 @@ pub(super) fn normalize_base_version(version: &str) -> &str {
         .unwrap_or(version)
 }
 
+/// Strips `-dev.{sha}[.dirty]` build suffix but preserves pre-release tags.
+/// e.g. "0.6.0-alpha.10-dev.f4ad4314" → "0.6.0-alpha.10"
+///      "0.6.0-alpha.10-dev.f4ad4314.dirty" → "0.6.0-alpha.10"
+///      "0.6.0-alpha.10" → "0.6.0-alpha.10"
+///      "0.6.0" → "0.6.0"
+pub(super) fn strip_dev_suffix(version: &str) -> &str {
+    if let Some(idx) = version.find("-dev.") {
+        &version[..idx]
+    } else {
+        version
+    }
+}
+
 pub(super) fn parse_base_triplet(version: &str) -> Option<(u64, u64, u64)> {
     let mut parts = normalize_base_version(version)
         .split('.')
@@ -117,7 +130,46 @@ pub(super) fn parse_base_triplet(version: &str) -> Option<(u64, u64, u64)> {
 pub(super) fn compare_base_versions(a: &str, b: &str) -> Option<std::cmp::Ordering> {
     let a_parts = parse_base_triplet(a)?;
     let b_parts = parse_base_triplet(b)?;
-    Some(a_parts.cmp(&b_parts))
+    let triplet_ord = a_parts.cmp(&b_parts);
+    if triplet_ord != std::cmp::Ordering::Equal {
+        return Some(triplet_ord);
+    }
+    // Triplets equal — compare pre-release segments (semver: no pre-release > has pre-release)
+    let a_pre = extract_prerelease(a);
+    let b_pre = extract_prerelease(b);
+    Some(compare_prerelease(a_pre, b_pre))
+}
+
+fn extract_prerelease(version: &str) -> Option<&str> {
+    let after_triplet = version.split_once('-').map(|(_, rest)| rest)?;
+    // strip build metadata (+...)
+    Some(
+        after_triplet
+            .split_once('+')
+            .map_or(after_triplet, |(pre, _)| pre),
+    )
+}
+
+fn compare_prerelease(a: Option<&str>, b: Option<&str>) -> std::cmp::Ordering {
+    match (a, b) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Greater, // no pre-release > has pre-release
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (Some(a), Some(b)) => {
+            let a_parts = a.split('.');
+            let b_parts = b.split('.');
+            for (ap, bp) in a_parts.zip(b_parts) {
+                let ord = match (ap.parse::<u64>(), bp.parse::<u64>()) {
+                    (Ok(an), Ok(bn)) => an.cmp(&bn),
+                    _ => ap.cmp(bp),
+                };
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            a.len().cmp(&b.len())
+        }
+    }
 }
 
 pub(super) fn chromium_extension_id_from_digest(digest: &[u8]) -> String {
@@ -552,7 +604,7 @@ pub(super) fn sync_extension_unpacked_dir(
 }
 
 pub(super) fn should_runtime_auto_sync(action: &str) -> bool {
-    !matches!(action, "ping" | "reload")
+    !matches!(action, "reload")
 }
 
 pub(super) fn effective_auto_sync_mode() -> AutoSyncMode {
@@ -568,7 +620,11 @@ pub(super) fn effective_auto_sync_mode() -> AutoSyncMode {
     }
 }
 
-pub(super) fn maybe_runtime_extension_auto_sync(action: &str, profile: Option<&str>) {
+pub(super) fn maybe_runtime_extension_auto_sync(
+    action: &str,
+    profile: Option<&str>,
+    prefetched_ping: Option<&ResponseEnvelope>,
+) {
     if !should_runtime_auto_sync(action) {
         return;
     }
@@ -589,9 +645,15 @@ pub(super) fn maybe_runtime_extension_auto_sync(action: &str, profile: Option<&s
         }
     }
 
-    let ping = match send_request("ping", Value::Object(Map::new()), profile, false) {
-        Ok(response) if response.ok => response,
-        _ => return,
+    let owned_ping;
+    let ping = if let Some(pre) = prefetched_ping {
+        pre
+    } else {
+        owned_ping = match send_request("ping", Value::Object(Map::new()), profile, false) {
+            Ok(response) if response.ok => response,
+            _ => return,
+        };
+        &owned_ping
     };
 
     let Some(data) = ping.data.as_ref().and_then(Value::as_object) else {
@@ -599,19 +661,22 @@ pub(super) fn maybe_runtime_extension_auto_sync(action: &str, profile: Option<&s
     };
 
     let host_base = data.get("hostBaseVersion").and_then(Value::as_str);
-    let extension_base = data.get("baseVersion").and_then(Value::as_str);
-    let (Some(host_base), Some(extension_base)) = (host_base, extension_base) else {
+    let extension_version = data
+        .get("version")
+        .and_then(Value::as_str)
+        .map(strip_dev_suffix);
+    let (Some(host_base), Some(ext_release)) = (host_base, extension_version) else {
         return;
     };
 
-    if normalize_base_version(host_base) == normalize_base_version(extension_base) {
+    if ext_release == host_base {
         return;
     }
 
-    if compare_base_versions(extension_base, host_base) == Some(std::cmp::Ordering::Greater) {
+    if compare_base_versions(ext_release, host_base) == Some(std::cmp::Ordering::Greater) {
         eprintln!(
             "[tabctl] extension auto-sync skipped (installed extension {} is newer than tabctl {})",
-            extension_base, host_base
+            ext_release, host_base
         );
         return;
     }
@@ -619,28 +684,31 @@ pub(super) fn maybe_runtime_extension_auto_sync(action: &str, profile: Option<&s
     let source = match resolve_extension_release_source(Some(host_base), None, None, None) {
         Ok(source) => source,
         Err(error) => {
-            eprintln!("[tabctl] extension auto-sync failed: {error}");
+            eprintln!(
+                "\u{26a0}\u{fe0f} auto-sync failed: {error}. Run 'tabctl setup' to sync manually."
+            );
             return;
         }
     };
 
+    eprint!("\u{2699}\u{fe0f} auto-syncing extension to {host_base}...");
     let sync = match sync_extension_release(&source, true) {
         Ok(sync) => sync,
         Err(error) => {
-            eprintln!("[tabctl] extension auto-sync failed: {error}");
+            eprintln!(
+                " failed\n\u{26a0}\u{fe0f} auto-sync failed: {error}. Run 'tabctl setup' to sync manually."
+            );
             return;
         }
     };
 
     if !sync.updated {
+        eprintln!(" already up to date");
         return;
     }
 
     let _ = send_request("reload", Value::Object(Map::new()), profile, false);
-    eprintln!(
-        "[tabctl] extension auto-synced to {} at {}",
-        sync.target_version, sync.active_path
-    );
+    eprintln!(" done");
 }
 
 pub(super) fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
