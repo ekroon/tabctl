@@ -3,6 +3,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { execSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
 const pkgPath = path.join(root, "package.json");
@@ -119,4 +120,15 @@ syncJsonPackageVersion(winPkgPath, pkg.version);
 for (const cargoPath of cargoPackagePaths) {
   syncCargoPackageVersion(cargoPath, pkg.version);
 }
+
+// Sync lockfiles
+execSync("npm install --package-lock-only --ignore-scripts", {
+  cwd: root,
+  stdio: "ignore",
+});
+execSync("cargo generate-lockfile --manifest-path rust/Cargo.toml", {
+  cwd: root,
+  stdio: "ignore",
+});
+
 process.stdout.write(`${pkg.version}\n`);

@@ -90,6 +90,45 @@ tabctl dedupe --window 123 --confirm # Execute after review
 - Keep the subject in present-tense, lowercase imperative form.
 - Do not add a trailing period.
 
+## Release workflow
+
+Direct pushes to `main` are blocked by a branch ruleset (requires PR + CI checks + Copilot review).
+
+**Version management:** All version files are synced by `scripts/bump-version.js` (exposed as `npm run bump:<kind>`). Never edit version fields manually.
+
+```bash
+npm run bump:alpha    # next alpha
+npm run bump:rc       # alpha → rc.1, or rc.N+1
+npm run bump:stable   # strip pre-release suffix
+npm run bump:patch    # patch bump
+npm run bump:minor    # minor bump
+npm run bump:major    # major bump
+```
+
+**Release flow:** See `skills/release/SKILL.md` for the full process. Summary:
+1. `npm run bump:alpha` (or other kind) on a `chore/release-v{NEW}` branch
+2. `npm test` + `npm run build`
+3. Commit, push, open PR
+4. `scripts/ci-wait-merge.sh <PR#> --tag v{NEW}` — waits for CI, merges (normal merge, not squash), tags, creates GitHub release
+5. The `release.yml` workflow builds binaries and publishes to npm
+
+**Merge strategy:** Always use normal merge for release PRs (not squash) to preserve commit identity.
+
+## Scripts
+
+- `scripts/bump-version.js` — syncs all version files (package.json, win32-x64, 3× Cargo.toml, lockfiles)
+- `scripts/ci-wait-merge.sh` — waits for CI, merges PR, tags, creates GitHub release
+- `scripts/test-mise-release.sh` — integration test comparing npm stable vs mise alpha channels
+- `scripts/gen-version.js` — generates extension manifest version at build time
+
+## Skills
+
+The `skills/` directory contains agent skills installable via `tabctl skill`:
+
+- `skills/tabctl/` — CLI usage guide for agents
+- `skills/release/` — Release automation (version bump → PR → merge → tag → release)
+- `skills/git-commit/` — Conventional commit message generation
+
 ## Principles (read first)
 - Only mutate tabs that the test itself created.
 - Never run `archive --all` or `close --apply` in a normal browsing session.
