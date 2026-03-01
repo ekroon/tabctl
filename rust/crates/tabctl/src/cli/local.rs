@@ -37,11 +37,48 @@ pub(super) fn run_help(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), Str
 
 fn structured_help(cli: &Command) -> serde_json::Value {
     let version = env!("CARGO_PKG_VERSION");
+
+    let format_opt = |a: &clap::Arg| -> Option<String> {
+        if let Some(long) = a.get_long() {
+            let vn = a.get_value_names().map(|v| {
+                v.iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("|")
+            });
+            Some(match vn {
+                Some(ref v) if !v.is_empty() => format!("--{long} <{v}>"),
+                _ => format!("--{long}"),
+            })
+        } else if let Some(idx) = a.get_index() {
+            let id = a.get_id().as_str();
+            Some(format!("<{id}> (positional {idx})"))
+        } else {
+            None
+        }
+    };
+
+    let global_ids: std::collections::HashSet<&str> = cli
+        .get_arguments()
+        .filter(|a| a.get_id() != "help" && a.get_id() != "version")
+        .map(|a| a.get_id().as_str())
+        .collect();
+
     let global_opts: Vec<String> = cli
         .get_arguments()
         .filter(|a| a.get_id() != "help" && a.get_id() != "version")
-        .filter_map(|a| a.get_long().map(|l| format!("--{l}")))
+        .filter_map(&format_opt)
         .collect();
+
+    // Derive usage from clap
+    let mut usage_buf = Vec::new();
+    let _ = cli.clone().write_help(&mut usage_buf);
+    let usage_text = String::from_utf8_lossy(&usage_buf);
+    let usage = usage_text
+        .lines()
+        .find(|l| l.starts_with("Usage:"))
+        .map(|l| l.trim_start_matches("Usage:").trim().to_string())
+        .unwrap_or_else(|| "tabctl [OPTIONS] [COMMAND]".to_string());
 
     let commands: Vec<serde_json::Value> = cli
         .get_subcommands()
@@ -59,26 +96,8 @@ fn structured_help(cli: &Command) -> serde_json::Value {
             let opts: Vec<String> = c
                 .get_arguments()
                 .filter(|a| a.get_id() != "help" && a.get_id() != "version")
-                .filter(|a| !global_opts.contains(&format!("--{}", a.get_long().unwrap_or(""))))
-                .filter_map(|a| {
-                    if let Some(long) = a.get_long() {
-                        let vn = a.get_value_names().map(|v| {
-                            v.iter()
-                                .map(|s| s.to_string())
-                                .collect::<Vec<_>>()
-                                .join("|")
-                        });
-                        Some(match vn {
-                            Some(ref v) if !v.is_empty() => format!("--{long} <{v}>"),
-                            _ => format!("--{long}"),
-                        })
-                    } else if let Some(idx) = a.get_index() {
-                        let id = a.get_id().as_str();
-                        Some(format!("<{id}> (positional {idx})"))
-                    } else {
-                        None
-                    }
-                })
+                .filter(|a| !global_ids.contains(a.get_id().as_str()))
+                .filter_map(&format_opt)
                 .collect();
             if !opts.is_empty() {
                 entry.insert("options".into(), json!(opts));
@@ -90,7 +109,7 @@ fn structured_help(cli: &Command) -> serde_json::Value {
 
     json!({
         "version": version,
-        "usage": "tabctl [OPTIONS] [COMMAND]",
+        "usage": usage,
         "commands": commands,
         "globalOptions": global_opts
     })

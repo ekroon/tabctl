@@ -44,7 +44,7 @@ run_tabctl() {
   local channel="$1"; shift
   case "$channel" in
     npm)  npx -y "tabctl@${NPM_VERSION}" "$@" 2>/dev/null ;;
-    mise) mise x "github:ekroon/tabctl@${MISE_VERSION}" -- tabctl "$@" 2>&1 ;;
+    mise) mise x "github:ekroon/tabctl@${MISE_VERSION}" -- tabctl "$@" 2>/dev/null ;;
   esac
 }
 
@@ -260,15 +260,19 @@ _run_with_timeout() {
   return $rc
 }
 
+# Run a tabctl command with timeout via the appropriate channel.
+_run_skill_tabctl() {
+  local channel="$1"; shift
+  case "$channel" in
+    npm)  npx -y "tabctl@${NPM_VERSION}" "$@" 2>/dev/null ;;
+    mise) mise x "github:ekroon/tabctl@${MISE_VERSION}" -- tabctl "$@" 2>/dev/null ;;
+  esac
+}
+
 test_skill_json() {
   local ch="$1"
   local out
-  out=$(_run_with_timeout 10 bash -c "
-    case '$ch' in
-      npm)  npx -y 'tabctl@$NPM_VERSION' skill --json 2>/dev/null ;;
-      mise) mise x 'github:ekroon/tabctl@$MISE_VERSION' -- tabctl skill --json 2>/dev/null ;;
-    esac
-  " 2>/dev/null || true)
+  out=$(_run_with_timeout 10 _run_skill_tabctl "$ch" skill --json 2>/dev/null || true)
   if [ -z "$out" ]; then
     record FAIL "$ch" "skill --json" "timeout or no output (interactive?)"
     return
@@ -293,12 +297,7 @@ test_skill_json() {
 test_skill_agent() {
   local ch="$1"
   local out
-  out=$(_run_with_timeout 10 bash -c "
-    case '$ch' in
-      npm)  npx -y 'tabctl@$NPM_VERSION' skill --agent github-copilot --json 2>/dev/null ;;
-      mise) mise x 'github:ekroon/tabctl@$MISE_VERSION' -- tabctl skill --agent github-copilot --json 2>/dev/null ;;
-    esac
-  " 2>/dev/null || true)
+  out=$(_run_with_timeout 10 _run_skill_tabctl "$ch" skill --agent github-copilot --json 2>/dev/null || true)
   if [ -z "$out" ]; then
     record FAIL "$ch" "skill --agent --json" "timeout or no output (interactive prompt?)"
     return
