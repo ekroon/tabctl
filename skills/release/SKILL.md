@@ -7,12 +7,25 @@ allowed-tools: Bash, AskUser
 
 # Release
 
-Automate the full release cycle: version bump → test → build → commit → tag → push → GitHub Release.
+Automate the full release cycle: version bump → test → build → commit → push branch → open PR → merge → tag → GitHub Release.
+
+Direct pushes to `main` are blocked by a branch ruleset. All releases go through a PR.
+
+## Version files
+
+All five version files must stay in sync. The release workflow (`release.yml`) validates this:
+
+1. `package.json` — root package version
+2. `package-lock.json` — lockfile (updated automatically by `npm version`)
+3. `packages/win32-x64/package.json` — Windows platform package
+4. `rust/crates/tabctl/Cargo.toml` — main Rust binary
+5. `rust/crates/host/Cargo.toml` — host crate
+6. `rust/crates/shared/Cargo.toml` — shared crate
 
 ## Prerequisites
 
 - Working tree is clean (`git status` shows no uncommitted changes)
-- On the `main` branch (or the branch you release from)
+- On the `main` branch
 - `gh` CLI is authenticated (`gh auth status`)
 - `npm test` and `npm run build` pass
 
@@ -21,13 +34,8 @@ Automate the full release cycle: version bump → test → build → commit → 
 ### Step 1: Pre-flight checks
 
 ```bash
-# Verify clean working tree
 git status --porcelain
-
-# Verify branch
 git branch --show-current
-
-# Verify gh auth
 gh auth status
 ```
 
@@ -51,7 +59,16 @@ git log "${LAST_TAG}..HEAD" --oneline --no-decorate
 | Any `feat:` or `feat(scope):` commit | **minor** |
 | Only `fix:`, `perf:`, `docs:`, `chore:`, `refactor:`, `test:`, `ci:`, `build:`, `style:` | **patch** |
 
-Compute the new version:
+**Pre-release version handling:**
+
+If the current version is a pre-release (e.g. `0.6.0-alpha.9`), compute the next version based on what the user requests:
+
+- **Next alpha**: increment the alpha number → `0.6.0-alpha.10`
+- **Release candidate**: `0.6.0-rc.1`
+- **Stable release**: `0.6.0`
+- **New minor/major alpha**: e.g. `0.7.0-alpha.1` or `1.0.0-alpha.1`
+
+For stable versions, use standard semver bumping:
 
 ```bash
 CURRENT=$(echo "$LAST_TAG" | sed 's/^v//')
@@ -72,38 +89,40 @@ Before making any changes, present a summary and use AskUser to confirm:
 ```
 Release plan:
   Current version: v{CURRENT}
-  New version:     v{NEW} ({BUMP_TYPE} bump)
+  New version:     v{NEW} ({BUMP_TYPE})
   Commits:         {N} commits since {LAST_TAG}
 
   {commit list}
 
   Steps:
-  1. Update package.json version to {NEW}
-  2. Sync packages/win32-x64/package.json version
+  1. Create branch chore/release-v{NEW}
+  2. Update all version files to {NEW}
   3. Run npm test
   4. Run npm run build
   5. Commit: chore(release): v{NEW}
-  6. Tag: v{NEW}
-  7. Push commit + tag to origin
-  8. Create GitHub Release with auto-generated notes
+  6. Push branch, open PR
+  7. Wait for CI, merge PR (normal merge, not squash)
+  8. Tag v{NEW} on main
+  9. Create GitHub Release (triggers release.yml → npm publish + binary builds)
 ```
 
-Ask the user to confirm the version bump. Offer the recommended bump plus alternatives:
-- `v{NEW} ({BUMP_TYPE}, recommended)`
-- Other bump options
-
+Ask the user to confirm the version. Offer the recommended bump plus alternatives.
 If the user picks a different bump or types a custom version, use that instead.
 
-### Step 4: Update version in package.json
+### Step 4: Create release branch
 
 ```bash
-npm version {NEW} --no-git-tag-version
+git checkout -b "chore/release-v${NEW}"
 ```
 
-This updates `package.json` and `package-lock.json` without creating a git tag (we do that ourselves).
+### Step 5: Update all version files
 
-### Step 5: Sync platform package version
+**package.json + package-lock.json:**
+```bash
+npm version "${NEW}" --no-git-tag-version
+```
 
+**packages/win32-x64/package.json:**
 ```bash
 node -e "
   const fs = require('fs');
@@ -112,6 +131,18 @@ node -e "
   pkg.version = '${NEW}';
   fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
 "
+```
+
+**Rust Cargo.toml files (all three):**
+```bash
+for f in rust/crates/tabctl/Cargo.toml rust/crates/host/Cargo.toml rust/crates/shared/Cargo.toml; do
+  sed -i '' "s/^version = \".*\"/version = \"${NEW}\"/" "$f"
+done
+```
+
+After updating Cargo.toml files, update the lockfile:
+```bash
+cargo generate-lockfile --manifest-path rust/Cargo.toml
 ```
 
 ### Step 6: Run tests
@@ -133,39 +164,43 @@ If the build fails, stop and report the failure. Do NOT proceed with the release
 ### Step 8: Commit
 
 ```bash
-git add package.json package-lock.json packages/win32-x64/package.json
+git add package.json package-lock.json packages/win32-x64/package.json \
+       rust/crates/tabctl/Cargo.toml rust/crates/host/Cargo.toml \
+       rust/crates/shared/Cargo.toml rust/Cargo.lock
 git commit -m "chore(release): v${NEW}"
 ```
 
-### Step 9: Tag
+### Step 9: Push branch and open PR
 
 ```bash
-git tag -a "v${NEW}" -m "v${NEW}"
+git push -u origin "chore/release-v${NEW}"
+GH_PAGER="" gh pr create \
+  --title "chore(release): v${NEW}" \
+  --body "Bump all version files to ${NEW}. After merge, tag and create release." \
+  --base main
 ```
 
-### Step 10: Push
+Note the PR number from the output.
+
+### Step 10: Merge, tag, and release
+
+Use the existing helper script which waits for CI, merges (normal merge, not squash), tags on main, and creates the GitHub release:
 
 ```bash
-git push origin main
-git push origin "v${NEW}"
+scripts/ci-wait-merge.sh <PR_NUMBER> --tag "v${NEW}"
 ```
 
-### Step 11: Create GitHub Release
+This script:
+1. Waits for all CI checks to pass (`gh pr checks --watch`)
+2. Merges the PR with `--merge --delete-branch` (normal merge commit)
+3. Checks out main and pulls
+4. Creates annotated tag `v{NEW}`
+5. Pushes the tag
+6. Creates a GitHub release (with `--prerelease` for `-alpha.N` / `-rc.N` versions)
 
-```bash
-if [[ "$NEW" == *-* ]]; then
-  GH_PAGER="" gh release create "v${NEW}" --prerelease --generate-notes --title "v${NEW}"
-else
-  GH_PAGER="" gh release create "v${NEW}" --generate-notes --title "v${NEW}"
-fi
-```
+The release triggers the `release.yml` workflow which builds binaries and publishes to npm.
 
-For prerelease semver (for example `-alpha.N` or `-rc.N`), always pass `--prerelease` so release validation does not treat it as stable.
-
-The `--generate-notes` flag auto-generates release notes from merged PRs and commits.
-The existing `release.yml` workflow will trigger on the release and publish to npm.
-
-After creation, display the release URL so the user can review and edit the notes if desired.
+After completion, display the release URL so the user can review.
 
 ## Dry-run mode
 
@@ -173,17 +208,20 @@ If the user asks for a dry run (or passes `--dry-run`), perform Steps 1-3 only: 
 
 ## Abort and rollback
 
-If any step after Step 4 fails (tests, build, commit, tag, push, or release creation), provide rollback instructions:
+If any step after Step 5 fails (tests, build, commit, push, or PR creation), provide rollback instructions:
 
 ```bash
-# Undo version bump (if committed)
-git reset --soft HEAD~1
-git checkout -- package.json package-lock.json packages/win32-x64/package.json
+# Switch back to main and delete the release branch
+git checkout main
+git branch -D "chore/release-v${NEW}"
 
-# Delete local tag (if created)
+# If PR was created, close it
+gh pr close <PR_NUMBER> --delete-branch
+
+# If tag was created locally
 git tag -d "v${NEW}"
 
-# Delete remote tag (if pushed) — only with explicit user confirmation
+# If tag was pushed — only with explicit user confirmation
 git push origin --delete "v${NEW}"
 ```
 
@@ -191,6 +229,8 @@ git push origin --delete "v${NEW}"
 
 - NEVER skip tests or build
 - NEVER force push
+- NEVER push directly to main — always use a PR
+- NEVER squash merge release PRs — use normal merge to preserve commit identity
 - NEVER create a release without user confirmation
 - NEVER delete existing tags or releases without explicit user request
 - If `--dry-run`, do NOT modify anything
