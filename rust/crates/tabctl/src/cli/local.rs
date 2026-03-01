@@ -758,3 +758,175 @@ pub(super) fn attempt_profile_extension_sync(profile_name: &str) -> Result<Value
     }
     Ok(payload)
 }
+
+pub(super) fn run_upgrade(matches: &ArgMatches, _sub: &ArgMatches) -> Result<(), String> {
+    let profile_filter = matches
+        .get_one::<String>("profile")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+
+    let (_config_dir, _profiles_path, registry) = load_profile_registry(false)?;
+    let profile_names: Vec<String> = if let Some(ref name) = profile_filter {
+        if !registry.profiles.contains_key(name) {
+            return Err(format!("Profile \"{name}\" not found in profiles.json"));
+        }
+        vec![name.clone()]
+    } else {
+        let mut names = registry.profiles.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+
+    if profile_names.is_empty() {
+        return Err(
+            "No profiles configured. Run `tabctl setup --browser <edge|chrome>` first.".to_string(),
+        );
+    }
+
+    let cli_version = env!("CARGO_PKG_VERSION");
+    let current_binary = resolve_tabctl_binary_path();
+    let json_mode = matches.get_flag("json");
+
+    if !json_mode {
+        eprintln!("\u{2b06} Upgrading tabctl profiles...");
+    }
+
+    let mut profile_results = Vec::new();
+    let mut any_updated = false;
+    let mut any_failed = false;
+
+    for profile_name in &profile_names {
+        let Some(entry) = registry.profiles.get(profile_name) else {
+            continue;
+        };
+
+        let mut result = json!({ "name": profile_name });
+        let mut needs_reload = false;
+
+        // Step 1: Repair wrapper if binary path changed
+        let wrapper_stale = entry.node_path != current_binary;
+        if wrapper_stale {
+            match attempt_profile_repair(profile_name, entry) {
+                Ok(details) => {
+                    result["wrapperRepair"] = json!({
+                        "updated": true,
+                        "previousBinary": entry.node_path,
+                        "currentBinary": current_binary,
+                        "details": details
+                    });
+                    if !json_mode {
+                        eprintln!(
+                            "  {profile_name}:\n    \u{2713} Host wrapper updated (\u{2192} {cli_version})"
+                        );
+                    }
+                    any_updated = true;
+                    needs_reload = true;
+                }
+                Err(e) => {
+                    result["wrapperRepair"] = json!({
+                        "updated": false,
+                        "error": e
+                    });
+                    if !json_mode {
+                        eprintln!("  {profile_name}:\n    \u{26a0} Wrapper repair failed: {e}");
+                    }
+                    any_failed = true;
+                }
+            }
+        } else {
+            result["wrapperRepair"] = json!({ "updated": false, "reason": "already current" });
+            if !json_mode {
+                eprintln!("  {profile_name}:\n    \u{b7} Host wrapper already current");
+            }
+        }
+
+        // Step 2: Sync extension
+        match attempt_profile_extension_sync(profile_name) {
+            Ok(sync) => {
+                let ext_updated = sync
+                    .get("updated")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if ext_updated {
+                    any_updated = true;
+                    // Extension sync already sends reload when updated
+                    needs_reload = false;
+                    let target = sync
+                        .get("targetVersion")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown");
+                    if !json_mode {
+                        eprintln!("    \u{2713} Extension synced ({target})");
+                    }
+                } else if !json_mode {
+                    eprintln!("    \u{b7} Extension already in sync");
+                }
+                result["extensionSync"] = sync;
+            }
+            Err(e) => {
+                result["extensionSync"] = json!({ "attempted": true, "ok": false, "error": e });
+                if !json_mode {
+                    eprintln!("    \u{26a0} Extension sync failed: {e}");
+                }
+                any_failed = true;
+            }
+        }
+
+        // Step 3: Send reload if wrapper was repaired but extension sync didn't reload
+        if needs_reload {
+            match send_request(
+                "reload",
+                Value::Object(Map::new()),
+                Some(profile_name),
+                false,
+            ) {
+                Ok(r) => {
+                    result["reload"] = json!({ "attempted": true, "ok": r.ok });
+                    if !json_mode {
+                        eprintln!("    \u{2713} Reloaded");
+                    }
+                }
+                Err(e) => {
+                    result["reload"] = json!({ "attempted": true, "ok": false, "error": e });
+                    if !json_mode {
+                        eprintln!("    \u{26a0} Reload failed: {e}");
+                    }
+                    any_failed = true;
+                }
+            }
+        }
+
+        profile_results.push(result);
+    }
+
+    // Summary and next steps
+    let data = json!({
+        "cliVersion": cli_version,
+        "anyUpdated": any_updated,
+        "anyFailed": any_failed,
+        "profiles": profile_results
+    });
+
+    if json_mode {
+        return render_local_command(matches, "upgrade", data);
+    }
+
+    eprintln!();
+    if any_failed {
+        eprintln!("\u{26a0}\u{fe0f} Upgrade applied but some steps failed.");
+        eprintln!();
+        eprintln!("Next steps:");
+        eprintln!("  1. Run 'tabctl ping' to check if the host reconnected.");
+        eprintln!(
+            "  2. If still failing, reload the extension manually or run 'tabctl setup --browser <edge|chrome>'."
+        );
+    } else if any_updated {
+        eprintln!("\u{2705} Upgrade complete.");
+        eprintln!();
+        eprintln!("Next steps:");
+        eprintln!("  Run 'tabctl ping' to verify all components are in sync.");
+    } else {
+        eprintln!("\u{2705} All profiles up to date.");
+    }
+    Ok(())
+}

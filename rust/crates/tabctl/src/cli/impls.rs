@@ -2294,4 +2294,110 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn parses_upgrade_command() {
+        let matches = build_cli()
+            .try_get_matches_from(["tabctl", "upgrade"])
+            .expect("parse upgrade command");
+        let (command, _sub) = matches.subcommand().expect("subcommand");
+        assert_eq!(command, "upgrade");
+    }
+
+    #[test]
+    fn parses_update_alias() {
+        let matches = build_cli()
+            .try_get_matches_from(["tabctl", "update"])
+            .expect("parse update alias");
+        let (command, _sub) = matches.subcommand().expect("subcommand");
+        assert_eq!(command, "upgrade");
+    }
+
+    #[test]
+    fn upgrade_with_profile_flag() {
+        let matches = build_cli()
+            .try_get_matches_from(["tabctl", "--profile", "edge", "upgrade"])
+            .expect("parse upgrade with profile");
+        let profile = matches.get_one::<String>("profile");
+        assert_eq!(profile.map(|s| s.as_str()), Some("edge"));
+        let (command, _sub) = matches.subcommand().expect("subcommand");
+        assert_eq!(command, "upgrade");
+    }
+
+    #[test]
+    fn upgrade_missing_profiles_json_returns_error() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-upgrade-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let config_dir = dir.join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        with_env_vars(
+            &[("TABCTL_CONFIG_DIR", Some(config_dir.to_str().unwrap()))],
+            || {
+                let matches = build_cli()
+                    .try_get_matches_from(["tabctl", "--json", "upgrade"])
+                    .expect("parse command");
+                let (_, sub) = matches.subcommand().expect("subcommand");
+                let result = run_upgrade(&matches, sub);
+                assert!(result.is_err());
+                assert!(
+                    result.unwrap_err().contains("profiles.json not found"),
+                    "should report missing profiles.json"
+                );
+            },
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn upgrade_unknown_profile_returns_error() {
+        let dir =
+            std::env::temp_dir().join(format!("tabctl-test-upgrade-unk-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let config_dir = dir.join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let seed = json!({
+            "default": "edge",
+            "profiles": {
+                "edge": {
+                    "browser": "edge",
+                    "extensionId": "abc",
+                    "nodePath": "/bin/tabctl",
+                    "hostPath": "/host.sh",
+                    "dataDir": "/data"
+                }
+            }
+        });
+        fs::write(
+            config_dir.join("profiles.json"),
+            serde_json::to_string_pretty(&seed).unwrap(),
+        )
+        .unwrap();
+
+        with_env_vars(
+            &[("TABCTL_CONFIG_DIR", Some(config_dir.to_str().unwrap()))],
+            || {
+                let matches = build_cli()
+                    .try_get_matches_from([
+                        "tabctl",
+                        "--profile",
+                        "nonexistent",
+                        "--json",
+                        "upgrade",
+                    ])
+                    .expect("parse command");
+                let (_, sub) = matches.subcommand().expect("subcommand");
+                let result = run_upgrade(&matches, sub);
+                assert!(result.is_err());
+                assert!(
+                    result.unwrap_err().contains("not found"),
+                    "should report profile not found"
+                );
+            },
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

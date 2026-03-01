@@ -96,6 +96,7 @@ pub(super) fn render_ping_human(response: &ResponseEnvelope) -> Result<(), Strin
             "\u{26a0}\u{fe0f} tabctl \u{2014} out of sync (ext {}, host {})",
             ext_version, host_version,
         );
+        println!("  Run 'tabctl upgrade' to sync all components.");
     }
     Ok(())
 }

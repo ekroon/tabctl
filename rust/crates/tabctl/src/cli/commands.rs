@@ -64,6 +64,7 @@ pub(super) fn build_cli() -> Command {
         .subcommand(command_close())
         .subcommand(command_report())
         .subcommand(command_setup())
+        .subcommand(command_upgrade())
         .subcommand(command_doctor())
         .subcommand(command_policy())
         .subcommand(command_skill())
@@ -135,6 +136,10 @@ pub(super) fn command_help() -> Command {
 
 pub(super) fn command_version() -> Command {
     Command::new("version")
+}
+
+pub(super) fn command_upgrade() -> Command {
+    Command::new("upgrade").visible_alias("update")
 }
 
 pub(super) fn command_doctor() -> Command {
