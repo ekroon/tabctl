@@ -645,6 +645,9 @@ pub(super) fn maybe_runtime_extension_auto_sync(
         }
     }
 
+    // Check if the host wrapper needs repair (binary path changed after CLI upgrade)
+    let wrapper_repaired = maybe_auto_repair_wrapper(profile);
+
     let owned_ping;
     let ping = if let Some(pre) = prefetched_ping {
         pre
@@ -669,46 +672,92 @@ pub(super) fn maybe_runtime_extension_auto_sync(
         return;
     };
 
-    if ext_release == host_base {
+    if ext_release == host_base && !wrapper_repaired {
         return;
     }
 
-    if compare_base_versions(ext_release, host_base) == Some(std::cmp::Ordering::Greater) {
+    let cli_base = env!("CARGO_PKG_VERSION");
+    let sync_target = if wrapper_repaired {
+        cli_base
+    } else {
+        host_base
+    };
+
+    if compare_base_versions(ext_release, sync_target) == Some(std::cmp::Ordering::Greater) {
         eprintln!(
             "[tabctl] extension auto-sync skipped (installed extension {} is newer than tabctl {})",
-            ext_release, host_base
+            ext_release, sync_target
         );
         return;
     }
 
-    let source = match resolve_extension_release_source(Some(host_base), None, None, None) {
+    let source = match resolve_extension_release_source(Some(sync_target), None, None, None) {
         Ok(source) => source,
         Err(error) => {
             eprintln!(
-                "\u{26a0}\u{fe0f} auto-sync failed: {error}. Run 'tabctl setup' to sync manually."
+                "\u{26a0}\u{fe0f} auto-sync failed: {error}. Run 'tabctl upgrade' to sync manually."
             );
             return;
         }
     };
 
-    eprint!("\u{2699}\u{fe0f} auto-syncing extension to {host_base}...");
+    eprint!("\u{2699}\u{fe0f} auto-syncing extension to {sync_target}...");
     let sync = match sync_extension_release(&source, true) {
         Ok(sync) => sync,
         Err(error) => {
             eprintln!(
-                " failed\n\u{26a0}\u{fe0f} auto-sync failed: {error}. Run 'tabctl setup' to sync manually."
+                " failed\n\u{26a0}\u{fe0f} auto-sync failed: {error}. Run 'tabctl upgrade' to sync manually."
             );
             return;
         }
     };
 
-    if !sync.updated {
+    if !sync.updated && !wrapper_repaired {
         eprintln!(" already up to date");
         return;
     }
 
     let _ = send_request("reload", Value::Object(Map::new()), profile, false);
     eprintln!(" done");
+}
+
+/// Check if the host wrapper's binary path is stale and repair it.
+/// Returns `true` if the wrapper was updated.
+fn maybe_auto_repair_wrapper(profile: Option<&str>) -> bool {
+    let profile_name = match resolve_effective_profile(profile) {
+        Some(name) => name,
+        None => return false,
+    };
+    let config_dir = match resolve_config_dir() {
+        Ok(dir) => dir,
+        Err(_) => return false,
+    };
+    let profiles_path = PathBuf::from(&config_dir).join("profiles.json");
+    let content = match fs::read_to_string(&profiles_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let registry = match serde_json::from_str::<ProfileRegistry>(&content) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let Some(entry) = registry.profiles.get(&profile_name) else {
+        return false;
+    };
+
+    let current_binary = resolve_tabctl_binary_path();
+    if entry.node_path == current_binary {
+        return false;
+    }
+
+    eprintln!("\u{2699}\u{fe0f} upgrading host wrapper for profile \"{profile_name}\"...");
+    match attempt_profile_repair(&profile_name, entry) {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("\u{26a0}\u{fe0f} wrapper repair failed: {e}");
+            false
+        }
+    }
 }
 
 pub(super) fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {

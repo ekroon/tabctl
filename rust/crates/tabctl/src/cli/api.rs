@@ -21,6 +21,9 @@ where
     if let Some(("setup", sub)) = matches.subcommand() {
         return run_setup(&matches, sub);
     }
+    if let Some(("upgrade" | "update", sub)) = matches.subcommand() {
+        return run_upgrade(&matches, sub);
+    }
     if let Some(("extension-fetch", sub)) = matches.subcommand() {
         return run_extension_fetch(&matches, sub);
     }
