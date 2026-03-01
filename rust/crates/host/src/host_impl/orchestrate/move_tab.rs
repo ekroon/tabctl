@@ -4,19 +4,18 @@ use super::resolve::{resolve_group, resolve_window_id};
 use super::OrchStep;
 
 /// Find a tab's index in the snapshot.
-fn find_tab_index(snapshot: &Value, tab_id: i64) -> Option<i64> {
-    snapshot
-        .get("windows")
-        .and_then(Value::as_array)?
-        .iter()
-        .flat_map(|w| {
-            w.get("tabs")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-        })
-        .find(|t| t.get("tabId").and_then(Value::as_i64) == Some(tab_id))
-        .and_then(|t| t.get("index").and_then(Value::as_i64))
+/// Find a tab's (windowId, index) in the snapshot.
+fn find_tab_location(snapshot: &Value, tab_id: i64) -> Option<(i64, i64)> {
+    for w in snapshot.get("windows").and_then(Value::as_array)? {
+        let wid = w.get("windowId").and_then(Value::as_i64)?;
+        for t in w.get("tabs").and_then(Value::as_array)?.iter() {
+            if t.get("tabId").and_then(Value::as_i64) == Some(tab_id) {
+                let idx = t.get("index").and_then(Value::as_i64).unwrap_or(-1);
+                return Some((wid, idx));
+            }
+        }
+    }
+    None
 }
 
 /// Orchestration for the `move-tab` command.
@@ -150,16 +149,18 @@ impl MoveTabOrchestration {
                 params: serde_json::json!({"tabId": tab_id, "focused": false}),
             }
         } else {
-            let target_window_id = self
+            // Resolve target window — explicit windowId takes priority, then anchor
+            // tab's window, then source tab's window.
+            let mut target_window_id = self
                 .params
                 .get("windowId")
-                .and_then(|v| resolve_window_id(&snapshot, v))
-                .unwrap_or(source_tab.window_id);
+                .and_then(|v| resolve_window_id(&snapshot, v));
 
             let target_index = if let Some(after_title) =
                 self.params.get("afterGroupTitle").and_then(Value::as_str)
             {
-                match resolve_group(&snapshot, None, Some(after_title), Some(target_window_id)) {
+                let tw = target_window_id.unwrap_or(source_tab.window_id);
+                match resolve_group(&snapshot, None, Some(after_title), Some(tw)) {
                     Ok(anchor) => anchor
                         .tabs
                         .iter()
@@ -172,7 +173,8 @@ impl MoveTabOrchestration {
             } else if let Some(before_title) =
                 self.params.get("beforeGroupTitle").and_then(Value::as_str)
             {
-                match resolve_group(&snapshot, None, Some(before_title), Some(target_window_id)) {
+                let tw = target_window_id.unwrap_or(source_tab.window_id);
+                match resolve_group(&snapshot, None, Some(before_title), Some(tw)) {
                     Ok(anchor) => anchor
                         .tabs
                         .iter()
@@ -182,12 +184,36 @@ impl MoveTabOrchestration {
                     Err(e) => return e,
                 }
             } else if let Some(after_tab) = self.params.get("afterTabId").and_then(Value::as_i64) {
-                find_tab_index(&snapshot, after_tab)
-                    .map(|i| i + 1)
-                    .unwrap_or(-1)
+                match find_tab_location(&snapshot, after_tab) {
+                    Some((anchor_wid, idx)) => {
+                        if target_window_id.is_none() {
+                            target_window_id = Some(anchor_wid);
+                        }
+                        idx + 1
+                    }
+                    None => {
+                        return OrchStep::Error {
+                            message: format!("afterTabId anchor tab {after_tab} not found"),
+                            hint: None,
+                        }
+                    }
+                }
             } else if let Some(before_tab) = self.params.get("beforeTabId").and_then(Value::as_i64)
             {
-                find_tab_index(&snapshot, before_tab).unwrap_or(-1)
+                match find_tab_location(&snapshot, before_tab) {
+                    Some((anchor_wid, idx)) => {
+                        if target_window_id.is_none() {
+                            target_window_id = Some(anchor_wid);
+                        }
+                        idx
+                    }
+                    None => {
+                        return OrchStep::Error {
+                            message: format!("beforeTabId anchor tab {before_tab} not found"),
+                            hint: None,
+                        }
+                    }
+                }
             } else {
                 self.params
                     .get("index")
@@ -195,9 +221,10 @@ impl MoveTabOrchestration {
                     .unwrap_or(-1)
             };
 
+            let target_window_id = target_window_id.unwrap_or(source_tab.window_id);
+
             if let Some(state) = self.state.as_mut() {
                 state.to_window_id = Some(target_window_id);
-                state.to_index = Some(target_index);
             }
 
             // When moving within the same window, removing the source tab shifts
@@ -215,6 +242,10 @@ impl MoveTabOrchestration {
             } else {
                 target_index
             };
+
+            if let Some(state) = self.state.as_mut() {
+                state.to_index = Some(adjusted_index);
+            }
 
             self.phase = Phase::MoveTab;
             OrchStep::SendPrimitive {
