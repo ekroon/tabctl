@@ -2,10 +2,27 @@ use super::*;
 
 pub(super) fn run_help(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
     let mut cli = build_cli();
-    let help_text = if let Some(command) = sub.get_one::<String>("command") {
+    let command_name = sub.get_one::<String>("command");
+
+    if matches.get_flag("json") {
+        return if let Some(name) = command_name {
+            let cmd = cli
+                .find_subcommand_mut(name)
+                .ok_or_else(|| format!("Unknown command: {name}"))?;
+            let mut buf = Vec::new();
+            cmd.write_long_help(&mut buf).map_err(|e| e.to_string())?;
+            let text = String::from_utf8(buf).map_err(|e| e.to_string())?;
+            render_local_command(matches, "help", json!({ "command": name, "text": text }))
+        } else {
+            let data = structured_help(&cli);
+            render_local_command(matches, "help", data)
+        };
+    }
+
+    let help_text = if let Some(name) = command_name {
         let cmd = cli
-            .find_subcommand_mut(command)
-            .ok_or_else(|| format!("Unknown command: {command}"))?;
+            .find_subcommand_mut(name)
+            .ok_or_else(|| format!("Unknown command: {name}"))?;
         let mut buf = Vec::new();
         cmd.write_long_help(&mut buf).map_err(|e| e.to_string())?;
         String::from_utf8(buf).map_err(|e| e.to_string())?
@@ -14,16 +31,88 @@ pub(super) fn run_help(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), Str
         cli.write_long_help(&mut buf).map_err(|e| e.to_string())?;
         String::from_utf8(buf).map_err(|e| e.to_string())?
     };
-
-    if matches.get_flag("json") {
-        let data = json!({
-            "command": sub.get_one::<String>("command"),
-            "text": help_text
-        });
-        return render_local_command(matches, "help", data);
-    }
     println!("{help_text}");
     Ok(())
+}
+
+fn structured_help(cli: &Command) -> serde_json::Value {
+    let version = env!("CARGO_PKG_VERSION");
+
+    let format_opt = |a: &clap::Arg| -> Option<String> {
+        if let Some(long) = a.get_long() {
+            let vn = a.get_value_names().map(|v| {
+                v.iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("|")
+            });
+            Some(match vn {
+                Some(ref v) if !v.is_empty() => format!("--{long} <{v}>"),
+                _ => format!("--{long}"),
+            })
+        } else if let Some(idx) = a.get_index() {
+            let id = a.get_id().as_str();
+            Some(format!("<{id}> (positional {idx})"))
+        } else {
+            None
+        }
+    };
+
+    let global_ids: std::collections::HashSet<&str> = cli
+        .get_arguments()
+        .filter(|a| a.get_id() != "help" && a.get_id() != "version")
+        .map(|a| a.get_id().as_str())
+        .collect();
+
+    let global_opts: Vec<String> = cli
+        .get_arguments()
+        .filter(|a| a.get_id() != "help" && a.get_id() != "version")
+        .filter_map(&format_opt)
+        .collect();
+
+    // Derive usage from clap
+    let mut usage_buf = Vec::new();
+    let _ = cli.clone().write_help(&mut usage_buf);
+    let usage_text = String::from_utf8_lossy(&usage_buf);
+    let usage = usage_text
+        .lines()
+        .find(|l| l.starts_with("Usage:"))
+        .map(|l| l.trim_start_matches("Usage:").trim().to_string())
+        .unwrap_or_else(|| "tabctl [OPTIONS] [COMMAND]".to_string());
+
+    let commands: Vec<serde_json::Value> = cli
+        .get_subcommands()
+        .filter(|c| !c.is_hide_set())
+        .map(|c| {
+            let name = c.get_name().to_string();
+            let mut entry = serde_json::Map::new();
+            entry.insert("name".into(), json!(name));
+
+            let aliases: Vec<&str> = c.get_visible_aliases().collect();
+            if !aliases.is_empty() {
+                entry.insert("aliases".into(), json!(aliases));
+            }
+
+            let opts: Vec<String> = c
+                .get_arguments()
+                .filter(|a| a.get_id() != "help" && a.get_id() != "version")
+                .filter(|a| !global_ids.contains(a.get_id().as_str()))
+                .filter_map(&format_opt)
+                .collect();
+            if !opts.is_empty() {
+                entry.insert("options".into(), json!(opts));
+            }
+
+            serde_json::Value::Object(entry)
+        })
+        .collect();
+
+    json!({
+        "version": version,
+        "usage": usage,
+        "commands": commands,
+        "globalOptions": global_opts
+    })
 }
 
 pub(super) fn run_version(matches: &ArgMatches, _sub: &ArgMatches) -> Result<(), String> {
@@ -390,11 +479,13 @@ pub(super) fn run_policy(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), S
 
 pub(super) fn run_skill(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
     let mut args = vec![
+        "-y".to_string(),
         "skills".to_string(),
         "add".to_string(),
         "https://github.com/ekroon/tabctl".to_string(),
         "--skill".to_string(),
         "tabctl".to_string(),
+        "--yes".to_string(),
     ];
     if sub.get_flag("global") {
         args.push("--global".to_string());
