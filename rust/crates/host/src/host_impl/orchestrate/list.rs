@@ -64,6 +64,7 @@ impl ListOrchestration {
         }
 
         let mut tabs = scope_result.tabs;
+        let total_tabs = tabs.len();
 
         // Apply limit/offset pagination
         let offset = self
@@ -76,15 +77,27 @@ impl ListOrchestration {
         } else if offset >= tabs.len() && !tabs.is_empty() {
             tabs.clear();
         }
-        if let Some(limit) = self.params.get("limit").and_then(Value::as_u64) {
-            tabs.truncate(limit as usize);
+        let limit = self.params.get("limit").and_then(Value::as_u64);
+        if let Some(lim) = limit {
+            tabs.truncate(lim as usize);
         }
 
         // Reconstruct window structure from filtered tabs
         let shaped = reconstruct_windows(&tabs, windows);
 
+        let has_more = offset + tabs.len() < total_tabs;
+        let mut response = serde_json::json!({ "windows": shaped });
+        if limit.is_some() || offset > 0 {
+            response["pagination"] = serde_json::json!({
+                "totalTabs": total_tabs,
+                "offset": offset,
+                "count": tabs.len(),
+                "hasMore": has_more,
+            });
+        }
+
         OrchStep::Complete {
-            response: serde_json::json!({ "windows": shaped }),
+            response,
             undo: None,
         }
     }
@@ -462,6 +475,9 @@ mod tests {
             })
             .sum();
         assert_eq!(total_tabs, 4);
+
+        // No pagination metadata when no limit/offset
+        assert!(response.get("pagination").is_none());
     }
 
     #[test]
@@ -488,6 +504,12 @@ mod tests {
             })
             .sum();
         assert_eq!(total_tabs, 2);
+
+        let pg = response.get("pagination").unwrap();
+        assert_eq!(pg.get("totalTabs").and_then(Value::as_u64), Some(4));
+        assert_eq!(pg.get("offset").and_then(Value::as_u64), Some(0));
+        assert_eq!(pg.get("count").and_then(Value::as_u64), Some(2));
+        assert_eq!(pg.get("hasMore").and_then(Value::as_bool), Some(true));
     }
 
     #[test]
@@ -516,6 +538,12 @@ mod tests {
             .collect();
         // Tabs 1,2 skipped; tabs 3,4 remain
         assert_eq!(all_tabs, vec![3, 4]);
+
+        let pg = response.get("pagination").unwrap();
+        assert_eq!(pg.get("totalTabs").and_then(Value::as_u64), Some(4));
+        assert_eq!(pg.get("offset").and_then(Value::as_u64), Some(2));
+        assert_eq!(pg.get("count").and_then(Value::as_u64), Some(2));
+        assert_eq!(pg.get("hasMore").and_then(Value::as_bool), Some(false));
     }
 
     #[test]
@@ -544,6 +572,12 @@ mod tests {
             .collect();
         // Skip 1 (tab 1), take 2 (tabs 2, 3)
         assert_eq!(all_tabs, vec![2, 3]);
+
+        let pg = response.get("pagination").unwrap();
+        assert_eq!(pg.get("totalTabs").and_then(Value::as_u64), Some(4));
+        assert_eq!(pg.get("offset").and_then(Value::as_u64), Some(1));
+        assert_eq!(pg.get("count").and_then(Value::as_u64), Some(2));
+        assert_eq!(pg.get("hasMore").and_then(Value::as_bool), Some(true));
     }
 
     #[test]
