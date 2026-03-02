@@ -83,14 +83,19 @@ pub(super) fn render_ping_human(response: &ResponseEnvelope) -> Result<(), Strin
     let dirty_marker = |d: bool| if d { "+dirty" } else { "" };
 
     if in_sync {
-        println!(
-            "\u{2705} tabctl {} (ext {}{}, host {}{}, in sync)",
-            host_version,
-            ext_sha,
-            dirty_marker(ext_dirty),
-            host_sha,
-            dirty_marker(host_dirty),
-        );
+        let has_shas = ext_sha != "unknown" && host_sha != "unknown";
+        if has_shas {
+            println!(
+                "\u{2705} tabctl {} (ext {}{}, host {}{}, in sync)",
+                host_version,
+                ext_sha,
+                dirty_marker(ext_dirty),
+                host_sha,
+                dirty_marker(host_dirty),
+            );
+        } else {
+            println!("\u{2705} tabctl {} (in sync)", host_version);
+        }
     } else {
         println!(
             "\u{26a0}\u{fe0f} tabctl \u{2014} out of sync (ext {}, host {})",
