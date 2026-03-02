@@ -1,18 +1,23 @@
 use serde_json::{Map, Value};
 
 use super::resolve::resolve_window_id;
+use super::scope::{select_tabs_by_scope, ScopedTab};
 use super::OrchStep;
 
 /// Orchestration for the `list` command.
 ///
-/// Single step: request p:snapshot, shape the response by projecting tab/group
-/// fields (drops index, pinned, lastFocusedAt, state, groupCollapsed, groupColor).
+/// Single step: request p:snapshot, filter by scope, apply limit/offset,
+/// then shape the response by projecting tab/group fields.
 #[derive(Debug)]
-pub(crate) struct ListOrchestration;
+pub(crate) struct ListOrchestration {
+    params: Value,
+}
 
 impl ListOrchestration {
-    pub(crate) fn new(_params: &Value) -> Self {
-        Self
+    pub(crate) fn new(params: &Value) -> Self {
+        Self {
+            params: params.clone(),
+        }
     }
 }
 
@@ -32,61 +37,172 @@ impl super::Orchestration for ListOrchestration {
             };
         };
 
-        let shaped: Vec<Value> = windows
-            .iter()
-            .map(|win| {
-                let tabs = win
-                    .get("tabs")
-                    .and_then(Value::as_array)
-                    .map(|tabs| {
-                        tabs.iter()
-                            .map(|tab| {
-                                serde_json::json!({
-                                    "tabId": tab.get("tabId"),
-                                    "windowId": tab.get("windowId"),
-                                    "url": tab.get("url"),
-                                    "title": tab.get("title"),
-                                    "active": tab.get("active"),
-                                    "groupId": tab.get("groupId"),
-                                    "groupTitle": tab.get("groupTitle"),
-                                })
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
+        let has_scope = self.params.get("tabIds").is_some()
+            || self.params.get("groupId").is_some()
+            || self.params.get("groupTitle").is_some()
+            || self.params.get("windowId").is_some()
+            || self.params.get("all").and_then(Value::as_bool) == Some(true);
 
-                let groups = win
-                    .get("groups")
-                    .and_then(Value::as_array)
-                    .map(|groups| {
-                        groups
-                            .iter()
-                            .map(|g| {
-                                serde_json::json!({
-                                    "groupId": g.get("groupId"),
-                                    "title": g.get("title"),
-                                    "color": g.get("color"),
-                                    "collapsed": g.get("collapsed"),
-                                })
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
+        if has_scope {
+            return self.scoped_response(&response, windows);
+        }
 
-                serde_json::json!({
-                    "windowId": win.get("windowId"),
-                    "focused": win.get("focused"),
-                    "tabs": tabs,
-                    "groups": groups,
-                })
-            })
-            .collect();
+        // No scope: return all windows (backward-compatible default)
+        self.shape_all_windows(windows)
+    }
+}
+
+impl ListOrchestration {
+    fn scoped_response(&self, snapshot: &Value, windows: &[Value]) -> OrchStep {
+        let scope_result = select_tabs_by_scope(snapshot, &self.params);
+
+        if let Some(err) = scope_result.error {
+            return OrchStep::Error {
+                message: err,
+                hint: None,
+            };
+        }
+
+        let mut tabs = scope_result.tabs;
+
+        // Apply limit/offset pagination
+        let offset = self
+            .params
+            .get("offset")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        if offset > 0 && offset < tabs.len() {
+            tabs = tabs.split_off(offset);
+        } else if offset >= tabs.len() && !tabs.is_empty() {
+            tabs.clear();
+        }
+        if let Some(limit) = self.params.get("limit").and_then(Value::as_u64) {
+            tabs.truncate(limit as usize);
+        }
+
+        // Reconstruct window structure from filtered tabs
+        let shaped = reconstruct_windows(&tabs, windows);
 
         OrchStep::Complete {
             response: serde_json::json!({ "windows": shaped }),
             undo: None,
         }
     }
+
+    fn shape_all_windows(&self, windows: &[Value]) -> OrchStep {
+        let shaped: Vec<Value> = windows.iter().map(shape_window).collect();
+
+        OrchStep::Complete {
+            response: serde_json::json!({ "windows": shaped }),
+            undo: None,
+        }
+    }
+}
+
+/// Reconstruct windows from scoped tabs, preserving group info.
+fn reconstruct_windows(tabs: &[ScopedTab], windows: &[Value]) -> Vec<Value> {
+    use std::collections::BTreeMap;
+
+    // Group tabs by windowId
+    let mut by_window: BTreeMap<i64, Vec<&ScopedTab>> = BTreeMap::new();
+    for tab in tabs {
+        by_window.entry(tab.window_id).or_default().push(tab);
+    }
+
+    let mut result = Vec::new();
+    for (win_id, win_tabs) in &by_window {
+        let win_meta = windows
+            .iter()
+            .find(|w| w.get("windowId").and_then(Value::as_i64) == Some(*win_id));
+
+        let focused = win_meta
+            .and_then(|w| w.get("focused").and_then(Value::as_bool))
+            .unwrap_or(false);
+
+        let tab_values: Vec<Value> = win_tabs.iter().map(|t| shape_scoped_tab(t)).collect();
+
+        // Include only groups that have matching tabs
+        let group_ids: std::collections::HashSet<i64> =
+            win_tabs.iter().map(|t| t.group_id).collect();
+        let groups: Vec<Value> = win_meta
+            .and_then(|w| w.get("groups").and_then(Value::as_array))
+            .map(|groups| {
+                groups
+                    .iter()
+                    .filter(|g| {
+                        g.get("groupId")
+                            .and_then(Value::as_i64)
+                            .is_some_and(|id| group_ids.contains(&id))
+                    })
+                    .map(shape_group)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        result.push(serde_json::json!({
+            "windowId": win_id,
+            "focused": focused,
+            "tabs": tab_values,
+            "groups": groups,
+        }));
+    }
+    result
+}
+
+fn shape_scoped_tab(t: &ScopedTab) -> Value {
+    serde_json::json!({
+        "tabId": t.tab_id,
+        "windowId": t.window_id,
+        "url": t.url,
+        "title": t.title,
+        "active": t.active,
+        "groupId": t.group_id,
+        "groupTitle": t.group_title,
+    })
+}
+
+fn shape_group(g: &Value) -> Value {
+    serde_json::json!({
+        "groupId": g.get("groupId"),
+        "title": g.get("title"),
+        "color": g.get("color"),
+        "collapsed": g.get("collapsed"),
+    })
+}
+
+fn shape_window(win: &Value) -> Value {
+    let tabs = win
+        .get("tabs")
+        .and_then(Value::as_array)
+        .map(|tabs| {
+            tabs.iter()
+                .map(|tab| {
+                    serde_json::json!({
+                        "tabId": tab.get("tabId"),
+                        "windowId": tab.get("windowId"),
+                        "url": tab.get("url"),
+                        "title": tab.get("title"),
+                        "active": tab.get("active"),
+                        "groupId": tab.get("groupId"),
+                        "groupTitle": tab.get("groupTitle"),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let groups = win
+        .get("groups")
+        .and_then(Value::as_array)
+        .map(|groups| groups.iter().map(shape_group).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    serde_json::json!({
+        "windowId": win.get("windowId"),
+        "focused": win.get("focused"),
+        "tabs": tabs,
+        "groups": groups,
+    })
 }
 
 /// Orchestration for the `group-list` command.
@@ -198,6 +314,15 @@ mod tests {
                     "groups": [
                         {"groupId": 10, "title": "Work", "color": "blue", "collapsed": false}
                     ]
+                },
+                {
+                    "windowId": 200,
+                    "focused": false,
+                    "state": "normal",
+                    "tabs": [
+                        {"tabId": 4, "windowId": 200, "index": 0, "url": "https://d.com", "title": "D", "active": true, "pinned": false, "groupId": -1, "groupTitle": null}
+                    ],
+                    "groups": []
                 }
             ]
         })
@@ -216,7 +341,7 @@ mod tests {
         assert!(undo.is_none());
 
         let windows = response.get("windows").and_then(Value::as_array).unwrap();
-        assert_eq!(windows.len(), 1);
+        assert_eq!(windows.len(), 2);
 
         let win = &windows[0];
         assert_eq!(win.get("windowId").and_then(Value::as_i64), Some(100));
@@ -237,6 +362,207 @@ mod tests {
         assert!(tab.get("index").is_none());
         assert!(tab.get("pinned").is_none());
         assert!(tab.get("lastFocusedAt").is_none());
+    }
+
+    #[test]
+    fn list_filters_by_window_id() {
+        let params = serde_json::json!({"windowId": 200});
+        let mut orch = ListOrchestration::new(&params);
+        let _ = orch.start();
+
+        let result = orch.step(sample_snapshot());
+        let OrchStep::Complete { response, .. } = result else {
+            panic!("expected Complete");
+        };
+
+        let windows = response.get("windows").and_then(Value::as_array).unwrap();
+        assert_eq!(windows.len(), 1);
+        assert_eq!(
+            windows[0].get("windowId").and_then(Value::as_i64),
+            Some(200)
+        );
+
+        let tabs = windows[0].get("tabs").and_then(Value::as_array).unwrap();
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0].get("tabId").and_then(Value::as_i64), Some(4));
+    }
+
+    #[test]
+    fn list_filters_by_tab_ids() {
+        let params = serde_json::json!({"tabIds": [2, 4]});
+        let mut orch = ListOrchestration::new(&params);
+        let _ = orch.start();
+
+        let result = orch.step(sample_snapshot());
+        let OrchStep::Complete { response, .. } = result else {
+            panic!("expected Complete");
+        };
+
+        let windows = response.get("windows").and_then(Value::as_array).unwrap();
+        // Two tabs from different windows
+        assert_eq!(windows.len(), 2);
+
+        let all_tab_ids: Vec<i64> = windows
+            .iter()
+            .flat_map(|w| {
+                w.get("tabs")
+                    .and_then(Value::as_array)
+                    .unwrap()
+                    .iter()
+                    .map(|t| t.get("tabId").and_then(Value::as_i64).unwrap())
+            })
+            .collect();
+        assert_eq!(all_tab_ids, vec![2, 4]);
+    }
+
+    #[test]
+    fn list_filters_by_group_title() {
+        let params = serde_json::json!({"groupTitle": "Work"});
+        let mut orch = ListOrchestration::new(&params);
+        let _ = orch.start();
+
+        let result = orch.step(sample_snapshot());
+        let OrchStep::Complete { response, .. } = result else {
+            panic!("expected Complete");
+        };
+
+        let windows = response.get("windows").and_then(Value::as_array).unwrap();
+        assert_eq!(windows.len(), 1);
+
+        let tabs = windows[0].get("tabs").and_then(Value::as_array).unwrap();
+        assert_eq!(tabs.len(), 2);
+        assert!(tabs
+            .iter()
+            .all(|t| t.get("groupTitle").and_then(Value::as_str) == Some("Work")));
+
+        // Groups should only include the Work group
+        let groups = windows[0].get("groups").and_then(Value::as_array).unwrap();
+        assert_eq!(groups.len(), 1);
+    }
+
+    #[test]
+    fn list_all_returns_everything() {
+        let params = serde_json::json!({"all": true});
+        let mut orch = ListOrchestration::new(&params);
+        let _ = orch.start();
+
+        let result = orch.step(sample_snapshot());
+        let OrchStep::Complete { response, .. } = result else {
+            panic!("expected Complete");
+        };
+
+        let windows = response.get("windows").and_then(Value::as_array).unwrap();
+        let total_tabs: usize = windows
+            .iter()
+            .map(|w| {
+                w.get("tabs")
+                    .and_then(Value::as_array)
+                    .map(|t| t.len())
+                    .unwrap_or(0)
+            })
+            .sum();
+        assert_eq!(total_tabs, 4);
+    }
+
+    #[test]
+    fn list_limit_truncates() {
+        let params = serde_json::json!({"all": true, "limit": 2});
+        let mut orch = ListOrchestration::new(&params);
+        let _ = orch.start();
+
+        let result = orch.step(sample_snapshot());
+        let OrchStep::Complete { response, .. } = result else {
+            panic!("expected Complete");
+        };
+
+        let total_tabs: usize = response
+            .get("windows")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .map(|w| {
+                w.get("tabs")
+                    .and_then(Value::as_array)
+                    .map(|t| t.len())
+                    .unwrap_or(0)
+            })
+            .sum();
+        assert_eq!(total_tabs, 2);
+    }
+
+    #[test]
+    fn list_offset_skips() {
+        let params = serde_json::json!({"all": true, "offset": 2});
+        let mut orch = ListOrchestration::new(&params);
+        let _ = orch.start();
+
+        let result = orch.step(sample_snapshot());
+        let OrchStep::Complete { response, .. } = result else {
+            panic!("expected Complete");
+        };
+
+        let all_tabs: Vec<i64> = response
+            .get("windows")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .flat_map(|w| {
+                w.get("tabs")
+                    .and_then(Value::as_array)
+                    .unwrap()
+                    .iter()
+                    .map(|t| t.get("tabId").and_then(Value::as_i64).unwrap())
+            })
+            .collect();
+        // Tabs 1,2 skipped; tabs 3,4 remain
+        assert_eq!(all_tabs, vec![3, 4]);
+    }
+
+    #[test]
+    fn list_limit_and_offset_combined() {
+        let params = serde_json::json!({"all": true, "offset": 1, "limit": 2});
+        let mut orch = ListOrchestration::new(&params);
+        let _ = orch.start();
+
+        let result = orch.step(sample_snapshot());
+        let OrchStep::Complete { response, .. } = result else {
+            panic!("expected Complete");
+        };
+
+        let all_tabs: Vec<i64> = response
+            .get("windows")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .flat_map(|w| {
+                w.get("tabs")
+                    .and_then(Value::as_array)
+                    .unwrap()
+                    .iter()
+                    .map(|t| t.get("tabId").and_then(Value::as_i64).unwrap())
+            })
+            .collect();
+        // Skip 1 (tab 1), take 2 (tabs 2, 3)
+        assert_eq!(all_tabs, vec![2, 3]);
+    }
+
+    #[test]
+    fn list_scoped_includes_matching_groups_only() {
+        let params = serde_json::json!({"tabIds": [3]});
+        let mut orch = ListOrchestration::new(&params);
+        let _ = orch.start();
+
+        let result = orch.step(sample_snapshot());
+        let OrchStep::Complete { response, .. } = result else {
+            panic!("expected Complete");
+        };
+
+        let windows = response.get("windows").and_then(Value::as_array).unwrap();
+        assert_eq!(windows.len(), 1);
+
+        // Tab 3 has groupId -1, so Work group should not be included
+        let groups = windows[0].get("groups").and_then(Value::as_array).unwrap();
+        assert_eq!(groups.len(), 0);
     }
 
     #[test]
