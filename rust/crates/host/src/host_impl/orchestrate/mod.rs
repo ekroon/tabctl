@@ -100,6 +100,7 @@ pub(super) fn orchestration_for(action: &str, params: &Value) -> Option<Box<dyn 
         "inspect" => Some(Box::new(inspect::InspectOrchestration::new(params))),
         "report" => Some(Box::new(report::ReportOrchestration::new(params))),
         "screenshot" => Some(Box::new(screenshot::ScreenshotOrchestration::new(params))),
+        "snapshot" => Some(Box::new(list::SnapshotOrchestration)),
         _ => None,
     }
 }

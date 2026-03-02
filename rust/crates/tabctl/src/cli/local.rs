@@ -931,13 +931,277 @@ pub(super) fn run_upgrade(matches: &ArgMatches, _sub: &ArgMatches) -> Result<(),
     Ok(())
 }
 
+pub(super) fn run_list(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
+    let profile = matches.get_one::<String>("profile").map(|s| s.as_str());
+
+    let snapshot_response = send_request("snapshot", json!({}), profile, false)?;
+    if !snapshot_response.ok {
+        let msg = snapshot_response
+            .error
+            .map(|e| e.message)
+            .unwrap_or_else(|| "Snapshot request failed".to_string());
+        return Err(msg);
+    }
+    let snapshot = snapshot_response.data.unwrap_or(json!({}));
+    let windows = snapshot
+        .get("windows")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    // Collect scope params from CLI flags
+    let params = route::collect_scope_params(sub);
+
+    // Filter tabs from snapshot by scope
+    let filtered_tabs =
+        select_tabs_from_snapshot(&snapshot, &windows, &Value::Object(params.clone()));
+
+    let total_tabs = filtered_tabs.len();
+
+    // Apply offset
+    let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let tabs_after_offset: Vec<_> = filtered_tabs.into_iter().skip(offset).collect();
+
+    // Apply limit (default 20)
+    let limit = params
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|l| l as usize)
+        .unwrap_or(DEFAULT_LIST_LIMIT);
+    let page: Vec<_> = tabs_after_offset.into_iter().take(limit).collect();
+
+    // Reconstruct window structure from filtered tabs
+    let shaped_windows = reconstruct_windows_from_tabs(&page, &windows);
+
+    let has_more = offset + page.len() < total_tabs;
+    let result = json!({
+        "windows": shaped_windows,
+        "pagination": {
+            "totalTabs": total_tabs,
+            "offset": offset,
+            "count": page.len(),
+            "hasMore": has_more,
+        },
+    });
+
+    render_local_command(matches, "list", result)
+}
+
+const DEFAULT_LIST_LIMIT: usize = 20;
+
+/// A tab extracted from a snapshot with its window context.
+struct SnapshotTab {
+    tab: Value,
+    window_id: i64,
+}
+
+/// Filter tabs from the raw snapshot by scope parameters.
+///
+/// Priority: tabIds > groupId > groupTitle > ungrouped > windowId > all > focused window.
+fn select_tabs_from_snapshot(
+    snapshot: &Value,
+    windows: &[Value],
+    params: &Value,
+) -> Vec<SnapshotTab> {
+    let all_tabs: Vec<SnapshotTab> = windows
+        .iter()
+        .flat_map(|w| {
+            let wid = w.get("windowId").and_then(Value::as_i64).unwrap_or(0);
+            w.get("tabs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flat_map(move |tabs| {
+                    tabs.iter().map(move |t| SnapshotTab {
+                        tab: t.clone(),
+                        window_id: wid,
+                    })
+                })
+        })
+        .collect();
+
+    // By explicit tabIds
+    if let Some(tab_ids) = params.get("tabIds").and_then(Value::as_array) {
+        let id_set: std::collections::HashSet<i64> =
+            tab_ids.iter().filter_map(Value::as_i64).collect();
+        if !id_set.is_empty() {
+            return all_tabs
+                .into_iter()
+                .filter(|st| {
+                    st.tab
+                        .get("tabId")
+                        .and_then(Value::as_i64)
+                        .is_some_and(|id| id_set.contains(&id))
+                })
+                .collect();
+        }
+    }
+
+    // By groupId
+    if let Some(group_id) = params.get("groupId").and_then(Value::as_i64) {
+        return all_tabs
+            .into_iter()
+            .filter(|st| st.tab.get("groupId").and_then(Value::as_i64) == Some(group_id))
+            .collect();
+    }
+
+    // By groupTitle (+ optional windowId)
+    if let Some(group_title) = params.get("groupTitle").and_then(Value::as_str) {
+        let win_filter = params
+            .get("windowId")
+            .and_then(|v| resolve_window_id_value(snapshot, v));
+        return all_tabs
+            .into_iter()
+            .filter(|st| {
+                st.tab.get("groupTitle").and_then(Value::as_str) == Some(group_title)
+                    && win_filter.map_or(true, |wid| st.window_id == wid)
+            })
+            .collect();
+    }
+
+    // By ungrouped
+    if params.get("ungrouped").and_then(Value::as_bool) == Some(true) {
+        return all_tabs
+            .into_iter()
+            .filter(|st| st.tab.get("groupId").and_then(Value::as_i64).unwrap_or(-1) == -1)
+            .collect();
+    }
+
+    // By windowId
+    if let Some(raw_win_id) = params.get("windowId") {
+        let window_id = resolve_window_id_value(snapshot, raw_win_id);
+        return match window_id {
+            Some(wid) => all_tabs
+                .into_iter()
+                .filter(|st| st.window_id == wid)
+                .collect(),
+            None => Vec::new(),
+        };
+    }
+
+    // Explicit all
+    if params.get("all").and_then(Value::as_bool) == Some(true) {
+        return all_tabs;
+    }
+
+    // Default: focused window
+    let focused_window_id = windows.iter().find_map(|w| {
+        if w.get("focused").and_then(Value::as_bool) == Some(true) {
+            w.get("windowId").and_then(Value::as_i64)
+        } else {
+            None
+        }
+    });
+
+    match focused_window_id {
+        Some(wid) => all_tabs
+            .into_iter()
+            .filter(|st| st.window_id == wid)
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Resolve windowId aliases: "active", "last-focused", or numeric ID.
+fn resolve_window_id_value(snapshot: &Value, raw: &Value) -> Option<i64> {
+    if let Some(id) = raw.as_i64() {
+        return Some(id);
+    }
+    let s = raw.as_str()?;
+    let windows = snapshot.get("windows").and_then(Value::as_array)?;
+    match s {
+        "active" | "last-focused" | "focused" => windows.iter().find_map(|w| {
+            if w.get("focused").and_then(Value::as_bool) == Some(true) {
+                w.get("windowId").and_then(Value::as_i64)
+            } else {
+                None
+            }
+        }),
+        _ => s.parse::<i64>().ok(),
+    }
+}
+
+/// Reconstruct windows-with-groups structure from filtered tabs.
+fn reconstruct_windows_from_tabs(tabs: &[SnapshotTab], windows: &[Value]) -> Vec<Value> {
+    use std::collections::BTreeMap;
+
+    let mut by_window: BTreeMap<i64, Vec<&SnapshotTab>> = BTreeMap::new();
+    for st in tabs {
+        by_window.entry(st.window_id).or_default().push(st);
+    }
+
+    let mut result = Vec::new();
+    for (win_id, win_tabs) in &by_window {
+        let win_meta = windows
+            .iter()
+            .find(|w| w.get("windowId").and_then(Value::as_i64) == Some(*win_id));
+
+        let focused = win_meta
+            .and_then(|w| w.get("focused").and_then(Value::as_bool))
+            .unwrap_or(false);
+
+        let tab_values: Vec<Value> = win_tabs
+            .iter()
+            .map(|st| shape_tab(&st.tab, st.window_id))
+            .collect();
+
+        // Include only groups that have matching tabs
+        let group_ids: std::collections::HashSet<i64> = win_tabs
+            .iter()
+            .filter_map(|st| st.tab.get("groupId").and_then(Value::as_i64))
+            .collect();
+        let groups: Vec<Value> = win_meta
+            .and_then(|w| w.get("groups").and_then(Value::as_array))
+            .map(|groups| {
+                groups
+                    .iter()
+                    .filter(|g| {
+                        g.get("groupId")
+                            .and_then(Value::as_i64)
+                            .is_some_and(|id| group_ids.contains(&id))
+                    })
+                    .map(|g| {
+                        json!({
+                            "groupId": g.get("groupId"),
+                            "title": g.get("title"),
+                            "color": g.get("color"),
+                            "collapsed": g.get("collapsed"),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        result.push(json!({
+            "windowId": win_id,
+            "focused": focused,
+            "tabs": tab_values,
+            "groups": groups,
+        }));
+    }
+    result
+}
+
+fn shape_tab(tab: &Value, window_id: i64) -> Value {
+    json!({
+        "tabId": tab.get("tabId"),
+        "windowId": window_id,
+        "url": tab.get("url"),
+        "title": tab.get("title"),
+        "active": tab.get("active"),
+        "pinned": tab.get("pinned"),
+        "index": tab.get("index"),
+        "groupId": tab.get("groupId"),
+        "groupTitle": tab.get("groupTitle"),
+    })
+}
+
 pub(super) fn run_graphql_query(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
     let query_str = sub
         .get_one::<String>("graphql")
         .ok_or("Missing GraphQL query")?;
     let profile = matches.get_one::<String>("profile").map(|s| s.as_str());
 
-    let snapshot_response = send_request("list", json!({"all": true}), profile, false)?;
+    let snapshot_response = send_request("snapshot", json!({}), profile, false)?;
     let snapshot = snapshot_response.data.unwrap_or(json!({}));
 
     let sender = std::sync::Arc::new(CliCommandSender {
@@ -966,7 +1230,7 @@ impl tabctl_graphql::CommandSender for CliCommandSender {
     }
 
     fn snapshot(&self) -> Result<serde_json::Value, String> {
-        let response = send_request("list", json!({"all": true}), self.profile.as_deref(), false)?;
+        let response = send_request("snapshot", json!({}), self.profile.as_deref(), false)?;
         if !response.ok {
             let msg = response
                 .error

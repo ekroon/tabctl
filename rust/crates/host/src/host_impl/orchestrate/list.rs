@@ -261,6 +261,29 @@ impl super::Orchestration for GroupListOrchestration {
     }
 }
 
+/// Orchestration for the `snapshot` action.
+///
+/// Single step: sends p:snapshot and returns the raw response unchanged.
+/// Used by the CLI for client-side filtering/pagination.
+#[derive(Debug)]
+pub(crate) struct SnapshotOrchestration;
+
+impl super::Orchestration for SnapshotOrchestration {
+    fn start(&mut self) -> OrchStep {
+        OrchStep::SendPrimitive {
+            action: "p:snapshot".to_string(),
+            params: Value::Object(Map::new()),
+        }
+    }
+
+    fn step(&mut self, response: Value) -> OrchStep {
+        OrchStep::Complete {
+            response,
+            undo: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -630,5 +653,21 @@ mod tests {
 
         let groups = response.get("groups").and_then(Value::as_array).unwrap();
         assert_eq!(groups.len(), 0);
+    }
+
+    #[test]
+    fn snapshot_orchestration_returns_raw_response() {
+        let mut orch = SnapshotOrchestration;
+        let step = orch.start();
+        assert!(matches!(&step, OrchStep::SendPrimitive { action, .. } if action == "p:snapshot"));
+
+        let snap = sample_snapshot();
+        let result = orch.step(snap.clone());
+        let OrchStep::Complete { response, undo } = result else {
+            panic!("expected Complete");
+        };
+        assert!(undo.is_none());
+        // Raw response returned unchanged
+        assert_eq!(response, snap);
     }
 }
