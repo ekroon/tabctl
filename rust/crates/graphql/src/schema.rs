@@ -11,6 +11,8 @@ pub(crate) fn create_schema() -> Schema {
 }
 
 /// Query root — read-only access to tab data from a snapshot.
+const DEFAULT_LIMIT: i32 = 20;
+
 pub(crate) struct Query;
 
 #[graphql_object(context = GqlContext)]
@@ -27,14 +29,16 @@ impl Query {
             .find(|w| w.window_id == id)
     }
 
-    /// Tabs filtered by optional scope parameters.
+    /// Paginated tabs with optional scope filters.
     fn tabs(
         ctx: &GqlContext,
         window_id: Option<i32>,
         group_id: Option<i32>,
         group_title: Option<String>,
         ungrouped: Option<bool>,
-    ) -> Vec<Tab> {
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> TabPage {
         let windows = windows_from_snapshot(&ctx.snapshot);
         let mut tabs: Vec<Tab> = windows.into_iter().flat_map(|w| w.tabs).collect();
 
@@ -50,7 +54,8 @@ impl Query {
         if ungrouped == Some(true) {
             tabs.retain(|t| t.group_id == -1);
         }
-        tabs
+
+        paginate_tabs(tabs, limit, offset)
     }
 
     /// A single tab by ID.
@@ -69,6 +74,22 @@ impl Query {
             .filter(|w| window_id.is_none() || Some(w.window_id) == window_id)
             .flat_map(|w| w.groups)
             .collect()
+    }
+}
+
+fn paginate_tabs(tabs: Vec<Tab>, limit: Option<i32>, offset: Option<i32>) -> TabPage {
+    let total = tabs.len() as i32;
+    let off = offset.unwrap_or(0).max(0) as usize;
+    let lim = limit.unwrap_or(DEFAULT_LIMIT).max(0) as usize;
+
+    let page: Vec<Tab> = tabs.into_iter().skip(off).take(lim).collect();
+    let has_more = (off + page.len()) < total as usize;
+
+    TabPage {
+        items: page,
+        total,
+        offset: off as i32,
+        has_more,
     }
 }
 
@@ -277,15 +298,17 @@ mod tests {
 
     #[test]
     fn query_tabs_with_group_title_filter() {
-        let result = exec(r#"{ tabs(groupTitle: "Work") { tabId } }"#);
-        let tabs = result["data"]["tabs"].as_array().unwrap();
+        let result = exec(r#"{ tabs(groupTitle: "Work") { items { tabId } total hasMore } }"#);
+        let tabs = result["data"]["tabs"]["items"].as_array().unwrap();
         assert_eq!(tabs.len(), 2);
+        assert_eq!(result["data"]["tabs"]["total"], 2);
+        assert_eq!(result["data"]["tabs"]["hasMore"], false);
     }
 
     #[test]
     fn query_tabs_ungrouped() {
-        let result = exec("{ tabs(ungrouped: true) { tabId } }");
-        let tabs = result["data"]["tabs"].as_array().unwrap();
+        let result = exec("{ tabs(ungrouped: true) { items { tabId } total } }");
+        let tabs = result["data"]["tabs"]["items"].as_array().unwrap();
         assert_eq!(tabs.len(), 2);
     }
 
@@ -313,6 +336,29 @@ mod tests {
         assert!(field_names.contains(&"tabId"));
         assert!(field_names.contains(&"url"));
         assert!(field_names.contains(&"title"));
+    }
+
+    #[test]
+    fn tabs_default_limit_and_pagination() {
+        let result = exec("{ tabs { items { tabId } total offset hasMore } }");
+        let page = &result["data"]["tabs"];
+        let items = page["items"].as_array().unwrap();
+        // Sample snapshot has 4 tabs total, all fit in default limit 20
+        assert_eq!(items.len(), 4);
+        assert_eq!(page["total"], 4);
+        assert_eq!(page["offset"], 0);
+        assert_eq!(page["hasMore"], false);
+    }
+
+    #[test]
+    fn tabs_limit_and_offset() {
+        let result = exec("{ tabs(limit: 2, offset: 1) { items { tabId } total offset hasMore } }");
+        let page = &result["data"]["tabs"];
+        let items = page["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(page["total"], 4);
+        assert_eq!(page["offset"], 1);
+        assert_eq!(page["hasMore"], true);
     }
 
     #[test]

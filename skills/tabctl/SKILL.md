@@ -18,8 +18,14 @@ Use `tabctl schema` to discover available types and fields.
 # Get only tabId and url for all windows
 tabctl query '{ windows { windowId tabs { tabId url } } }'
 
+# Paginated tabs (default limit 20)
+tabctl query '{ tabs { items { tabId url title } total hasMore } }'
+
+# Next page
+tabctl query '{ tabs(offset: 20) { items { tabId url } total hasMore } }'
+
 # Get tabs in a specific window
-tabctl query '{ tabs(windowId: 123) { tabId title url } }'
+tabctl query '{ tabs(windowId: 123) { items { tabId title url } total } }'
 
 # Get groups with tab counts
 tabctl query '{ groups { groupId title tabCount } }'

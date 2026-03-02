@@ -53,3 +53,12 @@ pub(crate) struct OpenResult {
 pub(crate) struct RefreshResult {
     pub refreshed_tabs: i32,
 }
+
+/// Paginated list of tabs.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct TabPage {
+    pub items: Vec<Tab>,
+    pub total: i32,
+    pub offset: i32,
+    pub has_more: bool,
+}
