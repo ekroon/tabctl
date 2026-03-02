@@ -157,6 +157,8 @@ fn shape_scoped_tab(t: &ScopedTab) -> Value {
         "url": t.url,
         "title": t.title,
         "active": t.active,
+        "pinned": t.pinned,
+        "index": t.index,
         "groupId": t.group_id,
         "groupTitle": t.group_title,
     })
@@ -325,9 +327,9 @@ mod tests {
         );
         assert_eq!(tab.get("groupTitle").and_then(Value::as_str), Some("Work"));
 
-        // Verify dropped fields are absent
-        assert!(tab.get("index").is_none());
-        assert!(tab.get("pinned").is_none());
+        // Verify enriched fields are present, dropped fields are absent
+        assert!(tab.get("index").is_some());
+        assert!(tab.get("pinned").is_some());
         assert!(tab.get("lastFocusedAt").is_none());
 
         // Pagination always present

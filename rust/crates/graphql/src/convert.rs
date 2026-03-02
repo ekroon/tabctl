@@ -45,7 +45,7 @@ fn window_from_value(val: &Value) -> Option<Window> {
     })
 }
 
-fn tab_from_value(val: &Value, window_id: i32) -> Option<Tab> {
+pub(crate) fn tab_from_value(val: &Value, window_id: i32) -> Option<Tab> {
     Some(Tab {
         tab_id: val.get("tabId").and_then(Value::as_i64)? as i32,
         window_id,

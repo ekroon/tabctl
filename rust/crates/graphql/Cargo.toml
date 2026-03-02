@@ -7,5 +7,6 @@ edition = "2021"
 path = "src/lib.rs"
 
 [dependencies]
+indexmap = "2"
 juniper = { version = "0.16", features = ["schema-language"] }
 serde_json = "1"

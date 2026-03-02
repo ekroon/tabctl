@@ -1,7 +1,7 @@
 use juniper::{graphql_object, EmptySubscription, FieldResult, RootNode};
 
 use crate::context::GqlContext;
-use crate::convert::windows_from_snapshot;
+use crate::convert::{tab_from_value, windows_from_snapshot};
 use crate::types::*;
 
 pub(crate) type Schema = RootNode<'static, Query, Mutation, EmptySubscription<GqlContext>>;
@@ -139,7 +139,12 @@ impl Mutation {
                 .into_iter()
                 .flat_map(|w| w.tabs)
                 .collect(),
-            Err(_) => Vec::new(),
+            Err(e) => {
+                return Err(juniper::FieldError::new(
+                    format!("Tabs closed (txid: {txid}) but post-mutation snapshot failed: {e}"),
+                    juniper::Value::Null,
+                ));
+            }
         };
 
         Ok(CloseResult {
@@ -176,30 +181,8 @@ impl Mutation {
             .map(|arr| {
                 arr.iter()
                     .filter_map(|t| {
-                        Some(Tab {
-                            tab_id: t.get("tabId").and_then(|v| v.as_i64())? as i32,
-                            window_id: t.get("windowId").and_then(|v| v.as_i64()).unwrap_or(0)
-                                as i32,
-                            url: t
-                                .get("url")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            title: t
-                                .get("title")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            active: t.get("active").and_then(|v| v.as_bool()).unwrap_or(false),
-                            group_id: t.get("groupId").and_then(|v| v.as_i64()).unwrap_or(-1)
-                                as i32,
-                            group_title: t
-                                .get("groupTitle")
-                                .and_then(|v| v.as_str())
-                                .map(String::from),
-                            pinned: false,
-                            index: 0,
-                        })
+                        let wid = t.get("windowId").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                        tab_from_value(t, wid)
                     })
                     .collect()
             })

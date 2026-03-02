@@ -967,6 +967,13 @@ impl tabctl_graphql::CommandSender for CliCommandSender {
 
     fn snapshot(&self) -> Result<serde_json::Value, String> {
         let response = send_request("list", json!({"all": true}), self.profile.as_deref(), false)?;
+        if !response.ok {
+            let msg = response
+                .error
+                .map(|e| e.message)
+                .unwrap_or_else(|| "Snapshot request failed".to_string());
+            return Err(msg);
+        }
         Ok(response.data.unwrap_or(json!({})))
     }
 }
