@@ -1,6 +1,6 @@
 [package]
 name = "tabctl"
-version = "0.6.0-alpha.13"
+version = "0.6.0-alpha.14"
 edition = "2021"
 publish = false
 
@@ -13,6 +13,7 @@ sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tabctl-host = { path = "../host" }
 tabctl-shared = { path = "../shared" }
+tabctl-graphql = { path = "../graphql" }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

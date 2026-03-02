@@ -2,6 +2,7 @@
 members = [
   "crates/shared",
   "crates/host",
+  "crates/graphql",
   "crates/tabctl",
 ]
 resolver = "2"

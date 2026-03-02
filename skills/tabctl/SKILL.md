@@ -7,9 +7,56 @@ description: Manage and analyze Edge tabs and groups with tabctl. Use when asked
 
 Use tabctl to inspect and analyze tabs safely, then perform targeted actions only when requested.
 
+## GraphQL API (preferred for agents)
+
+Use `tabctl query` for field-selective reads and mutations in a single roundtrip.
+Use `tabctl schema` to discover available types and fields.
+
+### Read examples
+
+```bash
+# Get only tabId and url for all windows
+tabctl query '{ windows { windowId tabs { tabId url } } }'
+
+# Paginated tabs (default limit 20)
+tabctl query '{ tabs { items { tabId url title } total hasMore } }'
+
+# Next page
+tabctl query '{ tabs(offset: 20) { items { tabId url } total hasMore } }'
+
+# Get tabs in a specific window
+tabctl query '{ tabs(windowId: 123) { items { tabId title url } total } }'
+
+# Get groups with tab counts
+tabctl query '{ groups { groupId title tabCount } }'
+
+# Get a single tab by ID
+tabctl query '{ tab(id: 456) { tabId url title active groupTitle } }'
+```
+
+### Mutation examples
+
+```bash
+# Close tabs and get remaining tabs in one call
+tabctl query 'mutation { closeTabs(tabIds: [123, 456], confirm: true) { txid closedTabs remainingTabs { tabId url } } }'
+
+# Open tabs and get the new tab IDs
+tabctl query 'mutation { openTabs(urls: ["https://example.com"], group: "Research") { tabs { tabId url } } }'
+
+# Refresh tabs
+tabctl query 'mutation { refreshTabs(tabIds: [123]) { refreshedTabs } }'
+```
+
+### Introspection
+
+```bash
+tabctl schema                    # Full SDL
+tabctl query '{ __type(name: "Tab") { fields { name } } }'  # Discover Tab fields
+```
+
 ## Safety
 
-- Prefer read-only commands: list, analyze, inspect, report.
+- Prefer read-only commands: list, analyze, inspect, report, query (without mutations).
 - Never run `archive --all` or `close --apply` in a normal session.
 - Only mutate explicit targets (`--tab`, `--group`, `--window`) and use `--confirm` for close.
 - Respect policy: protected tabs are excluded.
@@ -20,10 +67,12 @@ Use tabctl to inspect and analyze tabs safely, then perform targeted actions onl
 - Use `tabctl help` (or `tabctl help --json`) to discover commands and flags.
 - For specific commands, use `tabctl <command> --help`.
 
-## Common tasks
+## Common tasks (CLI)
 
 - List tabs in a window: `tabctl list --window <id|active|last-focused>`
 - List ungrouped tabs: `tabctl list --ungrouped`
+- List with pagination: `tabctl list --all --limit 10 --offset 0`
+- Close tabs: `tabctl close --tab <id1> --tab <id2> --confirm`
 - Refresh a tab: `tabctl refresh --tab <id>`
 - Generate a report: `tabctl report --format md` (add scope flags as needed)
 - Get page metadata: `tabctl inspect --tab <id> --signal page-meta`
@@ -32,16 +81,6 @@ Use tabctl to inspect and analyze tabs safely, then perform targeted actions onl
 - Capture visual context when needed: `tabctl screenshot --tab <id> --mode full`
 - Undo most recent change: `tabctl undo --latest`
 - Undo by txid: `tabctl undo <txid>` (from `tabctl history --json | jq -r '.[] | .txid'`)
-
-## Filter results (jq / node)
-
-When you need custom filtering, pipe the JSON output to jq or node.
-
-- JSON output shape (list): `.windows[].tabs[]`
-- Stale candidates only (jq): `tabctl analyze --stale-days 7 | jq '.candidates[] | select(.reasons | any(.type == "stale")) | {tabId,title,url}'`
-- Stale candidates only (node): `tabctl analyze --stale-days 7 | node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync(0,"utf8")); const stale=(data.candidates||[]).filter(c=> (c.reasons||[]).some(r=>r.type==="stale")); console.log(JSON.stringify(stale,null,2));'`
-- List tabs (jq): `tabctl list --json | jq -r '.windows[].tabs[] | select(.url | contains("devportal")) | {tabId,title,url}'`
-- Search tabs by URL (jq): `tabctl list --json | jq '.windows[].tabs[] | select(.url | test("zoom"; "i")) | {tabId,title,url}'`
 
 ## Narrow scope
 

@@ -36,6 +36,18 @@ where
     if let Some(("skill", sub)) = matches.subcommand() {
         return run_skill(&matches, sub);
     }
+    if let Some(("schema", _sub)) = matches.subcommand() {
+        println!("{}", tabctl_graphql::schema_sdl());
+        return Ok(());
+    }
+    if let Some(("query", sub)) = matches.subcommand() {
+        return run_graphql_query(&matches, sub);
+    }
+    if let Some(("list", sub)) = matches.subcommand() {
+        if !sub.get_flag("groups") {
+            return run_list(&matches, sub);
+        }
+    }
     if let Some(("profile-list", sub)) = matches.subcommand() {
         return run_profile_list(&matches, sub);
     }
