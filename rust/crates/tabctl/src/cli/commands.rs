@@ -107,6 +107,8 @@ pub(super) fn build_cli() -> Command {
         )
         .subcommand(command_with_scope("reload"))
         .subcommand(command_raw())
+        .subcommand(command_query())
+        .subcommand(Command::new("schema"))
 }
 
 pub(super) fn command_raw() -> Command {
@@ -124,6 +126,15 @@ pub(super) fn command_raw() -> Command {
                 .value_name("json")
                 .default_value("{}"),
         )
+}
+
+pub(super) fn command_query() -> Command {
+    Command::new("query").arg(
+        Arg::new("graphql")
+            .required(true)
+            .index(1)
+            .value_name("QUERY"),
+    )
 }
 
 pub(super) fn command_list() -> Command {

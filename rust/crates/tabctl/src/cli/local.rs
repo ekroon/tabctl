@@ -930,3 +930,43 @@ pub(super) fn run_upgrade(matches: &ArgMatches, _sub: &ArgMatches) -> Result<(),
     }
     Ok(())
 }
+
+pub(super) fn run_graphql_query(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
+    let query_str = sub
+        .get_one::<String>("graphql")
+        .ok_or("Missing GraphQL query")?;
+    let profile = matches.get_one::<String>("profile").map(|s| s.as_str());
+
+    let snapshot_response = send_request("list", json!({"all": true}), profile, false)?;
+    let snapshot = snapshot_response.data.unwrap_or(json!({}));
+
+    let sender = std::sync::Arc::new(CliCommandSender {
+        profile: profile.map(String::from),
+    });
+
+    let result = tabctl_graphql::execute(query_str, None, snapshot, sender)?;
+    render_local_command(matches, "query", result)
+}
+
+struct CliCommandSender {
+    profile: Option<String>,
+}
+
+impl tabctl_graphql::CommandSender for CliCommandSender {
+    fn send(&self, action: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+        let response = send_request(action, params, self.profile.as_deref(), false)?;
+        if !response.ok {
+            let msg = response
+                .error
+                .map(|e| e.message)
+                .unwrap_or_else(|| "Request failed".to_string());
+            return Err(msg);
+        }
+        Ok(response.data.unwrap_or(json!({})))
+    }
+
+    fn snapshot(&self) -> Result<serde_json::Value, String> {
+        let response = send_request("list", json!({"all": true}), self.profile.as_deref(), false)?;
+        Ok(response.data.unwrap_or(json!({})))
+    }
+}
