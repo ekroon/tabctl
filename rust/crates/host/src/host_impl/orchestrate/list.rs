@@ -4,10 +4,13 @@ use super::resolve::resolve_window_id;
 use super::scope::{select_tabs_by_scope, ScopedTab};
 use super::OrchStep;
 
+/// Default page size when no explicit --limit is given.
+const DEFAULT_LIMIT: usize = 20;
+
 /// Orchestration for the `list` command.
 ///
-/// Single step: request p:snapshot, filter by scope, apply limit/offset,
-/// then shape the response by projecting tab/group fields.
+/// Single step: request p:snapshot, filter by scope, apply pagination
+/// (default limit 20), then shape the response with a `pagination` object.
 #[derive(Debug)]
 pub(crate) struct ListOrchestration {
     params: Value,
@@ -37,23 +40,12 @@ impl super::Orchestration for ListOrchestration {
             };
         };
 
-        let has_scope = self.params.get("tabIds").is_some()
-            || self.params.get("groupId").is_some()
-            || self.params.get("groupTitle").is_some()
-            || self.params.get("windowId").is_some()
-            || self.params.get("all").and_then(Value::as_bool) == Some(true);
-
-        if has_scope {
-            return self.scoped_response(&response, windows);
-        }
-
-        // No scope: return all windows (backward-compatible default)
-        self.shape_all_windows(windows)
+        self.paginated_response(&response, windows)
     }
 }
 
 impl ListOrchestration {
-    fn scoped_response(&self, snapshot: &Value, windows: &[Value]) -> OrchStep {
+    fn paginated_response(&self, snapshot: &Value, windows: &[Value]) -> OrchStep {
         let scope_result = select_tabs_by_scope(snapshot, &self.params);
 
         if let Some(err) = scope_result.error {
@@ -66,7 +58,7 @@ impl ListOrchestration {
         let mut tabs = scope_result.tabs;
         let total_tabs = tabs.len();
 
-        // Apply limit/offset pagination
+        // Apply offset
         let offset = self
             .params
             .get("offset")
@@ -77,36 +69,32 @@ impl ListOrchestration {
         } else if offset >= tabs.len() && !tabs.is_empty() {
             tabs.clear();
         }
-        let limit = self.params.get("limit").and_then(Value::as_u64);
-        if let Some(lim) = limit {
-            tabs.truncate(lim as usize);
-        }
+
+        // Apply limit (default 20)
+        let limit = self
+            .params
+            .get("limit")
+            .and_then(Value::as_u64)
+            .map(|l| l as usize)
+            .unwrap_or(DEFAULT_LIMIT);
+        tabs.truncate(limit);
 
         // Reconstruct window structure from filtered tabs
         let shaped = reconstruct_windows(&tabs, windows);
 
         let has_more = offset + tabs.len() < total_tabs;
-        let mut response = serde_json::json!({ "windows": shaped });
-        if limit.is_some() || offset > 0 {
-            response["pagination"] = serde_json::json!({
+        let response = serde_json::json!({
+            "windows": shaped,
+            "pagination": {
                 "totalTabs": total_tabs,
                 "offset": offset,
                 "count": tabs.len(),
                 "hasMore": has_more,
-            });
-        }
+            },
+        });
 
         OrchStep::Complete {
             response,
-            undo: None,
-        }
-    }
-
-    fn shape_all_windows(&self, windows: &[Value]) -> OrchStep {
-        let shaped: Vec<Value> = windows.iter().map(shape_window).collect();
-
-        OrchStep::Complete {
-            response: serde_json::json!({ "windows": shaped }),
             undo: None,
         }
     }
@@ -180,41 +168,6 @@ fn shape_group(g: &Value) -> Value {
         "title": g.get("title"),
         "color": g.get("color"),
         "collapsed": g.get("collapsed"),
-    })
-}
-
-fn shape_window(win: &Value) -> Value {
-    let tabs = win
-        .get("tabs")
-        .and_then(Value::as_array)
-        .map(|tabs| {
-            tabs.iter()
-                .map(|tab| {
-                    serde_json::json!({
-                        "tabId": tab.get("tabId"),
-                        "windowId": tab.get("windowId"),
-                        "url": tab.get("url"),
-                        "title": tab.get("title"),
-                        "active": tab.get("active"),
-                        "groupId": tab.get("groupId"),
-                        "groupTitle": tab.get("groupTitle"),
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    let groups = win
-        .get("groups")
-        .and_then(Value::as_array)
-        .map(|groups| groups.iter().map(shape_group).collect::<Vec<_>>())
-        .unwrap_or_default();
-
-    serde_json::json!({
-        "windowId": win.get("windowId"),
-        "focused": win.get("focused"),
-        "tabs": tabs,
-        "groups": groups,
     })
 }
 
@@ -354,7 +307,8 @@ mod tests {
         assert!(undo.is_none());
 
         let windows = response.get("windows").and_then(Value::as_array).unwrap();
-        assert_eq!(windows.len(), 2);
+        // Default scope = focused window only
+        assert_eq!(windows.len(), 1);
 
         let win = &windows[0];
         assert_eq!(win.get("windowId").and_then(Value::as_i64), Some(100));
@@ -375,6 +329,13 @@ mod tests {
         assert!(tab.get("index").is_none());
         assert!(tab.get("pinned").is_none());
         assert!(tab.get("lastFocusedAt").is_none());
+
+        // Pagination always present
+        let pg = response.get("pagination").unwrap();
+        assert_eq!(pg.get("totalTabs").and_then(Value::as_u64), Some(3));
+        assert_eq!(pg.get("offset").and_then(Value::as_u64), Some(0));
+        assert_eq!(pg.get("count").and_then(Value::as_u64), Some(3));
+        assert_eq!(pg.get("hasMore").and_then(Value::as_bool), Some(false));
     }
 
     #[test]
@@ -476,8 +437,10 @@ mod tests {
             .sum();
         assert_eq!(total_tabs, 4);
 
-        // No pagination metadata when no limit/offset
-        assert!(response.get("pagination").is_none());
+        // Pagination always present
+        let pg = response.get("pagination").unwrap();
+        assert_eq!(pg.get("totalTabs").and_then(Value::as_u64), Some(4));
+        assert_eq!(pg.get("hasMore").and_then(Value::as_bool), Some(false));
     }
 
     #[test]
@@ -597,6 +560,37 @@ mod tests {
         // Tab 3 has groupId -1, so Work group should not be included
         let groups = windows[0].get("groups").and_then(Value::as_array).unwrap();
         assert_eq!(groups.len(), 0);
+    }
+
+    #[test]
+    fn list_default_limit_caps_at_20() {
+        // Build a snapshot with 25 tabs in one window
+        let tabs: Vec<Value> = (1..=25)
+            .map(|i| {
+                serde_json::json!({
+                    "tabId": i, "windowId": 100, "index": i - 1,
+                    "url": format!("https://t{i}.com"), "title": format!("T{i}"),
+                    "active": i == 1, "pinned": false, "groupId": -1,
+                })
+            })
+            .collect();
+        let snapshot = serde_json::json!({
+            "windows": [{"windowId": 100, "focused": true, "tabs": tabs, "groups": []}]
+        });
+
+        let params = serde_json::json!({"all": true});
+        let mut orch = ListOrchestration::new(&params);
+        let _ = orch.start();
+
+        let result = orch.step(snapshot);
+        let OrchStep::Complete { response, .. } = result else {
+            panic!("expected Complete");
+        };
+
+        let pg = response.get("pagination").unwrap();
+        assert_eq!(pg.get("totalTabs").and_then(Value::as_u64), Some(25));
+        assert_eq!(pg.get("count").and_then(Value::as_u64), Some(20));
+        assert_eq!(pg.get("hasMore").and_then(Value::as_bool), Some(true));
     }
 
     #[test]
