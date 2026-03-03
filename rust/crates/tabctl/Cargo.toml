@@ -1,6 +1,6 @@
 [package]
 name = "tabctl"
-version = "0.6.0-alpha.15"
+version = "0.6.0-alpha.16"
 edition = "2021"
 publish = false
 
