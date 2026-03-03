@@ -20,8 +20,9 @@ All version files must stay in sync. The `scripts/bump-version.js` script (expos
 3. `packages/win32-x64/package.json` — Windows platform package
 4. `rust/crates/tabctl/Cargo.toml` — main Rust binary
 5. `rust/crates/host/Cargo.toml` — host crate
-6. `rust/crates/shared/Cargo.toml` — shared crate
-7. `rust/Cargo.lock` — Rust lockfile
+6. `rust/crates/graphql/Cargo.toml` — GraphQL crate
+7. `rust/crates/shared/Cargo.toml` — shared crate
+8. `rust/Cargo.lock` — Rust lockfile
 
 Never edit these version fields manually. Always use `npm run bump:<kind>`.
 
@@ -160,7 +161,7 @@ If the build fails, stop and report the failure. Do NOT proceed with the release
 ```bash
 git add package.json package-lock.json packages/win32-x64/package.json \
        rust/crates/tabctl/Cargo.toml rust/crates/host/Cargo.toml \
-       rust/crates/shared/Cargo.toml rust/Cargo.lock
+       rust/crates/graphql/Cargo.toml rust/crates/shared/Cargo.toml rust/Cargo.lock
 git commit -m "chore(release): v${NEW}"
 ```
 

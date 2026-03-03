@@ -11,6 +11,7 @@ const winPkgPath = path.join(root, "packages", "win32-x64", "package.json");
 const cargoPackagePaths = [
   path.join(root, "rust", "crates", "shared", "Cargo.toml"),
   path.join(root, "rust", "crates", "host", "Cargo.toml"),
+  path.join(root, "rust", "crates", "graphql", "Cargo.toml"),
   path.join(root, "rust", "crates", "tabctl", "Cargo.toml"),
 ];
 
