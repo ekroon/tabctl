@@ -194,7 +194,14 @@ export async function captureVisible(windowId: number, format: "png" | "jpeg", q
   if (format === "jpeg") {
     options.quality = quality;
   }
-  return chrome.tabs.captureVisibleTab(windowId, options);
+  // Retry once after a short delay — headless Chrome on Windows can fail the
+  // first readback when the compositor hasn't fully initialised.
+  try {
+    return await chrome.tabs.captureVisibleTab(windowId, options);
+  } catch {
+    await new Promise((r) => setTimeout(r, 500));
+    return chrome.tabs.captureVisibleTab(windowId, options);
+  }
 }
 
 export async function getPageMetrics(
