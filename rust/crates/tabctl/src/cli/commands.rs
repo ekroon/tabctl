@@ -67,7 +67,6 @@ pub(super) fn build_cli() -> Command {
         .subcommand(command_upgrade())
         .subcommand(command_doctor())
         .subcommand(command_policy())
-        .subcommand(command_skill())
         .subcommand(command_profile_list())
         .subcommand(command_profile_show())
         .subcommand(command_profile_switch())
@@ -159,17 +158,6 @@ pub(super) fn command_doctor() -> Command {
 
 pub(super) fn command_policy() -> Command {
     Command::new("policy").arg(Arg::new("init").long("init").action(ArgAction::SetTrue))
-}
-
-pub(super) fn command_skill() -> Command {
-    Command::new("skill")
-        .arg(
-            Arg::new("agent")
-                .long("agent")
-                .action(ArgAction::Append)
-                .value_name("name"),
-        )
-        .arg(Arg::new("global").long("global").action(ArgAction::SetTrue))
 }
 
 pub(super) fn command_profile_list() -> Command {

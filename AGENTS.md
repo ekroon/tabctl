@@ -123,7 +123,7 @@ npm run bump:major    # major bump
 
 ## Skills
 
-The `skills/` directory contains agent skills installable via `tabctl skill`:
+The `skills/` directory contains agent skills installable via the Skills CLI (`npx skills add`):
 
 - `skills/tabctl/` — CLI usage guide for agents
 - `skills/release/` — Release automation (version bump → PR → merge → tag → release)

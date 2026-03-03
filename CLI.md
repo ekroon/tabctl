@@ -6,7 +6,6 @@ mise use -g github:ekroon/tabctl   # or: cargo install --path rust/crates/tabctl
 tabctl --help
 tabctl help --json
 tabctl policy --init
-tabctl skill
 ```
 
 Runtime architecture: single `tabctl` Rust binary for CLI and native messaging host (`rust/crates/*`), with TypeScript limited to the extension boundary (`src/extension`).
@@ -473,15 +472,6 @@ tabctl extension-fetch --version 0.5.3
 tabctl extension-fetch --version v0.5.3 --out /tmp/tabctl-extension.zip
 ```
 
-### skill
-Install the tabctl agent skill for local agents (uses the Skills CLI under the hood).
-Options:
-- `--agent <name>` (repeatable, used for install hint)
-- `--global`
-
-```bash
-tabctl skill
-```
 
 ### version
 Show CLI version information.

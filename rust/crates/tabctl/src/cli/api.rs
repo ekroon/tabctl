@@ -33,9 +33,7 @@ where
     if let Some(("policy", sub)) = matches.subcommand() {
         return run_policy(&matches, sub);
     }
-    if let Some(("skill", sub)) = matches.subcommand() {
-        return run_skill(&matches, sub);
-    }
+
     if let Some(("schema", _sub)) = matches.subcommand() {
         println!("{}", tabctl_graphql::schema_sdl());
         return Ok(());

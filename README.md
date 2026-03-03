@@ -25,11 +25,10 @@ cargo install --path rust/crates/tabctl
 
 ## Agent Skill
 
-Give your coding agent eyes into the browser. One command and it learns the protocol.
+Give your coding agent eyes into the browser. Install the tabctl skill via the Skills CLI:
 
 ```bash
-tabctl skill
-# or: npx skills add https://github.com/ekroon/tabctl --skill tabctl -a opencode -a github-copilot -a claude-code
+npx skills add https://github.com/ekroon/tabctl --skill tabctl -a opencode -a github-copilot -a claude-code
 ```
 
 ## Safety
@@ -181,24 +180,16 @@ tabctl inspect --tab <id> --signal selector --selector "link=a[href]" --selector
 
 ## Agent skills
 
-Install the tabctl skill for agents (OpenCode, Claude Code, Codex, etc.) via the bundled command (uses the Skills CLI under the hood):
-
-<!-- test: "skill install creates project skill link" -->
-```bash
-tabctl skill
-```
-
-This writes a project-local skill to `.opencode/skills/tabctl/SKILL.md`. You can also install globally:
-
-<!-- test: "skill install supports global scope" -->
-```bash
-tabctl skill --global
-```
-
-To install into a specific agent toolchain with `skills`:
+Install the tabctl skill for agents (OpenCode, Claude Code, Codex, etc.) via the Skills CLI:
 
 ```bash
 npx skills add https://github.com/ekroon/tabctl --skill tabctl -a opencode
+```
+
+Install globally:
+
+```bash
+npx skills add https://github.com/ekroon/tabctl --skill tabctl --global -a opencode
 ```
 
 ## Policy (protect tabs)
