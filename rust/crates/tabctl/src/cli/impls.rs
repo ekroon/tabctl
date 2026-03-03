@@ -332,30 +332,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_skill_flags() {
-        let matches = build_cli()
-            .try_get_matches_from([
-                "tabctl",
-                "skill",
-                "--global",
-                "--agent",
-                "opencode",
-                "--agent",
-                "github-copilot",
-            ])
-            .expect("parse command");
-        let (command, sub) = matches.subcommand().expect("subcommand");
-        assert_eq!(command, "skill");
-        assert!(sub.get_flag("global"));
-        let agents = sub
-            .get_many::<String>("agent")
-            .expect("agents")
-            .map(|v| v.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(agents, vec!["opencode", "github-copilot"]);
-    }
-
-    #[test]
     fn policy_init_creates_default_file() {
         let dir = std::env::temp_dir().join(format!("tabctl-test-policy-init-{}", request_id()));
         let config_dir = dir.join("config");

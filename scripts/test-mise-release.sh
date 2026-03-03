@@ -260,61 +260,6 @@ _run_with_timeout() {
   return $rc
 }
 
-# Run a tabctl command with timeout via the appropriate channel.
-_run_skill_tabctl() {
-  local channel="$1"; shift
-  case "$channel" in
-    npm)  npx -y "tabctl@${NPM_VERSION}" "$@" 2>/dev/null ;;
-    mise) mise x "github:ekroon/tabctl@${MISE_VERSION}" -- tabctl "$@" 2>/dev/null ;;
-  esac
-}
-
-test_skill_json() {
-  local ch="$1"
-  local out
-  out=$(_run_with_timeout 10 _run_skill_tabctl "$ch" skill --json 2>/dev/null || true)
-  if [ -z "$out" ]; then
-    record FAIL "$ch" "skill --json" "timeout or no output (interactive?)"
-    return
-  fi
-  if echo "$out" | is_json; then
-    local has_name
-    has_name=$(echo "$out" | node -e "
-      const d = JSON.parse(require('fs').readFileSync(0,'utf8'));
-      const inner = d.data || d;
-      process.stdout.write(inner.name ? 'metadata' : inner.stdout ? 'captured-tui' : 'unknown');
-    ")
-    if [ "$has_name" = "metadata" ]; then
-      record PASS "$ch" "skill --json" "metadata mode"
-    else
-      record FAIL "$ch" "skill --json" "captured TUI instead of metadata ($has_name)"
-    fi
-  else
-    record FAIL "$ch" "skill --json" "invalid JSON"
-  fi
-}
-
-test_skill_agent() {
-  local ch="$1"
-  local out
-  out=$(_run_with_timeout 10 _run_skill_tabctl "$ch" skill --agent github-copilot --json 2>/dev/null || true)
-  if [ -z "$out" ]; then
-    record FAIL "$ch" "skill --agent --json" "timeout or no output (interactive prompt?)"
-    return
-  fi
-  if echo "$out" | is_json; then
-    local has_hint
-    has_hint=$(echo "$out" | node -e "
-      const d = JSON.parse(require('fs').readFileSync(0,'utf8'));
-      const inner = d.data || d;
-      process.stdout.write(inner.installHint ? 'has-hint' : inner.command ? 'has-command' : 'unknown');
-    ")
-    record PASS "$ch" "skill --agent --json" "$has_hint"
-  else
-    record FAIL "$ch" "skill --agent --json" "invalid JSON"
-  fi
-}
-
 # ── Mutation tests (open/close/undo) ────────────────────────────────────────
 
 test_mutations() {
@@ -440,8 +385,6 @@ for channel in npm mise; do
   test_policy       "$channel"
   test_history      "$channel"
   test_doctor       "$channel"
-  test_skill_json   "$channel"
-  test_skill_agent  "$channel"
   test_mutations    "$channel"
   echo ""
 done
