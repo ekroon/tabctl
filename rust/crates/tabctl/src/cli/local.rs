@@ -497,10 +497,35 @@ pub(super) fn run_skill(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), St
         }
     }
 
+    let json_mode = matches.get_flag("json");
+
     let mut command = ProcessCommand::new("npx");
     for arg in &args {
         command.arg(arg);
     }
+
+    if !json_mode {
+        // Stream output directly to terminal for human-readable display
+        let status = command
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .map_err(|e| format!("failed to execute npx skills installer: {e}"))?;
+        if !status.success() {
+            return Err(format!(
+                "skill install failed with status {}",
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            ));
+        }
+        return Ok(());
+    }
+
+    // JSON mode: capture output with NO_COLOR to avoid ANSI codes
+    command.env("NO_COLOR", "1");
     let output = command
         .output()
         .map_err(|e| format!("failed to execute npx skills installer: {e}"))?;
@@ -522,11 +547,8 @@ pub(super) fn run_skill(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), St
     }
 
     let data = json!({
+        "ok": true,
         "global": sub.get_flag("global"),
-        "agents": sub
-            .get_many::<String>("agent")
-            .map(|vals| vals.map(|v| v.to_string()).collect::<Vec<_>>())
-            .unwrap_or_default(),
         "command": format!("npx {}", args.join(" ")),
         "stdout": stdout,
         "stderr": stderr
