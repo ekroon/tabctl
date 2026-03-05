@@ -308,6 +308,10 @@ async function getTabSnapshot() {
         groupColor: group ? group.color : null,
         groupCollapsed: group ? group.collapsed : null,
         lastFocusedAt: state.lastFocused[String(tab.id)] || null,
+        favIconUrl: tab.favIconUrl || null,
+        status: tab.status || null,
+        discarded: tab.discarded || false,
+        audible: tab.audible || false,
       };
     });
 

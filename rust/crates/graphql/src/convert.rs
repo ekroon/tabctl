@@ -65,8 +65,24 @@ pub(crate) fn tab_from_value(val: &Value, window_id: i32) -> Option<Tab> {
             .get("groupTitle")
             .and_then(Value::as_str)
             .map(String::from),
+        group_color: val
+            .get("groupColor")
+            .and_then(Value::as_str)
+            .map(String::from),
+        group_collapsed: val.get("groupCollapsed").and_then(Value::as_bool),
         pinned: val.get("pinned").and_then(Value::as_bool).unwrap_or(false),
         index: val.get("index").and_then(Value::as_i64).unwrap_or(0) as i32,
+        last_focused_at: val.get("lastFocusedAt").and_then(Value::as_f64),
+        fav_icon_url: val
+            .get("favIconUrl")
+            .and_then(Value::as_str)
+            .map(String::from),
+        status: val.get("status").and_then(Value::as_str).map(String::from),
+        discarded: val
+            .get("discarded")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        audible: val.get("audible").and_then(Value::as_bool).unwrap_or(false),
     })
 }
 
@@ -103,7 +119,7 @@ mod tests {
                 "windowId": 100,
                 "focused": true,
                 "tabs": [
-                    {"tabId": 1, "windowId": 100, "index": 0, "url": "https://a.com", "title": "A", "active": true, "pinned": false, "groupId": 10, "groupTitle": "Work"},
+                    {"tabId": 1, "windowId": 100, "index": 0, "url": "https://a.com", "title": "A", "active": true, "pinned": false, "groupId": 10, "groupTitle": "Work", "groupColor": "blue", "groupCollapsed": false, "lastFocusedAt": 1700000000000.0},
                     {"tabId": 2, "windowId": 100, "index": 1, "url": "https://b.com", "title": "B", "active": false, "pinned": true, "groupId": -1}
                 ],
                 "groups": [{"groupId": 10, "title": "Work", "color": "blue", "collapsed": false}]
@@ -133,6 +149,17 @@ mod tests {
         assert!(!tab.pinned);
         assert_eq!(tab.group_id, 10);
         assert_eq!(tab.group_title.as_deref(), Some("Work"));
+        assert_eq!(tab.group_color.as_deref(), Some("blue"));
+        assert_eq!(tab.group_collapsed, Some(false));
+        assert_eq!(tab.last_focused_at, Some(1700000000000.0));
+
+        // Ungrouped tab has no group metadata or timestamp
+        let tab2 = &windows[0].tabs[1];
+        assert_eq!(tab2.group_id, -1);
+        assert!(tab2.group_title.is_none());
+        assert!(tab2.group_color.is_none());
+        assert!(tab2.group_collapsed.is_none());
+        assert!(tab2.last_focused_at.is_none());
     }
 
     #[test]
