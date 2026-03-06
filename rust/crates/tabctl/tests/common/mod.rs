@@ -8,6 +8,7 @@
 
 use serde_json::Value;
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -17,8 +18,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tabctl_shared::{RequestEnvelope, ResponseEnvelope, SocketEndpoint};
 
 #[cfg(not(windows))]
-use std::io::{BufRead, BufReader, Write};
-#[cfg(not(windows))]
+use std::net::TcpStream;
+#[cfg(windows)]
 use std::net::TcpStream;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -464,67 +465,77 @@ impl SharedBrowser {
     }
 
     pub fn send_host_request(&self, action: &str, params: Value) -> Value {
-        #[cfg(windows)]
-        {
-            let _ = action;
-            let _ = params;
-            panic!("primitive host requests are unsupported on Windows in this test helper");
-        }
+        let profile = self.run(&["profile-show"]);
+        let endpoint = response_data(&profile)
+            .get("socket")
+            .and_then(Value::as_str)
+            .expect("profile-show should return socket uri");
+        let endpoint = SocketEndpoint::parse(endpoint).expect("parse socket endpoint");
+        let data_dir = response_data(&profile)
+            .get("dataDir")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let auth_token = match endpoint {
+            SocketEndpoint::Tcp { .. } => data_dir.and_then(|dir| {
+                fs::read_to_string(PathBuf::from(dir).join("auth-token"))
+                    .ok()
+                    .map(|token| token.trim().to_string())
+                    .filter(|token| !token.is_empty())
+            }),
+            _ => None,
+        };
 
-        #[cfg(not(windows))]
-        {
-            let profile = self.run(&["profile-show"]);
-            let endpoint = response_data(&profile)
-                .get("socket")
-                .and_then(Value::as_str)
-                .expect("profile-show should return socket uri");
-            let endpoint = SocketEndpoint::parse(endpoint).expect("parse socket endpoint");
-            let data_dir = response_data(&profile)
-                .get("dataDir")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned);
-            let auth_token = match endpoint {
-                SocketEndpoint::Tcp { .. } => data_dir.and_then(|dir| {
-                    fs::read_to_string(PathBuf::from(dir).join("auth-token"))
-                        .ok()
-                        .map(|token| token.trim().to_string())
-                        .filter(|token| !token.is_empty())
-                }),
-                _ => None,
-            };
+        let request = RequestEnvelope {
+            id: Some(format!("itest-{}", now_ms())),
+            action: action.to_string(),
+            params,
+            auth_token,
+        };
 
-            let request = RequestEnvelope {
-                id: Some(format!("itest-{}", now_ms())),
-                action: action.to_string(),
-                params,
-                auth_token,
-            };
-
-            let response = match endpoint {
-                SocketEndpoint::Unix { path } => {
+        let response = match endpoint {
+            SocketEndpoint::Unix { path } => {
+                #[cfg(unix)]
+                {
                     let stream = UnixStream::connect(path).expect("connect unix socket");
                     send_host_request_over_stream(stream, &request)
                 }
-                SocketEndpoint::Tcp { host, port } => {
-                    let stream =
-                        TcpStream::connect((host.as_str(), port)).expect("connect tcp socket");
+                #[cfg(not(unix))]
+                {
+                    let _ = path;
+                    panic!("unix sockets are unsupported on this target")
+                }
+            }
+            SocketEndpoint::Tcp { host, port } => {
+                let stream = TcpStream::connect((host.as_str(), port)).expect("connect tcp socket");
+                send_host_request_over_stream(stream, &request)
+            }
+            SocketEndpoint::Pipe { path } => {
+                #[cfg(windows)]
+                {
+                    let stream = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(path)
+                        .expect("connect named pipe");
                     send_host_request_over_stream(stream, &request)
                 }
-                SocketEndpoint::Pipe { .. } => {
-                    panic!("primitive host requests are unsupported on named pipes in this test helper")
+                #[cfg(not(windows))]
+                {
+                    let _ = path;
+                    panic!("named pipes are unsupported on this target")
                 }
-            };
-
-            if response.ok {
-                response.data.unwrap_or_else(|| serde_json::json!({}))
-            } else {
-                serde_json::json!({
-                    "ok": false,
-                    "error": {
-                        "message": response.error.map(|err| err.message).unwrap_or_else(|| "request failed".to_string())
-                    }
-                })
             }
+        };
+
+        if response.ok {
+            response.data.unwrap_or_else(|| serde_json::json!({}))
+        } else {
+            serde_json::json!({
+                "ok": false,
+                "error": {
+                    "message": response.error.map(|err| err.message).unwrap_or_else(|| "request failed".to_string())
+                }
+            })
         }
     }
 }
@@ -535,7 +546,6 @@ fn is_transient_host_error(err: &str) -> bool {
         || err.contains("ECONNREFUSED")
 }
 
-#[cfg(not(windows))]
 fn send_host_request_over_stream<S>(mut stream: S, request: &RequestEnvelope) -> ResponseEnvelope
 where
     S: std::io::Read + Write,
