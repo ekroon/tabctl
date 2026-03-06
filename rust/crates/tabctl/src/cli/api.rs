@@ -41,11 +41,6 @@ where
     if let Some(("query", sub)) = matches.subcommand() {
         return run_graphql_query(&matches, sub);
     }
-    if let Some(("list", sub)) = matches.subcommand() {
-        if !sub.get_flag("groups") {
-            return run_list(&matches, sub);
-        }
-    }
     if let Some(("profile-list", sub)) = matches.subcommand() {
         return run_profile_list(&matches, sub);
     }

@@ -11,11 +11,10 @@ use serde_json::{json, Value};
 use std::thread::sleep;
 use std::time::Duration;
 
-/// Helper: send a primitive action via `tabctl raw`.
+/// Helper: send a primitive host action directly over the configured socket.
 fn send_primitive(b: &SharedBrowser, action: &str, params: Value) -> Value {
     let full_action = format!("p:{action}");
-    let params_str = params.to_string();
-    b.run(&["raw", "--action", &full_action, "--params", &params_str])
+    b.send_host_request(&full_action, params)
 }
 
 // ── Read primitives ─────────────────────────────────────────────────────────
