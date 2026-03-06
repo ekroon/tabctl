@@ -1,8 +1,8 @@
 # tabctl
 
-Every open tab is a thread you forgot to pull. Tabctl finds them all.
+Every open tab is a thread you forgot to pull. Tabctl helps you query and change them safely.
 
-A command-line instrument for browser tab orchestration — list, search, group, archive, close, undo — wired into Edge or Chrome through a native messaging bridge. Built for humans who hoard tabs and the AI agents who clean up after them.
+A command-line instrument for browser tab orchestration, now centered on a GraphQL API exposed through `tabctl query` and `tabctl schema`, plus `ping` and `history` convenience commands. Built for humans who hoard tabs and the AI agents who clean up after them.
 
 ## Install
 
@@ -35,7 +35,7 @@ npx skills add https://github.com/ekroon/tabctl --skill tabctl -a opencode -a gi
 
 Nothing leaves your machine. No cloud. No telemetry. Just a socket between your terminal and your browser, quiet as rain on neon.
 
-Every mutation is undoable — `tabctl undo` rewinds closes, archives, and group changes like they never happened. A configurable policy layer shields pinned tabs and protected domains from accidental destruction. You pull the trigger; tabctl keeps the safety on until you mean it.
+Every mutation is undoable — `undoAction` rewinds closes, archives, and group changes like they never happened. A configurable policy layer shields pinned tabs and protected domains from accidental destruction. You pull the trigger; tabctl keeps the safety on until you mean it.
 
 ## What You Can Say
 
@@ -129,53 +129,50 @@ Optional setup release overrides:
 
 ### 3. Verify and explore
 
-<!-- test: "ping sends ping action", "list sends list action" -->
 ```bash
-tabctl ping       # check connection + runtime version sync
-tabctl list       # see your open tabs
+tabctl ping
+tabctl query '{ tabs { total items { tabId title url } } }'
+tabctl schema
 ```
 
 > **Multiple browsers?** See [Multi-Browser Setup](#multi-browser-setup) for running tabctl with both Chrome and Edge.
 
 ## Commands
 
-<!-- test: "list sends list action", "analyze passes tab ids and progress option", "inspect passes signal options", "close without confirm fails", "report format md returns markdown content", "undo sends undo action with txid" -->
 | Command | Description |
 |---------|-------------|
-| `tabctl list` | List open tabs and groups |
-| `tabctl open --url <url> --group <name>` | Open tabs into a group (reuses existing, skips duplicates) |
-| `tabctl analyze` | Find stale or duplicate tabs |
-| `tabctl inspect --tab <id>` | Extract page metadata or CSS selectors |
-| `tabctl group-gather` | Merge duplicate groups with the same name |
-| `tabctl close --tab <id>` | Close tabs with full undo support |
-| `tabctl report` | Generate reports in JSON, Markdown, or CSV |
-| `tabctl undo` | Revert the last action |
+| `tabctl query '<GRAPHQL>'` | Query and mutate browser state through GraphQL |
+| `tabctl schema` | Print the GraphQL schema |
+| `tabctl ping` | Check host/browser connectivity and runtime version sync |
+| `tabctl history` | Show recent undo history entries |
+| `tabctl setup`, `doctor`, `policy`, `profile-*` | Local/admin profile management |
 
 See [CLI.md](CLI.md) for the full command reference, options, and examples.
 
-## Screenshot output
-When `--out` is omitted, screenshots are written to `./.tabctl/screenshots/<timestamp>` and the JSON response includes `writtenTo`.
+## GraphQL examples
 
-## Agent workflow (context -> selector)
-Use screenshots only when you need visual context, then extract selectors with `inspect`.
-
-1) Capture context (full page tiles):
-<!-- test: "screenshot passes capture options" -->
 ```bash
-tabctl screenshot --tab <id> --mode full
-```
+# Query tabs and groups
+tabctl query '{ windows { windowId groups { groupId title } tabs { tabId title url groupTitle } } }'
 
-2) Identify the element visually, then extract its selector:
-<!-- test: "inspect passes signal options" -->
-```bash
-tabctl inspect --tab <id> --signal selector --selector '{"name":"target","selector":".your-selector"}'
-```
+# Analyze stale and duplicate tabs
+tabctl query '{ analyze(windowId: 123, staleDays: 30) { totalTabs duplicateTabs staleTabs } }'
 
-3) If you need an absolute URL, set `--selector-attr href-url` or set `attr` to `href-url`/`src-url`:
-<!-- test: "inspect passes selector attr" -->
-```bash
-tabctl inspect --tab <id> --signal selector --selector '{"name":"link","selector":"a[href]","attr":"href-url"}'
-tabctl inspect --tab <id> --signal selector --selector "link=a[href]" --selector-attr href-url
+# Inspect page metadata
+tabctl query 'query { inspectTabs(tabIds: [456], signals: ["page-meta"]) { entries { tabId signals { name valueJson } } } }'
+
+# Generate reports
+tabctl query '{ reportTabs(windowId: 123) { entries { tabId title url description } } }'
+
+# Capture screenshots
+tabctl query 'query { captureScreenshots(tabIds: [456], mode: "viewport") { entries { tabId tiles { index width height } } } }'
+
+# Open tabs in a new grouped window
+tabctl query 'mutation { openTabs(urls: ["https://example.com"], group: "Research", newWindow: true) { windowId groupId tabs { tabId url } } }'
+
+# Close tabs with undo support
+tabctl query 'mutation { closeTabs(tabIds: [456], confirm: true) { txid closedTabs } }'
+tabctl query 'mutation { undoAction(latest: true) { txid summary } }'
 ```
 
 ## Agent skills
@@ -252,11 +249,11 @@ Relevant knobs: `TABCTL_SOCKET`, `TABCTL_TCP_PORT`, `TABCTL_PROFILE`, `TABCTL_DA
 - `tabctl setup` fails with `Windows setup verification failed`: check `data.verification.reason` in JSON output (`ping-timeout`, `socket-not-found`, `socket-refused`, `ping-not-ok`, `extension-id-mismatch`), then follow printed manual steps.
 - Runtime ID mismatch (`extension-id-mismatch`): compare expected vs runtime IDs from setup output, then rerun setup with the runtime ID shown by `edge://extensions` / `chrome://extensions`:
   - `tabctl setup --browser <edge|chrome> --extension-id <runtime-id>`
-- Runtime command runs can auto-sync extension files when host/extension versions drift; rerun `tabctl reload` if the browser does not pick up changes immediately.
+- Runtime command runs can auto-sync extension files when host/extension versions drift; rerun `tabctl query 'mutation { reloadExtension { reloading } }'` if the browser does not pick up changes immediately.
 - For local release-like testing while developing, force runtime sync behavior with `TABCTL_AUTO_SYNC_MODE=release-like`.
 - Disable runtime sync entirely with `TABCTL_AUTO_SYNC_MODE=off`.
 - `tabctl ping --json` is the canonical runtime version check (`versionsInSync`, `hostBaseVersion`, `baseVersion`).
-- Version metadata is intentionally health-only: regular command payloads (`open`, `list`, etc.) do not include version fields.
+- Version metadata is intentionally health-only: regular GraphQL payloads do not include version fields unless you explicitly query health surfaces.
 - `tabctl ping` returns connect errors (`ENOENT`, `ECONNREFUSED`, timeout): ensure extension is loaded and active, rerun `tabctl setup`, and in WSL verify `TABCTL_TCP_PORT` or `<dataDir>/tcp-port` matches a listening localhost port.
 - `tabctl doctor --fix --json` includes per-profile connectivity diagnostics in `data.profiles[].connectivity`; if ping remains unhealthy after local repairs, follow `manualSteps`.
 
@@ -266,7 +263,7 @@ Local release-like sync test recipe:
 tabctl setup --browser edge --extension-id <extension-id> --release-tag v0.5.2
 
 # 2) Run the current binary with forced release-like auto-sync
-TABCTL_AUTO_SYNC_MODE=release-like cargo run --manifest-path rust/Cargo.toml -p tabctl -- list --all
+TABCTL_AUTO_SYNC_MODE=release-like cargo run --manifest-path rust/Cargo.toml -p tabctl -- query '{ tabs { total } }'
 
 # 3) Verify host/extension base versions are back in sync
 tabctl ping --json
@@ -293,7 +290,7 @@ tabctl profile-list
 tabctl profile-switch edge
 
 # One-off command with different profile
-tabctl list --profile chrome-work
+tabctl --profile chrome-work query '{ tabs { total } }'
 ```
 
 ### Custom Chrome Profile Directories
@@ -390,15 +387,9 @@ TABCTL_VERSION_MODE=release npm run build
 ```
 
 Notes:
-- `close --apply` uses the most recent analysis by `analysisId`.
-- `close` without `--apply` requires `--confirm` to prevent accidental closure.
+- Browser reads and mutations now go through GraphQL via `tabctl query`.
 - Reports include short descriptions from page metadata and a fallback snippet.
-- `list` and `group-list` paginate by default (limit 100); use `--limit`, `--offset`, or `--no-page`.
-- Use `--group-id -1` or `--ungrouped` to target ungrouped tabs.
-- `--selector` implies `--signal selector`.
-- Unknown inspect signals are rejected (valid: `page-meta`, `selector`).
-- Selector `attr` supports `href-url`/`src-url` to return absolute http(s) URLs.
-- `screenshot --out` writes per-tab folders into the target directory.
-- `tabctl undo` accepts a positional txid, `--txid`, or `--latest`.
+- `inspectTabs` supports `page-meta` and `selector` signals.
+- `captureScreenshots` returns tile metadata and image data from GraphQL.
+- `undoAction` accepts either an explicit `txid` or `latest: true`.
 - `tabctl history --json` returns a top-level JSON array.
-- `--format` is only supported by `report` (use `--json` elsewhere).
