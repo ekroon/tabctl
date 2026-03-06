@@ -153,6 +153,13 @@ impl Query {
         )]
         stale_days: Option<i32>,
         #[graphql(description = "Restrict analysis to this window.")] window_id: Option<i32>,
+        #[graphql(description = "Restrict analysis to this group (by group ID).")] group_id: Option<
+            i32,
+        >,
+        #[graphql(description = "Restrict analysis to tabs whose group has this title.")]
+        group_title: Option<String>,
+        #[graphql(description = "When true, analyze only ungrouped tabs (groupId = -1).")]
+        ungrouped: Option<bool>,
     ) -> FieldResult<AnalyzeResult> {
         let mut params = serde_json::Map::new();
         if let Some(days) = stale_days {
@@ -160,6 +167,15 @@ impl Query {
         }
         if let Some(wid) = window_id {
             params.insert("windowId".to_string(), serde_json::json!(wid as i64));
+        }
+        if let Some(gid) = group_id {
+            params.insert("groupId".to_string(), serde_json::json!(gid as i64));
+        }
+        if let Some(ref title) = group_title {
+            params.insert("groupTitle".to_string(), serde_json::json!(title));
+        }
+        if ungrouped == Some(true) {
+            params.insert("ungrouped".to_string(), serde_json::json!(true));
         }
         let response = ctx
             .sender
@@ -177,7 +193,9 @@ impl Query {
             .map(|a| a.len())
             .unwrap_or(0) as i32;
         let total_tabs = response
-            .get("totalTabs")
+            .get("summary")
+            .and_then(|s| s.get("totalTabs"))
+            .or_else(|| response.get("totalTabs"))
             .and_then(|v| v.as_i64())
             .unwrap_or(0) as i32;
         let raw = serde_json::to_string(&response).unwrap_or_default();
@@ -232,6 +250,153 @@ impl Query {
 
         Ok(entries)
     }
+
+    /// Inspect tabs with page-meta and selector signals.
+    #[allow(clippy::too_many_arguments)]
+    fn inspect_tabs(
+        ctx: &GqlContext,
+        #[graphql(description = "Restrict inspection to this window.")] window_id: Option<i32>,
+        #[graphql(description = "Restrict inspection to this group (by group ID).")]
+        group_id: Option<i32>,
+        #[graphql(description = "Restrict inspection to tabs whose group has this title.")]
+        group_title: Option<String>,
+        #[graphql(description = "When true, inspect only ungrouped tabs (groupId = -1).")]
+        ungrouped: Option<bool>,
+        #[graphql(description = "Restrict inspection to these specific tab IDs.")] tab_ids: Option<
+            Vec<i32>,
+        >,
+        #[graphql(description = "Signal IDs to run (e.g. page-meta, selector).")] signals: Option<
+            Vec<String>,
+        >,
+        #[graphql(description = "Selector specs for selector-based extraction.")] selectors: Option<
+            Vec<SelectorSpecInput>,
+        >,
+        #[graphql(description = "Override timeout (ms) for each signal.")]
+        signal_timeout_ms: Option<i32>,
+        #[graphql(description = "Wait mode (load, dom, settle, none).")] wait_for: Option<String>,
+        #[graphql(description = "Wait timeout in ms.")] wait_timeout_ms: Option<i32>,
+    ) -> FieldResult<InspectResult> {
+        let mut params = scoped_params(window_id, group_id, group_title, ungrouped, tab_ids);
+        if let Some(mut requested_signals) = signals {
+            if selectors.as_ref().is_some_and(|s| !s.is_empty())
+                && !requested_signals.iter().any(|s| s == "selector")
+            {
+                requested_signals.push("selector".to_string());
+            }
+            params.insert("signals".to_string(), serde_json::json!(requested_signals));
+        }
+        if let Some(selector_specs) = selectors {
+            let values: Vec<serde_json::Value> = selector_specs
+                .into_iter()
+                .map(|selector| {
+                    serde_json::json!({
+                        "name": selector.name,
+                        "selector": selector.selector,
+                        "attr": selector.attr,
+                    })
+                })
+                .collect();
+            if !values.is_empty() {
+                params.insert(
+                    "selectorSpecs".to_string(),
+                    serde_json::Value::Array(values),
+                );
+            }
+        }
+        if let Some(timeout) = signal_timeout_ms {
+            params.insert("signalTimeoutMs".to_string(), serde_json::json!(timeout));
+        }
+        if let Some(ref wait) = wait_for {
+            params.insert("waitFor".to_string(), serde_json::json!(wait));
+        }
+        if let Some(timeout) = wait_timeout_ms {
+            params.insert("waitTimeoutMs".to_string(), serde_json::json!(timeout));
+        }
+
+        let response = ctx
+            .sender
+            .send("inspect", serde_json::Value::Object(params))
+            .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
+
+        Ok(parse_inspect_result(&response))
+    }
+
+    /// Build a report of tab metadata and extracted descriptions.
+    fn report_tabs(
+        ctx: &GqlContext,
+        #[graphql(description = "Restrict reporting to this window.")] window_id: Option<i32>,
+        #[graphql(description = "Restrict reporting to this group (by group ID).")]
+        group_id: Option<i32>,
+        #[graphql(description = "Restrict reporting to tabs whose group has this title.")]
+        group_title: Option<String>,
+        #[graphql(description = "When true, report only ungrouped tabs (groupId = -1).")]
+        ungrouped: Option<bool>,
+        #[graphql(description = "Restrict reporting to these specific tab IDs.")] tab_ids: Option<
+            Vec<i32>,
+        >,
+    ) -> FieldResult<ReportResult> {
+        let params = scoped_params(window_id, group_id, group_title, ungrouped, tab_ids);
+        let response = ctx
+            .sender
+            .send("report", serde_json::Value::Object(params))
+            .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
+
+        Ok(parse_report_result(&response))
+    }
+
+    /// Capture screenshots for matching tabs.
+    #[allow(clippy::too_many_arguments)]
+    fn capture_screenshots(
+        ctx: &GqlContext,
+        #[graphql(description = "Restrict capture to this window.")] window_id: Option<i32>,
+        #[graphql(description = "Restrict capture to this group (by group ID).")] group_id: Option<
+            i32,
+        >,
+        #[graphql(description = "Restrict capture to tabs whose group has this title.")]
+        group_title: Option<String>,
+        #[graphql(description = "When true, capture only ungrouped tabs (groupId = -1).")]
+        ungrouped: Option<bool>,
+        #[graphql(description = "Restrict capture to these specific tab IDs.")] tab_ids: Option<
+            Vec<i32>,
+        >,
+        #[graphql(description = "Capture mode (viewport or full).")] mode: Option<String>,
+        #[graphql(description = "Image format (png or jpeg).")] format: Option<String>,
+        #[graphql(description = "JPEG quality (1-100).")] quality: Option<i32>,
+        #[graphql(description = "Maximum tile dimension in pixels.")] tile_max_dim: Option<i32>,
+        #[graphql(description = "Maximum bytes per tile.")] max_bytes: Option<i32>,
+        #[graphql(description = "Wait mode (load, dom, settle, none).")] wait_for: Option<String>,
+        #[graphql(description = "Wait timeout in ms.")] wait_timeout_ms: Option<i32>,
+    ) -> FieldResult<ScreenshotResult> {
+        let mut params = scoped_params(window_id, group_id, group_title, ungrouped, tab_ids);
+        if let Some(ref value) = mode {
+            params.insert("mode".to_string(), serde_json::json!(value));
+        }
+        if let Some(ref value) = format {
+            params.insert("format".to_string(), serde_json::json!(value));
+        }
+        if let Some(value) = quality {
+            params.insert("quality".to_string(), serde_json::json!(value));
+        }
+        if let Some(value) = tile_max_dim {
+            params.insert("tileMaxDim".to_string(), serde_json::json!(value));
+        }
+        if let Some(value) = max_bytes {
+            params.insert("maxBytes".to_string(), serde_json::json!(value));
+        }
+        if let Some(ref value) = wait_for {
+            params.insert("waitFor".to_string(), serde_json::json!(value));
+        }
+        if let Some(value) = wait_timeout_ms {
+            params.insert("waitTimeoutMs".to_string(), serde_json::json!(value));
+        }
+
+        let response = ctx
+            .sender
+            .send("screenshot", serde_json::Value::Object(params))
+            .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
+
+        Ok(parse_screenshot_result(&response))
+    }
 }
 
 fn paginate_tabs(tabs: Vec<Tab>, limit: Option<i32>, offset: Option<i32>) -> TabPage {
@@ -247,6 +412,276 @@ fn paginate_tabs(tabs: Vec<Tab>, limit: Option<i32>, offset: Option<i32>) -> Tab
         total,
         offset: off as i32,
         has_more,
+    }
+}
+
+fn duplicate_candidate_tabs(response: &serde_json::Value) -> Vec<Tab> {
+    let mut result = Vec::new();
+    let Some(groups) = response.get("duplicates").and_then(|v| v.as_array()) else {
+        return result;
+    };
+
+    for group in groups {
+        let Some(tabs) = group.get("tabs").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for tab in tabs.iter().skip(1) {
+            let window_id = tab.get("windowId").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            if let Some(parsed) = tab_from_value(tab, window_id) {
+                result.push(parsed);
+            }
+        }
+    }
+
+    result
+}
+
+fn scoped_params(
+    window_id: Option<i32>,
+    group_id: Option<i32>,
+    group_title: Option<String>,
+    ungrouped: Option<bool>,
+    tab_ids: Option<Vec<i32>>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut params = serde_json::Map::new();
+    if let Some(wid) = window_id {
+        params.insert("windowId".to_string(), serde_json::json!(wid as i64));
+    }
+    if let Some(gid) = group_id {
+        params.insert("groupId".to_string(), serde_json::json!(gid as i64));
+    }
+    if let Some(title) = group_title {
+        params.insert("groupTitle".to_string(), serde_json::json!(title));
+    }
+    if ungrouped == Some(true) {
+        params.insert("ungrouped".to_string(), serde_json::json!(true));
+    }
+    if let Some(ids) = tab_ids {
+        params.insert(
+            "tabIds".to_string(),
+            serde_json::json!(ids.iter().map(|&id| id as i64).collect::<Vec<_>>()),
+        );
+    }
+    params
+}
+
+fn parse_inspect_result(response: &serde_json::Value) -> InspectResult {
+    let totals = InspectTotals {
+        tabs: response
+            .get("totals")
+            .and_then(|t| t.get("tabs"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32,
+        signals: response
+            .get("totals")
+            .and_then(|t| t.get("signals"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32,
+        tasks: response
+            .get("totals")
+            .and_then(|t| t.get("tasks"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32,
+    };
+
+    let entries = response
+        .get("entries")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|entry| {
+                    let signals = entry
+                        .get("signals")
+                        .and_then(|v| v.as_object())
+                        .map(|obj| {
+                            obj.iter()
+                                .map(|(name, value)| InspectSignalResult {
+                                    name: name.clone(),
+                                    value_json: serde_json::to_string(value).unwrap_or_default(),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    InspectEntry {
+                        tab_id: entry.get("tabId").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                        window_id: entry.get("windowId").and_then(|v| v.as_i64()).unwrap_or(0)
+                            as i32,
+                        url: entry
+                            .get("url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        title: entry
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .map(|v| v.to_string()),
+                        signals,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    InspectResult { totals, entries }
+}
+
+fn parse_report_result(response: &serde_json::Value) -> ReportResult {
+    let entries = response
+        .get("entries")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|entry| ReportEntry {
+                    tab_id: entry.get("tabId").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                    window_id: entry.get("windowId").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                    url: entry
+                        .get("url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    title: entry
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .map(|v| v.to_string()),
+                    group_id: entry.get("groupId").and_then(|v| v.as_i64()).unwrap_or(-1) as i32,
+                    group_title: entry
+                        .get("groupTitle")
+                        .and_then(|v| v.as_str())
+                        .map(|v| v.to_string()),
+                    group_color: entry
+                        .get("groupColor")
+                        .and_then(|v| v.as_str())
+                        .map(|v| v.to_string()),
+                    description: entry
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    last_accessed_at: entry.get("lastAccessedAt").and_then(|v| v.as_f64()),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    ReportResult {
+        generated_at: response
+            .get("generatedAt")
+            .and_then(|v| v.as_f64())
+            .or_else(|| {
+                response
+                    .get("generatedAt")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as f64)
+            })
+            .unwrap_or(0.0),
+        totals: ReportTotals {
+            tabs: response
+                .get("totals")
+                .and_then(|t| t.get("tabs"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32,
+        },
+        entries,
+    }
+}
+
+fn parse_screenshot_result(response: &serde_json::Value) -> ScreenshotResult {
+    let entries = response
+        .get("entries")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|entry| {
+                    let tiles = entry
+                        .get("tiles")
+                        .and_then(|v| v.as_array())
+                        .map(|tiles| {
+                            tiles
+                                .iter()
+                                .map(|tile| ScreenshotTile {
+                                    index: tile.get("index").and_then(|v| v.as_i64()).unwrap_or(0)
+                                        as i32,
+                                    total: tile
+                                        .get("total")
+                                        .and_then(|v| v.as_i64())
+                                        .map(|v| v as i32),
+                                    x: tile.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                                    y: tile.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                                    width: tile
+                                        .get("width")
+                                        .or_else(|| tile.get("w"))
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(0)
+                                        as i32,
+                                    height: tile
+                                        .get("height")
+                                        .or_else(|| tile.get("h"))
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(0)
+                                        as i32,
+                                    scale: tile
+                                        .get("scale")
+                                        .and_then(|v| v.as_f64())
+                                        .unwrap_or(1.0),
+                                    bytes: tile
+                                        .get("bytes")
+                                        .and_then(|v| v.as_i64())
+                                        .map(|v| v as i32),
+                                    scaled: tile.get("scaled").and_then(|v| v.as_bool()),
+                                    oversized: tile.get("oversized").and_then(|v| v.as_bool()),
+                                    data_url: tile
+                                        .get("dataUrl")
+                                        .or_else(|| tile.get("data"))
+                                        .and_then(|v| v.as_str())
+                                        .map(|v| v.to_string()),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    ScreenshotEntry {
+                        tab_id: entry.get("tabId").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                        window_id: entry.get("windowId").and_then(|v| v.as_i64()).unwrap_or(0)
+                            as i32,
+                        group_id: entry.get("groupId").and_then(|v| v.as_i64()).unwrap_or(-1)
+                            as i32,
+                        url: entry
+                            .get("url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        title: entry
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .map(|v| v.to_string()),
+                        error: entry
+                            .get("error")
+                            .and_then(|v| v.get("message"))
+                            .and_then(|v| v.as_str())
+                            .map(|message| ScreenshotError {
+                                message: message.to_string(),
+                            }),
+                        tiles,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    ScreenshotResult {
+        totals: ScreenshotTotals {
+            tabs: response
+                .get("totals")
+                .and_then(|t| t.get("tabs"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32,
+            tiles: response
+                .get("totals")
+                .and_then(|t| t.get("tiles"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32,
+        },
+        entries,
     }
 }
 
@@ -323,6 +758,9 @@ impl Mutation {
         window_id: Option<i32>,
         #[graphql(description = "Group title to assign; creates the group if it doesn't exist.")]
         group: Option<String>,
+        #[graphql(description = "Create a new window for the opened tabs.")] new_window: Option<
+            bool,
+        >,
     ) -> FieldResult<OpenResult> {
         let mut params = serde_json::Map::new();
         params.insert("urls".to_string(), serde_json::json!(urls));
@@ -331,6 +769,9 @@ impl Mutation {
         }
         if let Some(ref g) = group {
             params.insert("groupTitle".to_string(), serde_json::json!(g));
+        }
+        if new_window == Some(true) {
+            params.insert("newWindow".to_string(), serde_json::json!(true));
         }
 
         let response = ctx
@@ -629,6 +1070,196 @@ impl Mutation {
         })
     }
 
+    /// Move a tab group to a new position or window.
+    #[allow(clippy::too_many_arguments)]
+    fn move_group(
+        ctx: &GqlContext,
+        #[graphql(description = "ID of the group to move.")] group_id: i32,
+        #[graphql(description = "Target window ID. Omit to keep the current window.")]
+        window_id: Option<i32>,
+        #[graphql(description = "Create a new window for the moved group.")] new_window: Option<
+            bool,
+        >,
+        #[graphql(description = "Move the group before the tabs in this named group.")]
+        before_group_title: Option<String>,
+        #[graphql(description = "Move the group after the tabs in this named group.")]
+        after_group_title: Option<String>,
+        #[graphql(description = "Move the group before this tab ID.")] before_tab_id: Option<i32>,
+        #[graphql(description = "Move the group after this tab ID.")] after_tab_id: Option<i32>,
+    ) -> FieldResult<MoveGroupResult> {
+        let mut params = serde_json::Map::new();
+        params.insert("groupId".to_string(), serde_json::json!(group_id as i64));
+        if let Some(wid) = window_id {
+            params.insert("targetWindowId".to_string(), serde_json::json!(wid as i64));
+        }
+        if new_window == Some(true) {
+            params.insert("newWindow".to_string(), serde_json::json!(true));
+        }
+        if let Some(ref title) = before_group_title {
+            params.insert("beforeGroupTitle".to_string(), serde_json::json!(title));
+        }
+        if let Some(ref title) = after_group_title {
+            params.insert("afterGroupTitle".to_string(), serde_json::json!(title));
+        }
+        if let Some(tab_id) = before_tab_id {
+            params.insert("beforeTabId".to_string(), serde_json::json!(tab_id as i64));
+        }
+        if let Some(tab_id) = after_tab_id {
+            params.insert("afterTabId".to_string(), serde_json::json!(tab_id as i64));
+        }
+
+        let response = ctx
+            .sender
+            .send("move-group", serde_json::Value::Object(params))
+            .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
+
+        Ok(MoveGroupResult {
+            group_id: response
+                .get("groupId")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(group_id as i64) as i32,
+            window_id: response
+                .get("windowId")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32,
+            moved_to_window_id: response
+                .get("movedToWindowId")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32,
+            new_group_id: response
+                .get("newGroupId")
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32),
+            moved_tabs: response
+                .get("summary")
+                .and_then(|s| s.get("movedTabs"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32,
+        })
+    }
+
+    /// Merge tabs from one window into another window.
+    fn merge_windows(
+        ctx: &GqlContext,
+        #[graphql(description = "Source window ID.")] from_window_id: i32,
+        #[graphql(description = "Destination window ID.")] to_window_id: i32,
+        #[graphql(description = "Close the source window when it becomes empty.")]
+        close_source: Option<bool>,
+        #[graphql(description = "Confirmation flag for destructive variants.")] confirm: Option<
+            bool,
+        >,
+    ) -> FieldResult<MergeWindowsResult> {
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "fromWindowId".to_string(),
+            serde_json::json!(from_window_id as i64),
+        );
+        params.insert(
+            "toWindowId".to_string(),
+            serde_json::json!(to_window_id as i64),
+        );
+        if close_source == Some(true) {
+            params.insert("closeSource".to_string(), serde_json::json!(true));
+        }
+        if confirm == Some(true) {
+            params.insert("confirmed".to_string(), serde_json::json!(true));
+        }
+
+        let response = ctx
+            .sender
+            .send("merge-window", serde_json::Value::Object(params))
+            .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
+
+        Ok(MergeWindowsResult {
+            from_window_id: response
+                .get("fromWindowId")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(from_window_id as i64) as i32,
+            to_window_id: response
+                .get("toWindowId")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(to_window_id as i64) as i32,
+            source_closed: response
+                .get("sourceClosed")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            moved_tabs: response
+                .get("summary")
+                .and_then(|s| s.get("movedTabs"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32,
+            moved_groups: response
+                .get("summary")
+                .and_then(|s| s.get("movedGroups"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32,
+        })
+    }
+
+    /// Merge duplicate groups with the same title.
+    fn gather_groups(
+        ctx: &GqlContext,
+        #[graphql(description = "Restrict gathering to this window.")] window_id: Option<i32>,
+        #[graphql(description = "Restrict gathering to duplicate groups with this title.")]
+        group_title: Option<String>,
+    ) -> FieldResult<GatherResult> {
+        let mut params = serde_json::Map::new();
+        if let Some(wid) = window_id {
+            params.insert("windowId".to_string(), serde_json::json!(wid as i64));
+        }
+        if let Some(ref title) = group_title {
+            params.insert("groupTitle".to_string(), serde_json::json!(title));
+        }
+
+        let response = ctx
+            .sender
+            .send("group-gather", serde_json::Value::Object(params))
+            .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
+
+        let merged = response
+            .get("merged")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .map(|entry| GatheredGroup {
+                        window_id: entry.get("windowId").and_then(|v| v.as_i64()).unwrap_or(0)
+                            as i32,
+                        group_title: entry
+                            .get("groupTitle")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        primary_group_id: entry
+                            .get("primaryGroupId")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0) as i32,
+                        merged_group_count: entry
+                            .get("mergedGroupCount")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0) as i32,
+                        moved_tabs: entry.get("movedTabs").and_then(|v| v.as_i64()).unwrap_or(0)
+                            as i32,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let summary = GatherSummary {
+            merged_groups: response
+                .get("summary")
+                .and_then(|s| s.get("mergedGroups"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32,
+            moved_tabs: response
+                .get("summary")
+                .and_then(|s| s.get("movedTabs"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32,
+        };
+
+        Ok(GatherResult { merged, summary })
+    }
+
     /// Archive tabs to a consolidated archive window.
     fn archive_tabs(
         ctx: &GqlContext,
@@ -667,6 +1298,85 @@ impl Mutation {
             archived_tabs,
         })
     }
+
+    /// Preview or execute duplicate-tab cleanup.
+    #[allow(clippy::too_many_arguments)]
+    fn deduplicate_tabs(
+        ctx: &GqlContext,
+        #[graphql(
+            description = "Number of days since last focus to consider a tab stale (default 30)."
+        )]
+        stale_days: Option<i32>,
+        #[graphql(description = "Restrict dedupe to this window.")] window_id: Option<i32>,
+        #[graphql(description = "Restrict dedupe to this group (by group ID).")] group_id: Option<
+            i32,
+        >,
+        #[graphql(description = "Restrict dedupe to tabs whose group has this title.")]
+        group_title: Option<String>,
+        #[graphql(description = "When true, dedupe only ungrouped tabs (groupId = -1).")]
+        ungrouped: Option<bool>,
+        #[graphql(description = "Actually close duplicate tabs instead of previewing only.")]
+        confirm: Option<bool>,
+    ) -> FieldResult<DedupeResult> {
+        let mut params = serde_json::Map::new();
+        params.insert("dedupe".to_string(), serde_json::json!(true));
+        if let Some(days) = stale_days {
+            params.insert("staleDays".to_string(), serde_json::json!(days));
+        }
+        if let Some(wid) = window_id {
+            params.insert("windowId".to_string(), serde_json::json!(wid as i64));
+        }
+        if let Some(gid) = group_id {
+            params.insert("groupId".to_string(), serde_json::json!(gid as i64));
+        }
+        if let Some(ref title) = group_title {
+            params.insert("groupTitle".to_string(), serde_json::json!(title));
+        }
+        if ungrouped == Some(true) {
+            params.insert("ungrouped".to_string(), serde_json::json!(true));
+        }
+        if confirm == Some(true) {
+            params.insert("confirmed".to_string(), serde_json::json!(true));
+        }
+
+        let response = ctx
+            .sender
+            .send("analyze", serde_json::Value::Object(params))
+            .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
+
+        Ok(DedupeResult {
+            txid: response
+                .get("txid")
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string()),
+            closed_tabs: response
+                .get("dedupeSummary")
+                .and_then(|s| s.get("closedTabs"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32,
+            duplicate_groups: response
+                .get("duplicates")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.len())
+                .unwrap_or(0) as i32,
+            candidate_tabs: duplicate_candidate_tabs(&response),
+        })
+    }
+
+    /// Reload the connected browser extension.
+    fn reload_extension(ctx: &GqlContext) -> FieldResult<ReloadResult> {
+        let response = ctx
+            .sender
+            .send("reload", serde_json::json!({}))
+            .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
+
+        Ok(ReloadResult {
+            reloading: response
+                .get("reloading")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -680,7 +1390,7 @@ mod tests {
         fn send(
             &self,
             action: &str,
-            _params: serde_json::Value,
+            params: serde_json::Value,
         ) -> Result<serde_json::Value, String> {
             match action {
                 "close" => Ok(serde_json::json!({
@@ -706,11 +1416,23 @@ mod tests {
                     }
                 })),
                 "ping" => Ok(serde_json::json!({ "ok": true })),
-                "analyze" => Ok(serde_json::json!({
-                    "stale": [{"tabId": 4}],
-                    "duplicates": [],
-                    "totalTabs": 4
-                })),
+                "analyze" => {
+                    let dedupe = params.get("dedupe").and_then(|v| v.as_bool()) == Some(true);
+                    let confirmed = params.get("confirmed").and_then(|v| v.as_bool()) == Some(true);
+                    Ok(serde_json::json!({
+                        "txid": if dedupe && confirmed { serde_json::Value::String("tx-dedupe-1".into()) } else { serde_json::Value::Null },
+                        "stale": [{"tabId": 4}],
+                        "duplicates": [{
+                            "normalizedUrl": "example.com/page",
+                            "tabs": [
+                                {"tabId": 2, "windowId": 100, "index": 1, "url": "https://example.com/page", "title": "B", "active": false, "pinned": true, "groupId": -1},
+                                {"tabId": 4, "windowId": 200, "index": 0, "url": "https://example.com/page", "title": "D", "active": true, "pinned": false, "groupId": -1}
+                            ]
+                        }],
+                        "summary": { "totalTabs": 4 },
+                        "dedupeSummary": if dedupe && confirmed { serde_json::json!({"closedTabs": 1}) } else { serde_json::Value::Null }
+                    }))
+                }
                 "history" => Ok(serde_json::json!([
                     {"txid": "tx-1", "action": "close", "summary": {"closedTabs": 1}, "createdAt": 1700000000000.0}
                 ])),
@@ -750,11 +1472,86 @@ mod tests {
                     "txid": "tx-mv-1",
                     "summary": { "movedTabs": 1 }
                 })),
+                "move-group" => Ok(serde_json::json!({
+                    "groupId": 20,
+                    "windowId": 100,
+                    "movedToWindowId": 200,
+                    "newGroupId": 50,
+                    "summary": { "movedTabs": 2 }
+                })),
+                "merge-window" => Ok(serde_json::json!({
+                    "fromWindowId": 100,
+                    "toWindowId": 200,
+                    "sourceClosed": true,
+                    "summary": { "movedTabs": 3, "movedGroups": 1 }
+                })),
+                "group-gather" => Ok(serde_json::json!({
+                    "merged": [{
+                        "windowId": 100,
+                        "groupTitle": "Work",
+                        "primaryGroupId": 10,
+                        "mergedGroupCount": 1,
+                        "movedTabs": 2
+                    }],
+                    "summary": { "mergedGroups": 1, "movedTabs": 2 }
+                })),
                 "archive" => Ok(serde_json::json!({
                     "txid": "tx-archive-1",
                     "archiveWindowId": 300,
                     "summary": { "archivedTabs": 3, "archivedGroups": 1, "movedTabs": 3 }
                 })),
+                "inspect" => Ok(serde_json::json!({
+                    "totals": { "tabs": 1, "signals": 2, "tasks": 2 },
+                    "entries": [{
+                        "tabId": 1,
+                        "windowId": 100,
+                        "url": "https://a.com",
+                        "title": "A",
+                        "signals": {
+                            "page-meta": { "description": "Page desc" },
+                            "price": { "price": "$9.99" }
+                        }
+                    }]
+                })),
+                "report" => Ok(serde_json::json!({
+                    "generatedAt": 1700000001234.0,
+                    "entries": [{
+                        "tabId": 1,
+                        "windowId": 100,
+                        "url": "https://a.com",
+                        "title": "A",
+                        "groupId": 10,
+                        "groupTitle": "Work",
+                        "groupColor": "blue",
+                        "description": "Page desc",
+                        "lastAccessedAt": 1700000000000.0
+                    }],
+                    "totals": { "tabs": 1 }
+                })),
+                "screenshot" => Ok(serde_json::json!({
+                    "totals": { "tabs": 1, "tiles": 1 },
+                    "entries": [{
+                        "tabId": 1,
+                        "windowId": 100,
+                        "groupId": -1,
+                        "url": "https://a.com",
+                        "title": "A",
+                        "tiles": [{
+                            "index": 0,
+                            "total": 1,
+                            "x": 0,
+                            "y": 0,
+                            "width": 100,
+                            "height": 120,
+                            "scale": 2.0,
+                            "bytes": 1234,
+                            "scaled": false,
+                            "oversized": false,
+                            "dataUrl": "data:image/png;base64,abc"
+                        }]
+                    }]
+                })),
+                "reload" => Ok(serde_json::json!({ "reloading": true })),
                 _ => Ok(serde_json::json!({
                     "txid": "tx-test-1",
                     "summary": {}
@@ -933,7 +1730,7 @@ mod tests {
         let result = exec("{ analyze { staleTabs duplicateTabs totalTabs } }");
         assert!(result.get("errors").is_none());
         assert_eq!(result["data"]["analyze"]["staleTabs"], 1);
-        assert_eq!(result["data"]["analyze"]["duplicateTabs"], 0);
+        assert_eq!(result["data"]["analyze"]["duplicateTabs"], 1);
         assert_eq!(result["data"]["analyze"]["totalTabs"], 4);
     }
 
@@ -945,6 +1742,58 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["txid"], "tx-1");
         assert_eq!(entries[0]["action"], "close");
+    }
+
+    #[test]
+    fn query_inspect_tabs() {
+        let result = exec(
+            r#"{ inspectTabs(windowId: 100, signals: ["page-meta"], selectors: [{name: "price", selector: ".price", attr: "text"}]) {
+                totals { tabs signals tasks }
+                entries { tabId windowId signals { name valueJson } }
+            } }"#,
+        );
+        assert!(result.get("errors").is_none());
+        let inspect = &result["data"]["inspectTabs"];
+        assert_eq!(inspect["totals"]["tabs"], 1);
+        assert_eq!(inspect["totals"]["signals"], 2);
+        assert_eq!(inspect["totals"]["tasks"], 2);
+        let entries = inspect["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        let signals = entries[0]["signals"].as_array().unwrap();
+        assert!(signals.iter().any(|s| s["name"] == "page-meta"));
+        assert!(signals.iter().any(|s| s["name"] == "price"));
+    }
+
+    #[test]
+    fn query_report_tabs() {
+        let result = exec(
+            "{ reportTabs(windowId: 100) { generatedAt totals { tabs } entries { tabId description groupColor } } }",
+        );
+        assert!(result.get("errors").is_none());
+        let report = &result["data"]["reportTabs"];
+        assert_eq!(report["totals"]["tabs"], 1);
+        let entries = report["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["tabId"], 1);
+        assert_eq!(entries[0]["description"], "Page desc");
+        assert_eq!(entries[0]["groupColor"], "blue");
+    }
+
+    #[test]
+    fn query_capture_screenshots() {
+        let result = exec(
+            "{ captureScreenshots(windowId: 100, mode: \"viewport\") { totals { tabs tiles } entries { tabId tiles { width height dataUrl } } } }",
+        );
+        assert!(result.get("errors").is_none());
+        let capture = &result["data"]["captureScreenshots"];
+        assert_eq!(capture["totals"]["tabs"], 1);
+        assert_eq!(capture["totals"]["tiles"], 1);
+        let entries = capture["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        let tiles = entries[0]["tiles"].as_array().unwrap();
+        assert_eq!(tiles.len(), 1);
+        assert_eq!(tiles[0]["width"], 100);
+        assert_eq!(tiles[0]["height"], 120);
     }
 
     #[test]
@@ -995,6 +1844,49 @@ mod tests {
     }
 
     #[test]
+    fn mutation_move_group() {
+        let result = exec(
+            r#"mutation { moveGroup(groupId: 10, windowId: 200, afterGroupTitle: "Anchor") { groupId windowId movedToWindowId newGroupId movedTabs } }"#,
+        );
+        assert!(result.get("errors").is_none());
+        let moved = &result["data"]["moveGroup"];
+        assert_eq!(moved["groupId"], 20);
+        assert_eq!(moved["windowId"], 100);
+        assert_eq!(moved["movedToWindowId"], 200);
+        assert_eq!(moved["newGroupId"], 50);
+        assert_eq!(moved["movedTabs"], 2);
+    }
+
+    #[test]
+    fn mutation_merge_windows() {
+        let result = exec(
+            "mutation { mergeWindows(fromWindowId: 100, toWindowId: 200, closeSource: true) { fromWindowId toWindowId sourceClosed movedTabs movedGroups } }",
+        );
+        assert!(result.get("errors").is_none());
+        let merged = &result["data"]["mergeWindows"];
+        assert_eq!(merged["fromWindowId"], 100);
+        assert_eq!(merged["toWindowId"], 200);
+        assert_eq!(merged["sourceClosed"], true);
+        assert_eq!(merged["movedTabs"], 3);
+        assert_eq!(merged["movedGroups"], 1);
+    }
+
+    #[test]
+    fn mutation_gather_groups() {
+        let result = exec(
+            r#"mutation { gatherGroups(windowId: 100, groupTitle: "Work") { summary { mergedGroups movedTabs } merged { groupTitle primaryGroupId } } }"#,
+        );
+        assert!(result.get("errors").is_none());
+        let gathered = &result["data"]["gatherGroups"];
+        assert_eq!(gathered["summary"]["mergedGroups"], 1);
+        assert_eq!(gathered["summary"]["movedTabs"], 2);
+        let merged = gathered["merged"].as_array().unwrap();
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0]["groupTitle"], "Work");
+        assert_eq!(merged[0]["primaryGroupId"], 10);
+    }
+
+    #[test]
     fn mutation_archive_tabs() {
         let result = exec("mutation { archiveTabs(windowId: 100) { txid archivedTabs } }");
         assert!(result.get("errors").is_none());
@@ -1008,12 +1900,22 @@ mod tests {
         assert!(sdl.contains("type FocusResult"));
         assert!(sdl.contains("type UndoResult"));
         assert!(sdl.contains("type MoveResult"));
+        assert!(sdl.contains("type MoveGroupResult"));
+        assert!(sdl.contains("type MergeWindowsResult"));
+        assert!(sdl.contains("type GatherResult"));
+        assert!(sdl.contains("type GatherSummary"));
         assert!(sdl.contains("type ArchiveResult"));
         assert!(sdl.contains("type AnalyzeResult"));
+        assert!(sdl.contains("type DedupeResult"));
+        assert!(sdl.contains("type InspectResult"));
+        assert!(sdl.contains("type ReportResult"));
+        assert!(sdl.contains("type ScreenshotResult"));
         assert!(sdl.contains("type PingResult"));
         assert!(sdl.contains("type HistoryEntry"));
+        assert!(sdl.contains("type ReloadResult"));
         assert!(sdl.contains("type SkippedUrl"));
         assert!(sdl.contains("type OpenResult"));
+        assert!(sdl.contains("input SelectorSpecInput"));
     }
 
     #[test]
@@ -1037,6 +1939,40 @@ mod tests {
         // Window and group IDs
         assert_eq!(open["windowId"], 100);
         assert_eq!(open["groupId"], 10);
+    }
+
+    #[test]
+    fn mutation_deduplicate_tabs_preview() {
+        let result = exec(
+            "mutation { deduplicateTabs(windowId: 100) { txid closedTabs duplicateGroups candidateTabs { tabId url } } }",
+        );
+        assert!(result.get("errors").is_none());
+        let dedupe = &result["data"]["deduplicateTabs"];
+        assert!(dedupe["txid"].is_null());
+        assert_eq!(dedupe["closedTabs"], 0);
+        assert_eq!(dedupe["duplicateGroups"], 1);
+        let candidate_tabs = dedupe["candidateTabs"].as_array().unwrap();
+        assert_eq!(candidate_tabs.len(), 1);
+        assert_eq!(candidate_tabs[0]["tabId"], 4);
+    }
+
+    #[test]
+    fn mutation_deduplicate_tabs_confirmed() {
+        let result = exec(
+            "mutation { deduplicateTabs(confirm: true) { txid closedTabs duplicateGroups candidateTabs { tabId } } }",
+        );
+        assert!(result.get("errors").is_none());
+        let dedupe = &result["data"]["deduplicateTabs"];
+        assert_eq!(dedupe["txid"], "tx-dedupe-1");
+        assert_eq!(dedupe["closedTabs"], 1);
+        assert_eq!(dedupe["duplicateGroups"], 1);
+    }
+
+    #[test]
+    fn mutation_reload_extension() {
+        let result = exec("mutation { reloadExtension { reloading } }");
+        assert!(result.get("errors").is_none());
+        assert_eq!(result["data"]["reloadExtension"]["reloading"], true);
     }
 
     #[test]

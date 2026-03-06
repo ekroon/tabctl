@@ -1,4 +1,4 @@
-use juniper::GraphQLObject;
+use juniper::{GraphQLInputObject, GraphQLObject};
 
 /// A browser tab.
 #[derive(Debug, Clone, GraphQLObject)]
@@ -145,6 +145,69 @@ pub(crate) struct MoveResult {
     pub moved_tabs: i32,
 }
 
+/// Result of a moveGroup mutation.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct MoveGroupResult {
+    /// Identifier of the moved group after the operation.
+    pub group_id: i32,
+    /// Original source window identifier.
+    pub window_id: i32,
+    /// Destination window identifier.
+    pub moved_to_window_id: i32,
+    /// Newly created group identifier when regrouping was required.
+    pub new_group_id: Option<i32>,
+    /// Number of tabs moved with the group.
+    pub moved_tabs: i32,
+}
+
+/// Result of a mergeWindows mutation.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct MergeWindowsResult {
+    /// Source window identifier.
+    pub from_window_id: i32,
+    /// Destination window identifier.
+    pub to_window_id: i32,
+    /// Whether the source window was closed after the move.
+    pub source_closed: bool,
+    /// Number of tabs moved.
+    pub moved_tabs: i32,
+    /// Number of grouped batches moved.
+    pub moved_groups: i32,
+}
+
+/// A single duplicate-group merge operation from gatherGroups.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct GatheredGroup {
+    /// Window containing the merged groups.
+    pub window_id: i32,
+    /// Title shared by the duplicate groups.
+    pub group_title: String,
+    /// Group ID kept as the primary destination.
+    pub primary_group_id: i32,
+    /// Number of duplicate groups merged into the primary one.
+    pub merged_group_count: i32,
+    /// Number of tabs moved into the primary group.
+    pub moved_tabs: i32,
+}
+
+/// Summary counts for gatherGroups.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct GatherSummary {
+    /// Number of duplicate groups merged.
+    pub merged_groups: i32,
+    /// Number of tabs moved during the gather.
+    pub moved_tabs: i32,
+}
+
+/// Result of a gatherGroups mutation.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct GatherResult {
+    /// Per-window merge details.
+    pub merged: Vec<GatheredGroup>,
+    /// Aggregate counts for the operation.
+    pub summary: GatherSummary,
+}
+
 /// Result of an archiveTabs mutation.
 #[derive(Debug, Clone, GraphQLObject)]
 pub(crate) struct ArchiveResult {
@@ -167,6 +230,186 @@ pub(crate) struct AnalyzeResult {
     pub raw: String,
 }
 
+/// Result of a deduplicateTabs mutation.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct DedupeResult {
+    /// Transaction ID for the close-style undo payload, if tabs were actually closed.
+    pub txid: Option<String>,
+    /// Number of duplicate tabs closed.
+    pub closed_tabs: i32,
+    /// Number of duplicate groups detected.
+    pub duplicate_groups: i32,
+    /// Tabs that would be closed (or were closed) by dedupe.
+    pub candidate_tabs: Vec<Tab>,
+}
+
+/// Input selector specification for inspectTabs.
+#[derive(Debug, Clone, GraphQLInputObject)]
+pub(crate) struct SelectorSpecInput {
+    /// Result key for this selector.
+    pub name: String,
+    /// CSS selector to execute in the page.
+    pub selector: String,
+    /// Attribute or extraction mode (e.g. text, href-url).
+    pub attr: Option<String>,
+}
+
+/// A named signal payload returned by inspectTabs.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct InspectSignalResult {
+    /// Signal name.
+    pub name: String,
+    /// Raw JSON payload for the signal value.
+    pub value_json: String,
+}
+
+/// A single inspectTabs result row.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct InspectEntry {
+    /// Tab identifier.
+    pub tab_id: i32,
+    /// Window identifier.
+    pub window_id: i32,
+    /// Tab URL.
+    pub url: String,
+    /// Tab title.
+    pub title: Option<String>,
+    /// Signal payloads keyed by signal name.
+    pub signals: Vec<InspectSignalResult>,
+}
+
+/// Summary counts for inspectTabs.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct InspectTotals {
+    /// Number of tabs inspected.
+    pub tabs: i32,
+    /// Number of distinct signals requested.
+    pub signals: i32,
+    /// Number of tab×signal tasks executed.
+    pub tasks: i32,
+}
+
+/// Result of an inspectTabs query.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct InspectResult {
+    /// Summary counts.
+    pub totals: InspectTotals,
+    /// Per-tab results.
+    pub entries: Vec<InspectEntry>,
+}
+
+/// A single reportTabs entry.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct ReportEntry {
+    /// Tab identifier.
+    pub tab_id: i32,
+    /// Window identifier.
+    pub window_id: i32,
+    /// Tab URL.
+    pub url: String,
+    /// Tab title.
+    pub title: Option<String>,
+    /// Group identifier.
+    pub group_id: i32,
+    /// Group title, if any.
+    pub group_title: Option<String>,
+    /// Group color, if any.
+    pub group_color: Option<String>,
+    /// Extracted page description.
+    pub description: String,
+    /// Last-accessed timestamp in ms, if known.
+    pub last_accessed_at: Option<f64>,
+}
+
+/// Summary counts for reportTabs.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct ReportTotals {
+    /// Number of tabs included in the report.
+    pub tabs: i32,
+}
+
+/// Result of a reportTabs query.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct ReportResult {
+    /// Timestamp when the report was generated.
+    pub generated_at: f64,
+    /// Report entries.
+    pub entries: Vec<ReportEntry>,
+    /// Summary counts.
+    pub totals: ReportTotals,
+}
+
+/// A single screenshot tile.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct ScreenshotTile {
+    /// Zero-based tile index.
+    pub index: i32,
+    /// Total number of tiles emitted for the tab.
+    pub total: Option<i32>,
+    /// Tile origin X coordinate.
+    pub x: i32,
+    /// Tile origin Y coordinate.
+    pub y: i32,
+    /// Tile width.
+    pub width: i32,
+    /// Tile height.
+    pub height: i32,
+    /// Device pixel ratio used during capture.
+    pub scale: f64,
+    /// Approximate encoded byte size.
+    pub bytes: Option<i32>,
+    /// Whether the tile was scaled down.
+    pub scaled: Option<bool>,
+    /// Whether the tile still exceeded the requested byte limit.
+    pub oversized: Option<bool>,
+    /// Captured data URL payload.
+    pub data_url: Option<String>,
+}
+
+/// A screenshot error payload.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct ScreenshotError {
+    /// Error message.
+    pub message: String,
+}
+
+/// A single captureScreenshots entry.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct ScreenshotEntry {
+    /// Tab identifier.
+    pub tab_id: i32,
+    /// Window identifier.
+    pub window_id: i32,
+    /// Group identifier.
+    pub group_id: i32,
+    /// Tab URL.
+    pub url: String,
+    /// Tab title.
+    pub title: Option<String>,
+    /// Error payload for unsupported URLs, if any.
+    pub error: Option<ScreenshotError>,
+    /// Captured tiles.
+    pub tiles: Vec<ScreenshotTile>,
+}
+
+/// Summary counts for captureScreenshots.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct ScreenshotTotals {
+    /// Number of tabs included.
+    pub tabs: i32,
+    /// Number of tiles captured.
+    pub tiles: i32,
+}
+
+/// Result of a captureScreenshots query.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct ScreenshotResult {
+    /// Summary counts.
+    pub totals: ScreenshotTotals,
+    /// Per-tab capture entries.
+    pub entries: Vec<ScreenshotEntry>,
+}
+
 /// Result of a ping query.
 #[derive(Debug, Clone, GraphQLObject)]
 pub(crate) struct PingResult {
@@ -187,4 +430,11 @@ pub(crate) struct HistoryEntry {
     pub summary: String,
     /// Unix timestamp (ms) when the action was performed.
     pub created_at: f64,
+}
+
+/// Result of a reloadExtension mutation.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct ReloadResult {
+    /// Whether the extension reported that reload has started.
+    pub reloading: bool,
 }
