@@ -358,7 +358,11 @@ impl Mutation {
                 arr.iter()
                     .filter_map(|s| {
                         Some(SkippedUrl {
-                            url: s.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            url: s
+                                .get("url")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
                             reason: s
                                 .get("reason")
                                 .and_then(|v| v.as_str())

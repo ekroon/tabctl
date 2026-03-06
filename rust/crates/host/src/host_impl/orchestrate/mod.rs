@@ -157,4 +157,3 @@ fn drive_to_completion(
 
 #[cfg(test)]
 mod graphql_contracts;
-

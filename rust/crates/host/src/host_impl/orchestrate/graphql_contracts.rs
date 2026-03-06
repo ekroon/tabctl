@@ -41,7 +41,9 @@ impl tabctl_graphql::CommandSender for ContractSender {
                 return Ok(r.clone());
             }
         }
-        Err(format!("ContractSender: no response registered for action '{action}'"))
+        Err(format!(
+            "ContractSender: no response registered for action '{action}'"
+        ))
     }
 
     fn snapshot(&self) -> Result<Value, String> {
@@ -135,7 +137,9 @@ fn contract_open_tabs() {
     assert_eq!(open["windowId"], 100);
     assert_eq!(open["groupId"], 30);
     // No URLs were skipped in this flow
-    let skipped = open["skippedUrls"].as_array().expect("skippedUrls should be array");
+    let skipped = open["skippedUrls"]
+        .as_array()
+        .expect("skippedUrls should be array");
     assert!(skipped.is_empty());
 }
 
