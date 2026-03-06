@@ -1,6 +1,6 @@
 {
   "name": "tabctl-win32-x64",
-  "version": "0.6.0-alpha.18",
+  "version": "0.6.0-rc.1",
   "description": "Windows x64 native messaging host binary for tabctl",
   "license": "MIT",
   "repository": {
