@@ -70,6 +70,7 @@ tabctl query '{ __type(name: "Tab") { fields { name } } }'  # Discover Tab field
 ## Common tasks (CLI)
 
 - List tabs in a window: `tabctl list --window <id|active|last-focused>`
+- List tabs by recency: `tabctl list --all --sort last-accessed`
 - List ungrouped tabs: `tabctl list --ungrouped`
 - List with pagination: `tabctl list --all --limit 10 --offset 0`
 - Close tabs: `tabctl close --tab <id1> --tab <id2> --confirm`
@@ -81,6 +82,39 @@ tabctl query '{ __type(name: "Tab") { fields { name } } }'  # Discover Tab field
 - Capture visual context when needed: `tabctl screenshot --tab <id> --mode full`
 - Undo most recent change: `tabctl undo --latest`
 - Undo by txid: `tabctl undo <txid>` (from `tabctl history --json | jq -r '.[] | .txid'`)
+
+## Recency & sorting
+
+Tabs include `lastAccessedAt` (millisecond timestamp) — the most recent time each tab was viewed. This data persists in SQLite across browser restarts and profiles, keyed by normalized URL.
+
+### Sort tabs by most-recently-accessed
+
+```bash
+# CLI — most-recently-accessed first
+tabctl list --all --sort last-accessed
+
+# Other sort options: title, url, index (default)
+tabctl list --window active --sort title
+
+# GraphQL — with orderBy
+tabctl query '{ tabs(orderBy: LAST_ACCESSED_DESC) { items { tabId title url lastAccessedAt } } }'
+tabctl query '{ tabs(orderBy: TITLE_ASC) { items { tabId title } } }'
+```
+
+### Use lastAccessedAt for analysis
+
+```bash
+# Find tabs not accessed in 7+ days
+tabctl query '{ tabs { items { tabId title lastAccessedAt } } }' --json | python3 -c "
+import json, sys, time
+data = json.load(sys.stdin)
+cutoff = (time.time() - 7*86400) * 1000
+for t in data['data']['tabs']['items']:
+    ts = t.get('lastAccessedAt') or 0
+    if ts < cutoff:
+        print(f\"{t['tabId']}: {t['title'][:60]}\")
+"
+```
 
 ## Narrow scope
 

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tabctl_shared::{ClientInfo, NativeMessage, ProtocolError, RequestEnvelope, ResponseEnvelope};
 
+use super::focus_store;
 use super::orchestrate::{orchestration_for, OrchStep, Orchestration};
 use super::protocol::{
     add_host_metadata, add_ping_metadata, base_response, create_id, host_version, local_actions,
@@ -35,6 +36,8 @@ pub(super) struct HostState {
     pending: HashMap<String, PendingRequest>,
     analyses: HashMap<String, AnalysisRecord>,
     undo_log: PathBuf,
+    focus_db_path: PathBuf,
+    profile_name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -47,11 +50,17 @@ pub(super) enum HostEffect {
 }
 
 impl HostState {
-    pub(super) fn new(undo_log: PathBuf) -> Self {
+    pub(super) fn new(
+        undo_log: PathBuf,
+        focus_db_path: PathBuf,
+        profile_name: Option<String>,
+    ) -> Self {
         Self {
             pending: HashMap::new(),
             analyses: HashMap::new(),
             undo_log,
+            focus_db_path,
+            profile_name,
         }
     }
 
@@ -394,8 +403,16 @@ impl HostState {
 
         // Orchestration path — feed response to the state machine
         if let Some(mut orch) = pending.orchestration.take() {
-            // Pass original data shape (may be array, object, or null)
-            let step = orch.step(message.data.clone().unwrap_or(Value::Object(message_data)));
+            // Enrich snapshot responses with focus store data
+            let mut response_data = message.data.clone().unwrap_or(Value::Object(message_data));
+            if response_data.get("windows").is_some() {
+                let _ = focus_store::enrich_snapshot(
+                    &self.focus_db_path,
+                    &mut response_data,
+                    self.profile_name.as_deref(),
+                );
+            }
+            let step = orch.step(response_data);
             return self.process_orch_step(
                 pending.client_id,
                 &pending.action.clone(),

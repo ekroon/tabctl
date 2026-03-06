@@ -190,7 +190,11 @@ fn run_unix() -> io::Result<()> {
     let listener = UnixListener::bind(&socket_path)?;
     let _ = fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600));
 
-    let state = Arc::new(Mutex::new(HostState::new(PathBuf::from(config.undo_log))));
+    let state = Arc::new(Mutex::new(HostState::new(
+        PathBuf::from(&config.undo_log),
+        PathBuf::from(&config.base_data_dir).join("focus.db"),
+        config.active_profile_name.clone(),
+    )));
     let clients: Clients = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let native_out = Arc::new(Mutex::new(io::stdout()));
 
@@ -428,7 +432,11 @@ fn run_windows() -> io::Result<()> {
     fs::create_dir_all(&data_dir)?;
     let (tcp_listener, _tcp_port, auth_token) = setup_tcp_listener(&data_dir)?;
 
-    let state = Arc::new(Mutex::new(HostState::new(PathBuf::from(config.undo_log))));
+    let state = Arc::new(Mutex::new(HostState::new(
+        PathBuf::from(&config.undo_log),
+        PathBuf::from(&config.base_data_dir).join("focus.db"),
+        config.active_profile_name.clone(),
+    )));
     let clients: Clients = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let native_out = Arc::new(Mutex::new(io::stdout()));
     start_native_reader(state.clone(), clients.clone(), native_out.clone());

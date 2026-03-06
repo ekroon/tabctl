@@ -2,9 +2,26 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
+use url_normalize::Options as NormalizeOptions;
 
 pub fn workspace_marker() -> &'static str {
     "tabctl-rust-workspace"
+}
+
+/// Normalize a URL for deduplication and storage.
+///
+/// Strips protocol, `www.`, trailing slashes, fragments, and sorts query
+/// parameters so that equivalent URLs produce the same key.
+pub fn normalize_url(url: &str) -> String {
+    let opts = NormalizeOptions {
+        strip_hash: true,
+        strip_protocol: true,
+        ..NormalizeOptions::default()
+    };
+    match url_normalize::normalize_url(url, &opts) {
+        Ok(normalized) => normalized,
+        Err(_) => url.to_string(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

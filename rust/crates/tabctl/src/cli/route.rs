@@ -83,6 +83,9 @@ pub(super) fn route_command(matches: &ArgMatches) -> Result<RoutedCommand, Strin
             copy_opt_bool(sub, "latest", &mut params, "latest");
         }
         "history" => copy_opt_u64(sub, "limit", &mut params, "limit"),
+        "list" => {
+            copy_opt_string(sub, "sort", &mut params, "sort");
+        }
         "inspect" => {
             copy_many_strings(sub, "signal", &mut params, "signals");
             copy_opt_string(sub, "selector-attr", &mut params, "selectorAttr");

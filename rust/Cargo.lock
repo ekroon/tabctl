@@ -786,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "tabctl"
-version = "0.6.0-alpha.18"
+version = "0.6.0-rc.1"
 dependencies = [
  "clap",
  "dirs",
@@ -802,7 +802,7 @@ dependencies = [
 
 [[package]]
 name = "tabctl-graphql"
-version = "0.6.0-alpha.18"
+version = "0.6.0-rc.1"
 dependencies = [
  "indexmap",
  "juniper",
@@ -811,21 +811,24 @@ dependencies = [
 
 [[package]]
 name = "tabctl-host"
-version = "0.6.0-alpha.18"
+version = "0.6.0-rc.1"
 dependencies = [
  "getrandom",
+ "serde",
  "serde_json",
  "sha2",
+ "tabctl-graphql",
  "tabctl-shared",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "tabctl-shared"
-version = "0.6.0-alpha.18"
+version = "0.6.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
+ "url-normalize",
 ]
 
 [[package]]
@@ -900,6 +903,15 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+]
+
+[[package]]
+name = "url-normalize"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1db355d41377ce831ea473e279ee3214fd6cce3e4e512567e9f6834ce85d5a3"
+dependencies = [
+ "idna",
 ]
 
 [[package]]

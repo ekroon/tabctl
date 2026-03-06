@@ -34,8 +34,6 @@ function requireFiniteId(value: unknown, name: string): number {
 
 const state = {
   port: null,
-  lastFocused: {},
-  lastFocusedLoaded: false,
 };
 
 function log(...args: Array<unknown>) {
@@ -99,46 +97,6 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === KEEPALIVE_ALARM) {
     connectNative();
   }
-});
-
-async function ensureLastFocusedLoaded() {
-  if (state.lastFocusedLoaded) {
-    return;
-  }
-  const stored = await chrome.storage.local.get("lastFocused");
-  state.lastFocused = stored.lastFocused || {};
-  state.lastFocusedLoaded = true;
-}
-
-async function setLastFocused(tabId: number) {
-  await ensureLastFocusedLoaded();
-  state.lastFocused[String(tabId)] = Date.now();
-  await chrome.storage.local.set({ lastFocused: state.lastFocused });
-}
-
-chrome.tabs.onActivated.addListener((info) => {
-  setLastFocused(info.tabId).catch((error) => log("Failed to set last focused", error));
-});
-
-chrome.tabs.onRemoved.addListener((tabId) => {
-  ensureLastFocusedLoaded().then(() => {
-    const key = String(tabId);
-    if (state.lastFocused[key]) {
-      delete state.lastFocused[key];
-      chrome.storage.local.set({ lastFocused: state.lastFocused });
-    }
-  }).catch((error) => log("Failed to prune last focused", error));
-});
-
-chrome.windows.onFocusChanged.addListener((windowId) => {
-  if (windowId === chrome.windows.WINDOW_ID_NONE) {
-    return;
-  }
-  chrome.tabs.query({ windowId, active: true }).then((tabs) => {
-    if (tabs[0] && tabs[0].id != null) {
-      setLastFocused(tabs[0].id).catch((error) => log("Failed to set last focused", error));
-    }
-  }).catch((error) => log("Failed to query active tab", error));
 });
 
 async function handleNativeMessage(message: { id?: string; action?: string; params?: Record<string, unknown> }) {
@@ -287,7 +245,6 @@ async function handleAction(action: string, params: Record<string, unknown>, req
 }
 
 async function getTabSnapshot() {
-  await ensureLastFocusedLoaded();
   const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
   const groups = await chrome.tabGroups.query({});
   const groupById = new Map(groups.map((group) => [group.id, group]));
@@ -307,7 +264,7 @@ async function getTabSnapshot() {
         groupTitle: group ? group.title : null,
         groupColor: group ? group.color : null,
         groupCollapsed: group ? group.collapsed : null,
-        lastFocusedAt: state.lastFocused[String(tab.id)] || null,
+        lastAccessedAt: tab.lastAccessed || null,
         favIconUrl: tab.favIconUrl || null,
         status: tab.status || null,
         discarded: tab.discarded || false,

@@ -1,4 +1,4 @@
-use juniper::{graphql_object, EmptySubscription, FieldResult, RootNode};
+use juniper::{graphql_object, EmptySubscription, FieldResult, GraphQLEnum, RootNode};
 
 use crate::context::GqlContext;
 use crate::convert::{tab_from_value, windows_from_snapshot};
@@ -8,6 +8,21 @@ pub(crate) type Schema = RootNode<'static, Query, Mutation, EmptySubscription<Gq
 
 pub(crate) fn create_schema() -> Schema {
     Schema::new(Query, Mutation, EmptySubscription::new())
+}
+
+/// Sort order for tab queries.
+#[derive(Debug, Clone, Copy, GraphQLEnum)]
+pub(crate) enum TabOrderBy {
+    /// Most recently accessed first.
+    LastAccessedDesc,
+    /// Least recently accessed first.
+    LastAccessedAsc,
+    /// Alphabetical by title (A-Z).
+    TitleAsc,
+    /// Reverse alphabetical by title (Z-A).
+    TitleDesc,
+    /// Tab position within window (default).
+    IndexAsc,
 }
 
 /// Query root — read-only access to tab data from a snapshot.
@@ -33,6 +48,7 @@ impl Query {
     }
 
     /// Paginated tabs with optional scope filters.
+    #[allow(clippy::too_many_arguments)]
     fn tabs(
         ctx: &GqlContext,
         #[graphql(description = "Restrict to tabs in this window.")] window_id: Option<i32>,
@@ -43,6 +59,7 @@ impl Query {
         group_title: Option<String>,
         #[graphql(description = "When true, return only ungrouped tabs (groupId = -1).")]
         ungrouped: Option<bool>,
+        #[graphql(description = "Sort order (default: INDEX_ASC).")] order_by: Option<TabOrderBy>,
         #[graphql(description = "Maximum number of tabs to return per page (default 20).")]
         limit: Option<i32>,
         #[graphql(description = "Zero-based offset into the result set.")] offset: Option<i32>,
@@ -61,6 +78,30 @@ impl Query {
         }
         if ungrouped == Some(true) {
             tabs.retain(|t| t.group_id == -1);
+        }
+
+        match order_by.unwrap_or(TabOrderBy::IndexAsc) {
+            TabOrderBy::LastAccessedDesc => {
+                tabs.sort_by(|a, b| {
+                    let ta = a.last_accessed_at.unwrap_or(0.0);
+                    let tb = b.last_accessed_at.unwrap_or(0.0);
+                    tb.partial_cmp(&ta).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+            TabOrderBy::LastAccessedAsc => {
+                tabs.sort_by(|a, b| {
+                    let ta = a.last_accessed_at.unwrap_or(0.0);
+                    let tb = b.last_accessed_at.unwrap_or(0.0);
+                    ta.partial_cmp(&tb).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+            TabOrderBy::TitleAsc => {
+                tabs.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+            }
+            TabOrderBy::TitleDesc => {
+                tabs.sort_by(|a, b| b.title.to_lowercase().cmp(&a.title.to_lowercase()));
+            }
+            TabOrderBy::IndexAsc => {} // default order from snapshot
         }
 
         paginate_tabs(tabs, limit, offset)
@@ -298,7 +339,7 @@ impl Mutation {
             .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
 
         let tabs = response
-            .get("tabs")
+            .get("created")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
@@ -310,7 +351,43 @@ impl Mutation {
             })
             .unwrap_or_default();
 
-        Ok(OpenResult { tabs })
+        let skipped_urls = response
+            .get("skipped")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .map(|s| SkippedUrl {
+                        url: s
+                            .get("url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        reason: s
+                            .get("reason")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let window_id = response
+            .get("windowId")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
+
+        let group_id = response
+            .get("groupId")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
+
+        Ok(OpenResult {
+            tabs,
+            skipped_urls,
+            window_id,
+            group_id,
+        })
     }
 
     /// Refresh (reload) tabs by ID.
@@ -608,7 +685,25 @@ mod tests {
             match action {
                 "close" => Ok(serde_json::json!({
                     "txid": "tx-test-1",
-                    "summary": { "closedTabs": 2 }
+                    "summary": { "closedTabs": 2, "skippedTabs": 0 },
+                    "skipped": []
+                })),
+                "open" => Ok(serde_json::json!({
+                    "windowId": 100,
+                    "groupId": 10,
+                    "created": [
+                        {"tabId": 50, "windowId": 100, "index": 3, "url": "https://new.com", "title": "New"},
+                        {"tabId": 51, "windowId": 100, "index": 4, "url": "https://new2.com", "title": "New2"}
+                    ],
+                    "createdTabIds": [50, 51],
+                    "skipped": [
+                        {"url": "https://dup.com", "reason": "duplicate"}
+                    ],
+                    "summary": {
+                        "createdTabs": 2,
+                        "skippedUrls": 1,
+                        "grouped": true
+                    }
                 })),
                 "ping" => Ok(serde_json::json!({ "ok": true })),
                 "analyze" => Ok(serde_json::json!({
@@ -619,20 +714,46 @@ mod tests {
                 "history" => Ok(serde_json::json!([
                     {"txid": "tx-1", "action": "close", "summary": {"closedTabs": 1}, "createdAt": 1700000000000.0}
                 ])),
-                "focus" => Ok(serde_json::json!({ "ok": true })),
+                "focus" => Ok(serde_json::json!({ "tabId": 1, "windowId": 100 })),
                 "undo" => Ok(serde_json::json!({
                     "txid": "tx-test-1",
                     "summary": "Reopened 2 tabs"
                 })),
-                "group-update" => Ok(serde_json::json!({
-                    "groupId": 10, "title": "Updated", "color": "red", "collapsed": true, "tabCount": 2
+                "refresh" => Ok(serde_json::json!({
+                    "summary": { "refreshedTabs": 2 }
                 })),
-                "group-ungroup" => Ok(serde_json::json!({ "ok": true })),
-                "group-assign" => Ok(serde_json::json!({ "groupId": 20 })),
-                "move-tab" => Ok(serde_json::json!({ "ok": true })),
+                "group-update" => Ok(serde_json::json!({
+                    "groupId": 10,
+                    "windowId": 100,
+                    "txid": "tx-gu-1",
+                    "summary": { "updatedGroups": 1 }
+                })),
+                "group-ungroup" => Ok(serde_json::json!({
+                    "groupId": 10,
+                    "windowId": 100,
+                    "txid": "tx-uu-1",
+                    "summary": { "ungroupedTabs": 1 }
+                })),
+                "group-assign" => Ok(serde_json::json!({
+                    "groupId": 20,
+                    "windowId": 100,
+                    "created": false,
+                    "txid": "tx-ga-1",
+                    "summary": { "movedTabs": 1, "groupedTabs": 1, "skippedTabs": 0 },
+                    "skipped": []
+                })),
+                "move-tab" => Ok(serde_json::json!({
+                    "tabId": 1,
+                    "fromWindowId": 100,
+                    "toWindowId": 200,
+                    "toIndex": 0,
+                    "txid": "tx-mv-1",
+                    "summary": { "movedTabs": 1 }
+                })),
                 "archive" => Ok(serde_json::json!({
                     "txid": "tx-archive-1",
-                    "summary": { "archivedTabs": 3 }
+                    "archiveWindowId": 300,
+                    "summary": { "archivedTabs": 3, "archivedGroups": 1, "movedTabs": 3 }
                 })),
                 _ => Ok(serde_json::json!({
                     "txid": "tx-test-1",
@@ -652,7 +773,7 @@ mod tests {
                 "windowId": 100,
                 "focused": true,
                 "tabs": [
-                    {"tabId": 1, "windowId": 100, "index": 0, "url": "https://a.com", "title": "A", "active": true, "pinned": false, "groupId": 10, "groupTitle": "Work", "groupColor": "blue", "groupCollapsed": false, "lastFocusedAt": 1700000000000.0},
+                    {"tabId": 1, "windowId": 100, "index": 0, "url": "https://a.com", "title": "A", "active": true, "pinned": false, "groupId": 10, "groupTitle": "Work", "groupColor": "blue", "groupCollapsed": false, "lastAccessedAt": 1700000000000.0},
                     {"tabId": 2, "windowId": 100, "index": 1, "url": "https://b.com", "title": "B", "active": false, "pinned": true, "groupId": -1},
                     {"tabId": 3, "windowId": 100, "index": 2, "url": "https://c.com", "title": "C", "active": false, "pinned": false, "groupId": 10, "groupTitle": "Work", "groupColor": "blue", "groupCollapsed": false}
                 ],
@@ -727,7 +848,7 @@ mod tests {
         assert!(field_names.contains(&"tabId"));
         assert!(field_names.contains(&"url"));
         assert!(field_names.contains(&"title"));
-        assert!(field_names.contains(&"lastFocusedAt"));
+        assert!(field_names.contains(&"lastAccessedAt"));
         assert!(field_names.contains(&"groupColor"));
         assert!(field_names.contains(&"groupCollapsed"));
 
@@ -785,18 +906,18 @@ mod tests {
 
     #[test]
     fn query_tab_returns_new_fields() {
-        let result = exec("{ tab(id: 1) { tabId groupColor groupCollapsed lastFocusedAt } }");
+        let result = exec("{ tab(id: 1) { tabId groupColor groupCollapsed lastAccessedAt } }");
         let tab = &result["data"]["tab"];
         assert_eq!(tab["groupColor"], "blue");
         assert_eq!(tab["groupCollapsed"], false);
-        assert_eq!(tab["lastFocusedAt"], 1700000000000.0);
+        assert_eq!(tab["lastAccessedAt"], 1700000000000.0);
 
         // Ungrouped tab has null group metadata
-        let result2 = exec("{ tab(id: 2) { tabId groupColor groupCollapsed lastFocusedAt } }");
+        let result2 = exec("{ tab(id: 2) { tabId groupColor groupCollapsed lastAccessedAt } }");
         let tab2 = &result2["data"]["tab"];
         assert!(tab2["groupColor"].is_null());
         assert!(tab2["groupCollapsed"].is_null());
-        assert!(tab2["lastFocusedAt"].is_null());
+        assert!(tab2["lastAccessedAt"].is_null());
     }
 
     #[test]
@@ -849,10 +970,13 @@ mod tests {
         assert!(result.get("errors").is_none());
         let group = &result["data"]["updateGroup"];
         assert_eq!(group["groupId"], 10);
+        // Real orchestration doesn't return title/color/collapsed — resolver
+        // falls back to the input parameters via .or() chains.
         assert_eq!(group["title"], "Updated");
         assert_eq!(group["color"], "red");
         assert_eq!(group["collapsed"], true);
-        assert_eq!(group["tabCount"], 2);
+        // Real orchestration doesn't return tabCount; resolver defaults to 0.
+        assert_eq!(group["tabCount"], 0);
     }
 
     #[test]
@@ -888,5 +1012,48 @@ mod tests {
         assert!(sdl.contains("type AnalyzeResult"));
         assert!(sdl.contains("type PingResult"));
         assert!(sdl.contains("type HistoryEntry"));
+        assert!(sdl.contains("type SkippedUrl"));
+        assert!(sdl.contains("type OpenResult"));
+    }
+
+    #[test]
+    fn mutation_open_tabs() {
+        let result = exec(
+            r#"mutation { openTabs(urls: ["https://new.com", "https://new2.com"], group: "Work") { tabs { tabId url title } skippedUrls { url reason } windowId groupId } }"#,
+        );
+        assert!(result.get("errors").is_none());
+        let open = &result["data"]["openTabs"];
+        let tabs = open["tabs"].as_array().unwrap();
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs[0]["tabId"], 50);
+        assert_eq!(tabs[0]["url"], "https://new.com");
+        assert_eq!(tabs[1]["tabId"], 51);
+        assert_eq!(tabs[1]["url"], "https://new2.com");
+        // Skipped URLs
+        let skipped = open["skippedUrls"].as_array().unwrap();
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0]["url"], "https://dup.com");
+        assert_eq!(skipped[0]["reason"], "duplicate");
+        // Window and group IDs
+        assert_eq!(open["windowId"], 100);
+        assert_eq!(open["groupId"], 10);
+    }
+
+    #[test]
+    fn mutation_refresh_tabs() {
+        let result = exec("mutation { refreshTabs(tabIds: [1, 2]) { refreshedTabs } }");
+        assert!(result.get("errors").is_none());
+        assert_eq!(result["data"]["refreshTabs"]["refreshedTabs"], 2);
+    }
+
+    #[test]
+    fn mutation_assign_to_group() {
+        let result = exec(
+            r#"mutation { assignToGroup(tabIds: [1, 2], groupTitle: "Dev") { groupId title } }"#,
+        );
+        assert!(result.get("errors").is_none());
+        let group = &result["data"]["assignToGroup"];
+        assert_eq!(group["groupId"], 20);
+        assert_eq!(group["title"], "Dev");
     }
 }

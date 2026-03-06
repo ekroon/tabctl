@@ -72,7 +72,7 @@ pub(crate) fn tab_from_value(val: &Value, window_id: i32) -> Option<Tab> {
         group_collapsed: val.get("groupCollapsed").and_then(Value::as_bool),
         pinned: val.get("pinned").and_then(Value::as_bool).unwrap_or(false),
         index: val.get("index").and_then(Value::as_i64).unwrap_or(0) as i32,
-        last_focused_at: val.get("lastFocusedAt").and_then(Value::as_f64),
+        last_accessed_at: val.get("lastAccessedAt").and_then(Value::as_f64),
         fav_icon_url: val
             .get("favIconUrl")
             .and_then(Value::as_str)
@@ -119,7 +119,7 @@ mod tests {
                 "windowId": 100,
                 "focused": true,
                 "tabs": [
-                    {"tabId": 1, "windowId": 100, "index": 0, "url": "https://a.com", "title": "A", "active": true, "pinned": false, "groupId": 10, "groupTitle": "Work", "groupColor": "blue", "groupCollapsed": false, "lastFocusedAt": 1700000000000.0},
+                    {"tabId": 1, "windowId": 100, "index": 0, "url": "https://a.com", "title": "A", "active": true, "pinned": false, "groupId": 10, "groupTitle": "Work", "groupColor": "blue", "groupCollapsed": false, "lastAccessedAt": 1700000000000.0},
                     {"tabId": 2, "windowId": 100, "index": 1, "url": "https://b.com", "title": "B", "active": false, "pinned": true, "groupId": -1}
                 ],
                 "groups": [{"groupId": 10, "title": "Work", "color": "blue", "collapsed": false}]
@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(tab.group_title.as_deref(), Some("Work"));
         assert_eq!(tab.group_color.as_deref(), Some("blue"));
         assert_eq!(tab.group_collapsed, Some(false));
-        assert_eq!(tab.last_focused_at, Some(1700000000000.0));
+        assert_eq!(tab.last_accessed_at, Some(1700000000000.0));
 
         // Ungrouped tab has no group metadata or timestamp
         let tab2 = &windows[0].tabs[1];
@@ -159,7 +159,7 @@ mod tests {
         assert!(tab2.group_title.is_none());
         assert!(tab2.group_color.is_none());
         assert!(tab2.group_collapsed.is_none());
-        assert!(tab2.last_focused_at.is_none());
+        assert!(tab2.last_accessed_at.is_none());
     }
 
     #[test]

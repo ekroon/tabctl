@@ -1,5 +1,6 @@
 use serde_json::{Map, Value};
 use std::collections::HashMap;
+use tabctl_shared::normalize_url;
 
 use super::scope::{select_tabs_by_scope, ScopedTab};
 use super::OrchStep;
@@ -83,7 +84,7 @@ impl AnalyzeOrchestration {
             let tab_val = tab_to_value(tab);
             tab_values.push(tab_val.clone());
 
-            if let Some(lfa) = tab.last_focused_at {
+            if let Some(lfa) = tab.last_accessed_at {
                 if now_ms.saturating_sub(lfa as u64) > stale_threshold_ms {
                     stale_tabs.push(tab_val);
                 }
@@ -246,37 +247,8 @@ fn tab_to_value(tab: &ScopedTab) -> Value {
         "groupTitle": tab.group_title,
         "active": tab.active,
         "pinned": tab.pinned,
-        "lastFocusedAt": tab.last_focused_at,
+        "lastAccessedAt": tab.last_accessed_at,
     })
-}
-
-/// Normalize a URL for duplicate detection: strip protocol, www., trailing
-/// slash, and sort query parameters.
-fn normalize_url(url: &str) -> String {
-    let stripped = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .unwrap_or(url);
-    let without_fragment = stripped.split('#').next().unwrap_or(stripped);
-    let without_www = without_fragment
-        .strip_prefix("www.")
-        .unwrap_or(without_fragment);
-
-    let result = if let Some(qmark_idx) = without_www.find('?') {
-        let (base, query_with_q) = without_www.split_at(qmark_idx);
-        let query = &query_with_q[1..];
-        if query.is_empty() {
-            base.to_string()
-        } else {
-            let mut params: Vec<&str> = query.split('&').collect();
-            params.sort();
-            format!("{}?{}", base, params.join("&"))
-        }
-    } else {
-        without_www.to_string()
-    };
-
-    result.trim_end_matches('/').to_lowercase()
 }
 
 fn extract_domain(url: &str) -> Option<String> {
