@@ -298,7 +298,7 @@ impl Mutation {
             .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
 
         let tabs = response
-            .get("tabs")
+            .get("created")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
@@ -310,7 +310,41 @@ impl Mutation {
             })
             .unwrap_or_default();
 
-        Ok(OpenResult { tabs })
+        let skipped_urls = response
+            .get("skipped")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|s| {
+                        Some(SkippedUrl {
+                            url: s.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            reason: s
+                                .get("reason")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let window_id = response
+            .get("windowId")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
+
+        let group_id = response
+            .get("groupId")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
+
+        Ok(OpenResult {
+            tabs,
+            skipped_urls,
+            window_id,
+            group_id,
+        })
     }
 
     /// Refresh (reload) tabs by ID.

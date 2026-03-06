@@ -78,11 +78,26 @@ pub(crate) struct CloseResult {
     pub remaining_tabs: Vec<Tab>,
 }
 
+/// A URL that was skipped during an openTabs mutation.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct SkippedUrl {
+    /// The URL that was not opened.
+    pub url: String,
+    /// Why it was skipped (e.g. "duplicate", "create_failed").
+    pub reason: String,
+}
+
 /// Result of an openTabs mutation.
 #[derive(Debug, Clone, GraphQLObject)]
 pub(crate) struct OpenResult {
     /// The newly created tabs.
     pub tabs: Vec<Tab>,
+    /// URLs that were skipped (e.g. deduplicated or failed to create).
+    pub skipped_urls: Vec<SkippedUrl>,
+    /// Identifier of the window the tabs were opened in.
+    pub window_id: Option<i32>,
+    /// Identifier of the group the tabs were assigned to, if any.
+    pub group_id: Option<i32>,
 }
 
 /// Result of a refreshTabs mutation.
