@@ -8,9 +8,13 @@ path = "src/lib.rs"
 
 [dependencies]
 getrandom = "0.2"
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json = "1"
 sha2 = "0.10"
 tabctl-shared = { path = "../shared" }
+
+[dev-dependencies]
+tabctl-graphql = { path = "../graphql" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_Security"] }

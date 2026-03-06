@@ -123,3 +123,38 @@ impl Orchestration for ErrorOrchestration {
         }
     }
 }
+
+/// Drive an orchestration to completion with a sequence of mock primitive
+/// responses. Returns the final (response, undo) tuple. Panics on error or
+/// if responses run out before completion.
+#[cfg(test)]
+fn drive_to_completion(
+    orch: &mut dyn Orchestration,
+    responses: &[serde_json::Value],
+) -> (serde_json::Value, Option<serde_json::Value>) {
+    let mut step = orch.start();
+    let mut idx = 0;
+    loop {
+        match step {
+            OrchStep::Complete { response, undo } => return (response, undo),
+            OrchStep::Error { message, hint } => {
+                panic!("orchestration error: {message} (hint: {hint:?})")
+            }
+            OrchStep::SendPrimitive { .. } => {
+                assert!(
+                    idx < responses.len(),
+                    "ran out of mock responses at index {idx}"
+                );
+                step = orch.step(responses[idx].clone());
+                idx += 1;
+            }
+            OrchStep::Progress { .. } => {
+                step = orch.step(Value::Null);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod graphql_contracts;
+
