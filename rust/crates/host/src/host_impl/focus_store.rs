@@ -1,37 +1,59 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::Path;
+use std::{collections::BTreeMap, fs, path::Path};
 use tabctl_shared::normalize_url;
 
-/// Open (or create) the focus SQLite database at the given path.
-pub(super) fn open_focus_db(db_path: &Path) -> Result<Connection, String> {
-    if let Some(parent) = db_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let conn = Connection::open(db_path).map_err(|e| format!("Failed to open focus DB: {e}"))?;
-
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS tab_access (
-            normalized_url TEXT NOT NULL,
-            raw_url TEXT NOT NULL,
-            title TEXT,
-            last_accessed_at INTEGER NOT NULL,
-            profile TEXT,
-            updated_at INTEGER NOT NULL,
-            PRIMARY KEY (normalized_url, profile)
-        );
-        CREATE INDEX IF NOT EXISTS idx_tab_access_ts
-            ON tab_access(last_accessed_at DESC);",
-    )
-    .map_err(|e| format!("Failed to create focus DB schema: {e}"))?;
-
-    Ok(conn)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FocusEntry {
+    normalized_url: String,
+    raw_url: String,
+    title: Option<String>,
+    last_accessed_at: i64,
+    profile: String,
+    updated_at: i64,
 }
 
-/// Upsert a tab's access timestamp into the focus store.
-/// Only updates if the new timestamp is more recent.
-pub(super) fn upsert_access(
-    conn: &Connection,
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct FocusStore {
+    #[serde(default)]
+    entries: BTreeMap<String, FocusEntry>,
+}
+
+fn store_key(normalized_url: &str, profile: Option<&str>) -> String {
+    format!("{}\u{1f}{normalized_url}", profile.unwrap_or(""))
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn load_store(store_path: &Path) -> Result<FocusStore, String> {
+    let Ok(content) = fs::read_to_string(store_path) else {
+        return Ok(FocusStore::default());
+    };
+
+    if content.trim().is_empty() {
+        return Ok(FocusStore::default());
+    }
+
+    serde_json::from_str(&content).map_err(|e| format!("Failed to parse focus store: {e}"))
+}
+
+fn save_store(store_path: &Path, store: &FocusStore) -> Result<(), String> {
+    if let Some(parent) = store_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create focus store dir: {e}"))?;
+    }
+
+    let serialized =
+        serde_json::to_vec(store).map_err(|e| format!("Failed to serialize focus store: {e}"))?;
+    fs::write(store_path, serialized).map_err(|e| format!("Failed to write focus store: {e}"))
+}
+
+fn upsert_access(
+    store: &mut FocusStore,
     url: &str,
     title: Option<&str>,
     last_accessed_at: i64,
@@ -39,41 +61,52 @@ pub(super) fn upsert_access(
 ) {
     let normalized = normalize_url(url);
     let profile_str = profile.unwrap_or("");
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    let key = store_key(&normalized, profile);
+    let updated_at = now_ms();
 
-    let _ = conn.execute(
-        "INSERT INTO tab_access (normalized_url, raw_url, title, last_accessed_at, profile, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT(normalized_url, profile) DO UPDATE SET
-             raw_url = excluded.raw_url,
-             title = COALESCE(excluded.title, tab_access.title),
-             last_accessed_at = MAX(tab_access.last_accessed_at, excluded.last_accessed_at),
-             updated_at = excluded.updated_at",
-        params![normalized, url, title, last_accessed_at, profile_str, now_ms],
-    );
+    match store.entries.get_mut(&key) {
+        Some(existing) => {
+            existing.raw_url = url.to_string();
+            if let Some(title) = title {
+                existing.title = Some(title.to_string());
+            }
+            existing.last_accessed_at = existing.last_accessed_at.max(last_accessed_at);
+            existing.updated_at = updated_at;
+        }
+        None => {
+            store.entries.insert(
+                key,
+                FocusEntry {
+                    normalized_url: normalized,
+                    raw_url: url.to_string(),
+                    title: title.map(ToOwned::to_owned),
+                    last_accessed_at,
+                    profile: profile_str.to_string(),
+                    updated_at,
+                },
+            );
+        }
+    }
 }
 
-/// Look up the most recent access timestamp for a URL across all profiles.
-pub(super) fn lookup_access(conn: &Connection, url: &str) -> Option<i64> {
+fn lookup_access(store: &FocusStore, url: &str) -> Option<i64> {
     let normalized = normalize_url(url);
-    conn.query_row(
-        "SELECT MAX(last_accessed_at) FROM tab_access WHERE normalized_url = ?1",
-        params![normalized],
-        |row| row.get(0),
-    )
-    .optional()
-    .ok()
-    .flatten()
+    store
+        .entries
+        .values()
+        .filter(|entry| entry.normalized_url == normalized)
+        .map(|entry| entry.last_accessed_at)
+        .max()
 }
 
-/// Process a snapshot: upsert all tabs with timestamps, then enrich tabs
-/// missing timestamps from the store. Mutates the snapshot in place.
-pub(super) fn enrich_snapshot(conn: &Connection, snapshot: &mut Value, profile: Option<&str>) {
+pub(super) fn enrich_snapshot(
+    store_path: &Path,
+    snapshot: &mut Value,
+    profile: Option<&str>,
+) -> Result<(), String> {
+    let mut store = load_store(store_path)?;
     let Some(windows) = snapshot.get_mut("windows").and_then(Value::as_array_mut) else {
-        return;
+        return Ok(());
     };
 
     for window in windows.iter_mut() {
@@ -91,80 +124,104 @@ pub(super) fn enrich_snapshot(conn: &Connection, snapshot: &mut Value, profile: 
             let ts = tab.get("lastAccessedAt").and_then(Value::as_i64);
 
             if let Some(ts) = ts {
-                // Tab has a timestamp — store it
-                upsert_access(conn, url, title, ts, profile);
-            } else {
-                // Tab has no timestamp — try to enrich from store
-                if let Some(stored_ts) = lookup_access(conn, url) {
-                    tab.as_object_mut().map(|obj| {
-                        obj.insert(
-                            "lastAccessedAt".to_string(),
-                            Value::Number(stored_ts.into()),
-                        )
-                    });
+                upsert_access(&mut store, url, title, ts, profile);
+                continue;
+            }
+
+            if let Some(stored_ts) = lookup_access(&store, url) {
+                if let Some(obj) = tab.as_object_mut() {
+                    obj.insert(
+                        "lastAccessedAt".to_string(),
+                        Value::Number(stored_ts.into()),
+                    );
                 }
             }
         }
     }
+
+    save_store(store_path, &store)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn in_memory_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE tab_access (
-                normalized_url TEXT NOT NULL,
-                raw_url TEXT NOT NULL,
-                title TEXT,
-                last_accessed_at INTEGER NOT NULL,
-                profile TEXT,
-                updated_at INTEGER NOT NULL,
-                PRIMARY KEY (normalized_url, profile)
-            );
-            CREATE INDEX idx_tab_access_ts ON tab_access(last_accessed_at DESC);",
-        )
-        .unwrap();
-        conn
+    struct TempStorePath(std::path::PathBuf);
+
+    impl TempStorePath {
+        fn new() -> Self {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            Self(std::env::temp_dir().join(format!("tabctl-focus-store-{unique}.json")))
+        }
+
+        fn as_path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempStorePath {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
     }
 
     #[test]
     fn upsert_and_lookup() {
-        let conn = in_memory_db();
-        upsert_access(&conn, "https://example.com", Some("Example"), 1000, None);
-        assert_eq!(lookup_access(&conn, "https://example.com"), Some(1000));
+        let mut store = FocusStore::default();
+        upsert_access(
+            &mut store,
+            "https://example.com",
+            Some("Example"),
+            1000,
+            None,
+        );
+        assert_eq!(lookup_access(&store, "https://example.com"), Some(1000));
     }
 
     #[test]
     fn upsert_keeps_higher_timestamp() {
-        let conn = in_memory_db();
-        upsert_access(&conn, "https://example.com", Some("Old"), 1000, None);
-        upsert_access(&conn, "https://example.com", Some("New"), 500, None);
-        assert_eq!(lookup_access(&conn, "https://example.com"), Some(1000));
+        let mut store = FocusStore::default();
+        upsert_access(&mut store, "https://example.com", Some("Old"), 1000, None);
+        upsert_access(&mut store, "https://example.com", Some("New"), 500, None);
+        assert_eq!(lookup_access(&store, "https://example.com"), Some(1000));
     }
 
     #[test]
     fn lookup_normalizes_url() {
-        let conn = in_memory_db();
-        upsert_access(&conn, "https://www.example.com/page#frag", None, 2000, None);
-        assert_eq!(lookup_access(&conn, "http://example.com/page"), Some(2000));
+        let mut store = FocusStore::default();
+        upsert_access(
+            &mut store,
+            "https://www.example.com/page#frag",
+            None,
+            2000,
+            None,
+        );
+        assert_eq!(lookup_access(&store, "http://example.com/page"), Some(2000));
     }
 
     #[test]
     fn cross_profile_lookup() {
-        let conn = in_memory_db();
-        upsert_access(&conn, "https://example.com", None, 1000, Some("edge"));
-        upsert_access(&conn, "https://example.com", None, 2000, Some("chrome"));
-        // MAX across profiles
-        assert_eq!(lookup_access(&conn, "https://example.com"), Some(2000));
+        let mut store = FocusStore::default();
+        upsert_access(&mut store, "https://example.com", None, 1000, Some("edge"));
+        upsert_access(
+            &mut store,
+            "https://example.com",
+            None,
+            2000,
+            Some("chrome"),
+        );
+        assert_eq!(lookup_access(&store, "https://example.com"), Some(2000));
     }
 
     #[test]
     fn enrich_snapshot_fills_missing_timestamps() {
-        let conn = in_memory_db();
-        upsert_access(&conn, "https://a.com", Some("A"), 5000, None);
+        let path = TempStorePath::new();
+        let mut store = FocusStore::default();
+        upsert_access(&mut store, "https://a.com", Some("A"), 5000, None);
+        save_store(path.as_path(), &store).unwrap();
 
         let mut snapshot = serde_json::json!({
             "windows": [{
@@ -176,13 +233,12 @@ mod tests {
             }]
         });
 
-        enrich_snapshot(&conn, &mut snapshot, None);
+        enrich_snapshot(path.as_path(), &mut snapshot, None).unwrap();
+        let persisted = load_store(path.as_path()).unwrap();
 
         let tabs = snapshot["windows"][0]["tabs"].as_array().unwrap();
-        // Tab 1 was enriched from store
         assert_eq!(tabs[0]["lastAccessedAt"], 5000);
-        // Tab 2 kept its own timestamp and was stored
         assert_eq!(tabs[1]["lastAccessedAt"], 3000);
-        assert_eq!(lookup_access(&conn, "https://b.com"), Some(3000));
+        assert_eq!(lookup_access(&persisted, "https://b.com"), Some(3000));
     }
 }

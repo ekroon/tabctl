@@ -406,13 +406,11 @@ impl HostState {
             // Enrich snapshot responses with focus store data
             let mut response_data = message.data.clone().unwrap_or(Value::Object(message_data));
             if response_data.get("windows").is_some() {
-                if let Ok(conn) = focus_store::open_focus_db(&self.focus_db_path) {
-                    focus_store::enrich_snapshot(
-                        &conn,
-                        &mut response_data,
-                        self.profile_name.as_deref(),
-                    );
-                }
+                let _ = focus_store::enrich_snapshot(
+                    &self.focus_db_path,
+                    &mut response_data,
+                    self.profile_name.as_deref(),
+                );
             }
             let step = orch.step(response_data);
             return self.process_orch_step(
