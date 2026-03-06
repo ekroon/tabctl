@@ -58,6 +58,37 @@ impl ListOrchestration {
         let mut tabs = scope_result.tabs;
         let total_tabs = tabs.len();
 
+        // Sort tabs before pagination
+        let sort_field = self
+            .params
+            .get("sort")
+            .and_then(Value::as_str)
+            .unwrap_or("index");
+        match sort_field {
+            "last-accessed" => {
+                tabs.sort_by(|a, b| {
+                    let ta = a.last_accessed_at.unwrap_or(0);
+                    let tb = b.last_accessed_at.unwrap_or(0);
+                    tb.cmp(&ta) // descending: most recent first
+                });
+            }
+            "title" => {
+                tabs.sort_by(|a, b| {
+                    let ta = a.title.as_deref().unwrap_or("");
+                    let tb = b.title.as_deref().unwrap_or("");
+                    ta.to_lowercase().cmp(&tb.to_lowercase())
+                });
+            }
+            "url" => {
+                tabs.sort_by(|a, b| {
+                    let ua = a.url.as_deref().unwrap_or("");
+                    let ub = b.url.as_deref().unwrap_or("");
+                    ua.to_lowercase().cmp(&ub.to_lowercase())
+                });
+            }
+            _ => {} // "index" — default order from snapshot
+        }
+
         // Apply offset
         let offset = self
             .params
@@ -100,18 +131,25 @@ impl ListOrchestration {
     }
 }
 
-/// Reconstruct windows from scoped tabs, preserving group info.
+/// Reconstruct windows from scoped tabs, preserving tab order.
+///
+/// Window emission order follows first-appearance of each window in the
+/// (already-sorted) tab list, so that `--sort last-accessed` keeps the
+/// most-recently-accessed window first.
 fn reconstruct_windows(tabs: &[ScopedTab], windows: &[Value]) -> Vec<Value> {
-    use std::collections::BTreeMap;
-
-    // Group tabs by windowId
-    let mut by_window: BTreeMap<i64, Vec<&ScopedTab>> = BTreeMap::new();
+    // Collect unique window IDs in first-appearance order
+    let mut seen = std::collections::HashSet::new();
+    let mut win_order: Vec<i64> = Vec::new();
     for tab in tabs {
-        by_window.entry(tab.window_id).or_default().push(tab);
+        if seen.insert(tab.window_id) {
+            win_order.push(tab.window_id);
+        }
     }
 
     let mut result = Vec::new();
-    for (win_id, win_tabs) in &by_window {
+    for win_id in &win_order {
+        let win_tabs: Vec<&ScopedTab> = tabs.iter().filter(|t| t.window_id == *win_id).collect();
+
         let win_meta = windows
             .iter()
             .find(|w| w.get("windowId").and_then(Value::as_i64) == Some(*win_id));
@@ -151,7 +189,7 @@ fn reconstruct_windows(tabs: &[ScopedTab], windows: &[Value]) -> Vec<Value> {
 }
 
 fn shape_scoped_tab(t: &ScopedTab) -> Value {
-    serde_json::json!({
+    let mut obj = serde_json::json!({
         "tabId": t.tab_id,
         "windowId": t.window_id,
         "url": t.url,
@@ -161,7 +199,11 @@ fn shape_scoped_tab(t: &ScopedTab) -> Value {
         "index": t.index,
         "groupId": t.group_id,
         "groupTitle": t.group_title,
-    })
+    });
+    if let Some(ts) = t.last_accessed_at {
+        obj["lastAccessedAt"] = Value::Number(ts.into());
+    }
+    obj
 }
 
 fn shape_group(g: &Value) -> Value {
@@ -298,9 +340,9 @@ mod tests {
                     "focused": true,
                     "state": "normal",
                     "tabs": [
-                        {"tabId": 1, "windowId": 100, "index": 0, "url": "https://a.com", "title": "A", "active": true, "pinned": false, "groupId": 10, "groupTitle": "Work", "groupColor": "blue", "groupCollapsed": false, "lastFocusedAt": null},
-                        {"tabId": 2, "windowId": 100, "index": 1, "url": "https://b.com", "title": "B", "active": false, "pinned": true, "groupId": 10, "groupTitle": "Work", "groupColor": "blue", "groupCollapsed": false, "lastFocusedAt": 1_700_000_000},
-                        {"tabId": 3, "windowId": 100, "index": 2, "url": "https://c.com", "title": "C", "active": false, "pinned": false, "groupId": -1, "groupTitle": null, "groupColor": null, "groupCollapsed": null, "lastFocusedAt": null}
+                        {"tabId": 1, "windowId": 100, "index": 0, "url": "https://a.com", "title": "A", "active": true, "pinned": false, "groupId": 10, "groupTitle": "Work", "groupColor": "blue", "groupCollapsed": false, "lastAccessedAt": null},
+                        {"tabId": 2, "windowId": 100, "index": 1, "url": "https://b.com", "title": "B", "active": false, "pinned": true, "groupId": 10, "groupTitle": "Work", "groupColor": "blue", "groupCollapsed": false, "lastAccessedAt": 1_700_000_000},
+                        {"tabId": 3, "windowId": 100, "index": 2, "url": "https://c.com", "title": "C", "active": false, "pinned": false, "groupId": -1, "groupTitle": null, "groupColor": null, "groupCollapsed": null, "lastAccessedAt": null}
                     ],
                     "groups": [
                         {"groupId": 10, "title": "Work", "color": "blue", "collapsed": false}
@@ -353,7 +395,14 @@ mod tests {
         // Verify enriched fields are present, dropped fields are absent
         assert!(tab.get("index").is_some());
         assert!(tab.get("pinned").is_some());
-        assert!(tab.get("lastFocusedAt").is_none());
+        // Tab 1 has null lastAccessedAt, so not included
+        assert!(tab.get("lastAccessedAt").is_none());
+        // Tab 2 has a timestamp, so it should be included
+        let tab2 = &tabs[1];
+        assert_eq!(
+            tab2.get("lastAccessedAt").and_then(Value::as_i64),
+            Some(1_700_000_000)
+        );
 
         // Pagination always present
         let pg = response.get("pagination").unwrap();
@@ -669,5 +718,146 @@ mod tests {
         assert!(undo.is_none());
         // Raw response returned unchanged
         assert_eq!(response, snap);
+    }
+
+    fn snapshot_with_timestamps() -> Value {
+        serde_json::json!({
+            "generatedAt": 1_700_000_000_000_u64,
+            "windows": [
+                {
+                    "windowId": 100,
+                    "focused": true,
+                    "state": "normal",
+                    "tabs": [
+                        {"tabId": 1, "windowId": 100, "index": 0, "url": "https://z.com", "title": "Zebra", "active": false, "pinned": false, "groupId": -1, "lastAccessedAt": 1000},
+                        {"tabId": 2, "windowId": 100, "index": 1, "url": "https://a.com", "title": "Apple", "active": false, "pinned": false, "groupId": -1, "lastAccessedAt": 3000},
+                        {"tabId": 3, "windowId": 100, "index": 2, "url": "https://m.com", "title": "Mango", "active": true, "pinned": false, "groupId": -1, "lastAccessedAt": 2000},
+                        {"tabId": 4, "windowId": 100, "index": 3, "url": "https://b.com", "title": "Banana", "active": false, "pinned": false, "groupId": -1, "lastAccessedAt": null}
+                    ],
+                    "groups": []
+                }
+            ]
+        })
+    }
+
+    fn tab_ids_in_order(response: &Value) -> Vec<i64> {
+        response["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|w| w["tabs"].as_array().unwrap())
+            .map(|t| t["tabId"].as_i64().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn sort_last_accessed_orders_by_most_recent_first() {
+        let params = serde_json::json!({"all": true, "sort": "last-accessed"});
+        let mut orch = ListOrchestration::new(&params);
+        orch.start();
+        let result = orch.step(snapshot_with_timestamps());
+        let OrchStep::Complete { response, .. } = result else {
+            panic!("expected Complete");
+        };
+        // 3000, 2000, 1000, null(0)
+        assert_eq!(tab_ids_in_order(&response), vec![2, 3, 1, 4]);
+    }
+
+    #[test]
+    fn sort_title_orders_alphabetically() {
+        let params = serde_json::json!({"all": true, "sort": "title"});
+        let mut orch = ListOrchestration::new(&params);
+        orch.start();
+        let result = orch.step(snapshot_with_timestamps());
+        let OrchStep::Complete { response, .. } = result else {
+            panic!("expected Complete");
+        };
+        // Apple, Banana, Mango, Zebra
+        assert_eq!(tab_ids_in_order(&response), vec![2, 4, 3, 1]);
+    }
+
+    #[test]
+    fn sort_url_orders_alphabetically() {
+        let params = serde_json::json!({"all": true, "sort": "url"});
+        let mut orch = ListOrchestration::new(&params);
+        orch.start();
+        let result = orch.step(snapshot_with_timestamps());
+        let OrchStep::Complete { response, .. } = result else {
+            panic!("expected Complete");
+        };
+        // a.com, b.com, m.com, z.com
+        assert_eq!(tab_ids_in_order(&response), vec![2, 4, 3, 1]);
+    }
+
+    #[test]
+    fn sort_index_preserves_original_order() {
+        let params = serde_json::json!({"all": true, "sort": "index"});
+        let mut orch = ListOrchestration::new(&params);
+        orch.start();
+        let result = orch.step(snapshot_with_timestamps());
+        let OrchStep::Complete { response, .. } = result else {
+            panic!("expected Complete");
+        };
+        // Original snapshot order
+        assert_eq!(tab_ids_in_order(&response), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn default_sort_is_index_order() {
+        let params = serde_json::json!({"all": true});
+        let mut orch = ListOrchestration::new(&params);
+        orch.start();
+        let result = orch.step(snapshot_with_timestamps());
+        let OrchStep::Complete { response, .. } = result else {
+            panic!("expected Complete");
+        };
+        // No sort param = index order
+        assert_eq!(tab_ids_in_order(&response), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn sort_last_accessed_preserves_window_order_across_windows() {
+        // Tab 5 (window 200) has the most recent timestamp, so window 200
+        // must appear before window 100 in the sorted output.
+        let snap = serde_json::json!({
+            "generatedAt": 1_700_000_000_000_u64,
+            "windows": [
+                {
+                    "windowId": 100,
+                    "focused": true,
+                    "state": "normal",
+                    "tabs": [
+                        {"tabId": 1, "windowId": 100, "index": 0, "url": "https://a.com", "title": "A", "active": false, "pinned": false, "groupId": -1, "lastAccessedAt": 1000},
+                        {"tabId": 2, "windowId": 100, "index": 1, "url": "https://b.com", "title": "B", "active": false, "pinned": false, "groupId": -1, "lastAccessedAt": 2000}
+                    ],
+                    "groups": []
+                },
+                {
+                    "windowId": 200,
+                    "focused": false,
+                    "state": "normal",
+                    "tabs": [
+                        {"tabId": 5, "windowId": 200, "index": 0, "url": "https://e.com", "title": "E", "active": true, "pinned": false, "groupId": -1, "lastAccessedAt": 9000}
+                    ],
+                    "groups": []
+                }
+            ]
+        });
+
+        let params = serde_json::json!({"all": true, "sort": "last-accessed"});
+        let mut orch = ListOrchestration::new(&params);
+        orch.start();
+        let result = orch.step(snap);
+        let OrchStep::Complete { response, .. } = result else {
+            panic!("expected Complete");
+        };
+
+        // Global sort: 9000, 2000, 1000 → tab 5 first, so window 200 first
+        let windows = response["windows"].as_array().unwrap();
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0]["windowId"], 200);
+        assert_eq!(windows[1]["windowId"], 100);
+        // Tab order within windows is preserved by sort
+        assert_eq!(tab_ids_in_order(&response), vec![5, 2, 1]);
     }
 }

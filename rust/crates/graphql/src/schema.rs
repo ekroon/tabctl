@@ -1,4 +1,4 @@
-use juniper::{graphql_object, EmptySubscription, FieldResult, RootNode};
+use juniper::{graphql_object, EmptySubscription, FieldResult, GraphQLEnum, RootNode};
 
 use crate::context::GqlContext;
 use crate::convert::{tab_from_value, windows_from_snapshot};
@@ -8,6 +8,21 @@ pub(crate) type Schema = RootNode<'static, Query, Mutation, EmptySubscription<Gq
 
 pub(crate) fn create_schema() -> Schema {
     Schema::new(Query, Mutation, EmptySubscription::new())
+}
+
+/// Sort order for tab queries.
+#[derive(Debug, Clone, Copy, GraphQLEnum)]
+pub(crate) enum TabOrderBy {
+    /// Most recently accessed first.
+    LastAccessedDesc,
+    /// Least recently accessed first.
+    LastAccessedAsc,
+    /// Alphabetical by title (A-Z).
+    TitleAsc,
+    /// Reverse alphabetical by title (Z-A).
+    TitleDesc,
+    /// Tab position within window (default).
+    IndexAsc,
 }
 
 /// Query root — read-only access to tab data from a snapshot.
@@ -33,6 +48,7 @@ impl Query {
     }
 
     /// Paginated tabs with optional scope filters.
+    #[allow(clippy::too_many_arguments)]
     fn tabs(
         ctx: &GqlContext,
         #[graphql(description = "Restrict to tabs in this window.")] window_id: Option<i32>,
@@ -43,6 +59,7 @@ impl Query {
         group_title: Option<String>,
         #[graphql(description = "When true, return only ungrouped tabs (groupId = -1).")]
         ungrouped: Option<bool>,
+        #[graphql(description = "Sort order (default: INDEX_ASC).")] order_by: Option<TabOrderBy>,
         #[graphql(description = "Maximum number of tabs to return per page (default 20).")]
         limit: Option<i32>,
         #[graphql(description = "Zero-based offset into the result set.")] offset: Option<i32>,
@@ -61,6 +78,30 @@ impl Query {
         }
         if ungrouped == Some(true) {
             tabs.retain(|t| t.group_id == -1);
+        }
+
+        match order_by.unwrap_or(TabOrderBy::IndexAsc) {
+            TabOrderBy::LastAccessedDesc => {
+                tabs.sort_by(|a, b| {
+                    let ta = a.last_accessed_at.unwrap_or(0.0);
+                    let tb = b.last_accessed_at.unwrap_or(0.0);
+                    tb.partial_cmp(&ta).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+            TabOrderBy::LastAccessedAsc => {
+                tabs.sort_by(|a, b| {
+                    let ta = a.last_accessed_at.unwrap_or(0.0);
+                    let tb = b.last_accessed_at.unwrap_or(0.0);
+                    ta.partial_cmp(&tb).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+            TabOrderBy::TitleAsc => {
+                tabs.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+            }
+            TabOrderBy::TitleDesc => {
+                tabs.sort_by(|a, b| b.title.to_lowercase().cmp(&a.title.to_lowercase()));
+            }
+            TabOrderBy::IndexAsc => {} // default order from snapshot
         }
 
         paginate_tabs(tabs, limit, offset)

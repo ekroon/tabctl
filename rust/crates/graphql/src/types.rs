@@ -25,8 +25,8 @@ pub(crate) struct Tab {
     pub pinned: bool,
     /// Zero-based position of the tab within its window.
     pub index: i32,
-    /// Unix timestamp (ms) when this tab was last focused, or null if never focused since the extension loaded.
-    pub last_focused_at: Option<f64>,
+    /// Unix timestamp (ms) of the last time this tab was accessed, or null if unknown.
+    pub last_accessed_at: Option<f64>,
     /// URL of the tab's favicon, if available.
     pub fav_icon_url: Option<String>,
     /// Loading status: "loading" or "complete".

@@ -1,4 +1,5 @@
 use serde_json::{Map, Value};
+use tabctl_shared::normalize_url;
 
 use super::resolve::resolve_window_id;
 use super::OrchStep;
@@ -294,17 +295,18 @@ impl OpenOrchestration {
                                         .filter(|t| {
                                             t.get("groupId").and_then(Value::as_i64) == Some(gid)
                                         })
-                                        .filter_map(|t| {
-                                            t.get("url").and_then(Value::as_str).map(normalize_url)
-                                        })
-                                        .flatten()
+                                        .filter_map(|t| t.get("url").and_then(Value::as_str))
+                                        .filter(|u| !u.trim().is_empty())
+                                        .map(normalize_url)
                                         .collect()
                                 })
                                 .unwrap_or_default();
 
                             let mut filtered_urls = Vec::new();
                             for url in &self.state.urls {
-                                if let Some(norm) = normalize_url(url) {
+                                let trimmed = url.trim();
+                                if !trimmed.is_empty() {
+                                    let norm = normalize_url(trimmed);
                                     if existing_urls.contains(&norm) {
                                         self.state.skipped.push(
                                             serde_json::json!({"url": url, "reason": "duplicate"}),
@@ -564,21 +566,6 @@ impl OpenOrchestration {
     }
 }
 
-/// Normalize URL for duplicate comparison (strip protocol, trailing slash, fragment).
-fn normalize_url(url: &str) -> Option<String> {
-    let url = url.trim();
-    if url.is_empty() {
-        return None;
-    }
-    let stripped = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .unwrap_or(url);
-    let without_fragment = stripped.split('#').next().unwrap_or(stripped);
-    let without_trailing = without_fragment.trim_end_matches('/');
-    Some(without_trailing.to_lowercase())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -689,13 +676,10 @@ mod tests {
 
     #[test]
     fn normalize_url_strips_protocol_and_trailing_slash() {
-        assert_eq!(
-            normalize_url("https://example.com/"),
-            Some("example.com".to_string())
-        );
+        assert_eq!(normalize_url("https://example.com/"), "example.com");
         assert_eq!(
             normalize_url("http://Example.COM/path#frag"),
-            Some("example.com/path".to_string())
+            "example.com/path"
         );
     }
 

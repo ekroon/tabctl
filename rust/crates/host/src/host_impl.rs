@@ -1,4 +1,5 @@
 mod dispatch;
+mod focus_store;
 mod orchestrate;
 mod protocol;
 mod runtime;
@@ -86,6 +87,11 @@ mod tests {
         std::env::temp_dir().join(name)
     }
 
+    fn temp_focus_db_path() -> PathBuf {
+        let name = format!("tabctl-focus-{}-{}.db", now_ms(), create_id("test"));
+        std::env::temp_dir().join(name)
+    }
+
     #[test]
     fn native_message_framing_roundtrip() {
         let msg = NativeMessage {
@@ -125,7 +131,7 @@ mod tests {
     #[test]
     fn forwards_mutation_with_txid_and_client_metadata() {
         let undo_path = temp_undo_path();
-        let mut state = HostState::new(undo_path);
+        let mut state = HostState::new(undo_path, temp_focus_db_path(), None);
 
         // Use group-update through orchestration: first step is p:snapshot
         let request = RequestEnvelope {
@@ -147,7 +153,7 @@ mod tests {
     #[test]
     fn records_undo_on_successful_native_response() {
         let undo_path = temp_undo_path();
-        let mut state = HostState::new(undo_path.clone());
+        let mut state = HostState::new(undo_path.clone(), temp_focus_db_path(), None);
 
         // Use group-update through orchestration
         let request = RequestEnvelope {
@@ -226,7 +232,7 @@ mod tests {
     #[test]
     fn analyze_then_close_apply_uses_analysis_candidates() {
         let undo_path = temp_undo_path();
-        let mut state = HostState::new(undo_path);
+        let mut state = HostState::new(undo_path, temp_focus_db_path(), None);
 
         let analyze_request = RequestEnvelope {
             id: Some("req-analyze".to_string()),
@@ -241,7 +247,7 @@ mod tests {
         };
         assert_eq!(snapshot_native.action.as_deref(), Some("p:snapshot"));
 
-        // Provide snapshot with a stale tab (lastFocusedAt: 0 = epoch = definitely stale)
+        // Provide snapshot with a stale tab (lastAccessedAt: 0 = epoch = definitely stale)
         let snapshot_response = state.handle_native_message(NativeMessage {
             id: snapshot_native.id.clone(),
             action: Some("p:snapshot".to_string()),
@@ -261,7 +267,7 @@ mod tests {
                         "active": true,
                         "pinned": false,
                         "groupId": -1,
-                        "lastFocusedAt": 0
+                        "lastAccessedAt": 0
                     }],
                     "groups": []
                 }]
@@ -317,7 +323,7 @@ mod tests {
         append_undo_record(&undo_path, &first);
         append_undo_record(&undo_path, &second);
 
-        let mut state = HostState::new(undo_path.clone());
+        let mut state = HostState::new(undo_path.clone(), temp_focus_db_path(), None);
         let effects = state.handle_cli_request(
             5,
             RequestEnvelope {
@@ -349,7 +355,7 @@ mod tests {
 
     #[test]
     fn undo_without_txid_or_latest_returns_error_with_hint() {
-        let mut state = HostState::new(temp_undo_path());
+        let mut state = HostState::new(temp_undo_path(), temp_focus_db_path(), None);
         let effects = state.handle_cli_request(
             2,
             RequestEnvelope {
@@ -376,7 +382,7 @@ mod tests {
 
     #[test]
     fn ping_response_preserves_runtime_extension_id() {
-        let mut state = HostState::new(temp_undo_path());
+        let mut state = HostState::new(temp_undo_path(), temp_focus_db_path(), None);
         let effects = state.handle_cli_request(
             5,
             RequestEnvelope {
@@ -451,7 +457,7 @@ mod tests {
 
     #[test]
     fn version_action_is_served_locally_with_host_metadata() {
-        let mut state = HostState::new(temp_undo_path());
+        let mut state = HostState::new(temp_undo_path(), temp_focus_db_path(), None);
         let effects = state.handle_cli_request(
             11,
             RequestEnvelope {
@@ -479,7 +485,7 @@ mod tests {
 
     #[test]
     fn non_ping_response_does_not_include_host_version_metadata() {
-        let mut state = HostState::new(temp_undo_path());
+        let mut state = HostState::new(temp_undo_path(), temp_focus_db_path(), None);
         let effects = state.handle_cli_request(
             12,
             RequestEnvelope {
@@ -527,7 +533,7 @@ mod tests {
 
     #[test]
     fn missing_action_error_response_omits_host_metadata() {
-        let mut state = HostState::new(temp_undo_path());
+        let mut state = HostState::new(temp_undo_path(), temp_focus_db_path(), None);
         let effects = state.handle_cli_request(
             88,
             RequestEnvelope {
@@ -664,7 +670,7 @@ mod tests {
     #[test]
     fn tcp_auth_token_accepts_correct_token() {
         let undo_path = temp_undo_path();
-        let mut state = HostState::new(undo_path);
+        let mut state = HostState::new(undo_path, temp_focus_db_path(), None);
         let expected_token = Arc::new("correct-token-abc123".to_string());
 
         let request = RequestEnvelope {
@@ -704,7 +710,7 @@ mod tests {
     #[test]
     fn no_expected_token_skips_validation() {
         let undo_path = temp_undo_path();
-        let mut state = HostState::new(undo_path);
+        let mut state = HostState::new(undo_path, temp_focus_db_path(), None);
 
         // No auth_token on request, no expected token (Unix socket / pipe path)
         let request = RequestEnvelope {
@@ -839,7 +845,7 @@ mod tests {
     #[test]
     fn orchestration_two_step_sequence_sends_primitives_then_completes() {
         let undo_path = temp_undo_path();
-        let mut state = HostState::new(undo_path);
+        let mut state = HostState::new(undo_path, temp_focus_db_path(), None);
 
         // Simulate: start orchestration manually (since orchestration_for
         // returns None, we inject directly via process_orch_step)
@@ -906,7 +912,7 @@ mod tests {
     #[test]
     fn orchestration_error_step_returns_error_response() {
         let undo_path = temp_undo_path();
-        let mut state = HostState::new(undo_path);
+        let mut state = HostState::new(undo_path, temp_focus_db_path(), None);
 
         let step = OrchStep::Error {
             message: "test error".to_string(),
@@ -939,7 +945,7 @@ mod tests {
     #[test]
     fn orchestration_extension_error_aborts_orchestration() {
         let undo_path = temp_undo_path();
-        let mut state = HostState::new(undo_path);
+        let mut state = HostState::new(undo_path, temp_focus_db_path(), None);
 
         // Start a 2-step orchestration
         let mut orch = TwoStepOrch::new();

@@ -137,7 +137,15 @@ pub(super) fn command_query() -> Command {
 }
 
 pub(super) fn command_list() -> Command {
-    command_with_scope("list").arg(Arg::new("groups").long("groups").action(ArgAction::SetTrue))
+    command_with_scope("list")
+        .arg(Arg::new("groups").long("groups").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("sort")
+                .long("sort")
+                .value_name("FIELD")
+                .value_parser(["last-accessed", "title", "url", "index"])
+                .help("Sort tabs by field (default: index)"),
+        )
 }
 
 pub(super) fn command_help() -> Command {

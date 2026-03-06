@@ -37,7 +37,7 @@ struct ReportTab {
     group_id: i64,
     group_title: Option<String>,
     group_color: Option<String>,
-    last_focused_at: Option<i64>,
+    last_accessed_at: Option<i64>,
     scriptable: bool,
 }
 
@@ -79,8 +79,8 @@ fn build_report_entry(tab: &ReportTab, description: &str) -> Value {
     if let Some(ref color) = tab.group_color {
         entry["groupColor"] = Value::String(color.clone());
     }
-    if let Some(ts) = tab.last_focused_at {
-        entry["lastFocusedAt"] = Value::Number(ts.into());
+    if let Some(ts) = tab.last_accessed_at {
+        entry["lastAccessedAt"] = Value::Number(ts.into());
     }
     entry
 }
@@ -109,7 +109,7 @@ impl ReportOrchestration {
                     group_id: t.group_id,
                     group_title: t.group_title.clone(),
                     group_color: t.group_color.clone(),
-                    last_focused_at: t.last_focused_at,
+                    last_accessed_at: t.last_accessed_at,
                     scriptable,
                 }
             })
