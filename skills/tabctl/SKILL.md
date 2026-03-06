@@ -1,150 +1,99 @@
 ---
 name: tabctl
-description: Manage and analyze Edge tabs and groups with tabctl. Use when asked to list, search, analyze stale or duplicate tabs, generate reports, or organize tabs. Prefer read-only commands and only run mutating actions with explicit targets and confirmation.
+description: Manage and analyze Edge tabs and groups with tabctl. Use GraphQL-first workflows via `tabctl query` for browser reads and mutations, and keep mutations explicit and reversible.
 ---
 
 # Tab Control
 
-Use tabctl to inspect and analyze tabs safely, then perform targeted actions only when requested.
+Use tabctl to inspect and analyze tabs safely, then perform targeted GraphQL mutations only when requested.
 
-## GraphQL API (preferred for agents)
+## Public browser API
 
-Use `tabctl query` for field-selective reads and mutations in a single roundtrip.
-Use `tabctl schema` to discover available types and fields.
+Browser state is now exposed through GraphQL only:
+- `tabctl query '<GRAPHQL>'`
+- `tabctl schema`
+- `tabctl ping`
+- `tabctl history`
 
-### Read examples
+Do not use removed legacy browser subcommands like `list`, `open`, `close`, `inspect`, `report`, `screenshot`, `archive`, or `undo`.
+
+## Discovery
 
 ```bash
-# Get only tabId and url for all windows
-tabctl query '{ windows { windowId tabs { tabId url } } }'
-
-# Paginated tabs (default limit 20)
-tabctl query '{ tabs { items { tabId url title } total hasMore } }'
-
-# Next page
-tabctl query '{ tabs(offset: 20) { items { tabId url } total hasMore } }'
-
-# Get tabs in a specific window
-tabctl query '{ tabs(windowId: 123) { items { tabId title url } total } }'
-
-# Get groups with tab counts
-tabctl query '{ groups { groupId title tabCount } }'
-
-# Get a single tab by ID
-tabctl query '{ tab(id: 456) { tabId url title active groupTitle } }'
+tabctl schema
+tabctl help
+tabctl help query
 ```
 
-### Mutation examples
+## Read examples
 
 ```bash
-# Close tabs and get remaining tabs in one call
-tabctl query 'mutation { closeTabs(tabIds: [123, 456], confirm: true) { txid closedTabs remainingTabs { tabId url } } }'
+# Windows, tabs, and groups
+ tabctl query '{ windows { windowId focused groups { groupId title } tabs { tabId title url groupTitle } } }'
 
-# Open tabs and get the new tab IDs
-tabctl query 'mutation { openTabs(urls: ["https://example.com"], group: "Research") { tabs { tabId url } } }'
+# Paginated tabs
+ tabctl query '{ tabs(limit: 20, offset: 0) { total hasMore items { tabId title url } } }'
 
-# Refresh tabs
-tabctl query 'mutation { refreshTabs(tabIds: [123]) { refreshedTabs } }'
+# Analyze duplicate/stale tabs
+ tabctl query '{ analyze(windowId: 123, staleDays: 30) { totalTabs duplicateTabs staleTabs } }'
+
+# Inspect page metadata
+ tabctl query 'query { inspectTabs(tabIds: [456], signals: ["page-meta"]) { entries { tabId signals { name valueJson } } } }'
+
+# Build reports
+ tabctl query '{ reportTabs(windowId: 123) { entries { tabId title url description } } }'
+
+# Capture screenshots
+ tabctl query 'query { captureScreenshots(tabIds: [456], mode: "viewport") { entries { tabId tiles { index width height } } } }'
 ```
 
-### Introspection
+## Mutation examples
 
 ```bash
-tabctl schema                    # Full SDL
-tabctl query '{ __type(name: "Tab") { fields { name } } }'  # Discover Tab fields
+# Open tabs in a new grouped window
+ tabctl query 'mutation { openTabs(urls: ["https://example.com"], group: "Research", newWindow: true) { windowId groupId tabs { tabId url } } }'
+
+# Group and window changes
+ tabctl query 'mutation { updateGroup(groupId: 99, title: "Inbox", color: "blue") { groupId title color } }'
+ tabctl query 'mutation { assignToGroup(tabIds: [456], groupTitle: "Inbox") { groupId title } }'
+ tabctl query 'mutation { ungroupTabs(tabIds: [456]) { tabId groupId } }'
+ tabctl query 'mutation { moveGroup(groupId: 99, newWindow: true) { movedToWindowId movedTabs } }'
+ tabctl query 'mutation { mergeWindows(fromWindowId: 200, toWindowId: 123, closeSource: true, confirm: true) { movedTabs sourceClosed } }'
+
+# Tab changes
+ tabctl query 'mutation { focusTab(tabId: 456) { success } }'
+ tabctl query 'mutation { refreshTabs(tabIds: [456]) { refreshedTabs } }'
+ tabctl query 'mutation { moveTab(tabIds: [456], windowId: 123, index: 0) { movedTabs } }'
+
+# Destructive actions with undo support
+ tabctl query 'mutation { closeTabs(tabIds: [456], confirm: true) { txid closedTabs } }'
+ tabctl query 'mutation { archiveTabs(windowId: 123) { txid archivedTabs } }'
+ tabctl query 'mutation { deduplicateTabs(windowId: 123, confirm: true) { txid closedTabs } }'
+ tabctl query 'mutation { undoAction(latest: true) { txid summary } }'
+
+# Extension reload
+ tabctl query 'mutation { reloadExtension { reloading } }'
 ```
 
 ## Safety
 
-- Prefer read-only commands: list, analyze, inspect, report, query (without mutations).
-- Never run `archive --all` or `close --apply` in a normal session.
-- Only mutate explicit targets (`--tab`, `--group`, `--window`) and use `--confirm` for close.
-- Respect policy: protected tabs are excluded.
-- Use screenshots only when you need visual context.
+- Prefer read-only GraphQL queries unless the user explicitly asks for changes.
+- Keep mutations scoped and reversible; surface `txid` values when available.
+- Never run destructive workflows against the user's full browsing session without explicit targets or confirmation.
+- Respect policy: protected tabs are excluded from query and mutation results.
+- Use screenshots only when visual context is necessary.
 
-## Discover commands
-
-- Use `tabctl help` (or `tabctl help --json`) to discover commands and flags.
-- For specific commands, use `tabctl <command> --help`.
-
-## Common tasks (CLI)
-
-- List tabs in a window: `tabctl list --window <id|active|last-focused>`
-- List tabs by recency: `tabctl list --all --sort last-accessed`
-- List ungrouped tabs: `tabctl list --ungrouped`
-- List with pagination: `tabctl list --all --limit 10 --offset 0`
-- Close tabs: `tabctl close --tab <id1> --tab <id2> --confirm`
-- Refresh a tab: `tabctl refresh --tab <id>`
-- Generate a report: `tabctl report --format md` (add scope flags as needed)
-- Get page metadata: `tabctl inspect --tab <id> --signal page-meta`
-- Get page metadata after JS loads: `tabctl inspect --tab <id> --signal page-meta --wait-for settle`
-- Extract links safely (absolute http(s) only): `tabctl inspect --tab <id> --selector '{"name":"links","selector":"a[href]","attr":"href-url","all":true}'`
-- Capture visual context when needed: `tabctl screenshot --tab <id> --mode full`
-- Undo most recent change: `tabctl undo --latest`
-- Undo by txid: `tabctl undo <txid>` (from `tabctl history --json | jq -r '.[] | .txid'`)
-
-## Recency & sorting
-
-Tabs include `lastAccessedAt` (millisecond timestamp) — the most recent time each tab was viewed. This data persists in SQLite across browser restarts and profiles, keyed by normalized URL.
-
-### Sort tabs by most-recently-accessed
+## Convenience commands
 
 ```bash
-# CLI — most-recently-accessed first
-tabctl list --all --sort last-accessed
-
-# Other sort options: title, url, index (default)
-tabctl list --window active --sort title
-
-# GraphQL — with orderBy
-tabctl query '{ tabs(orderBy: LAST_ACCESSED_DESC) { items { tabId title url lastAccessedAt } } }'
-tabctl query '{ tabs(orderBy: TITLE_ASC) { items { tabId title } } }'
+tabctl ping
+tabctl history --limit 10
 ```
 
-### Use lastAccessedAt for analysis
-
-```bash
-# Find tabs not accessed in 7+ days
-tabctl query '{ tabs { items { tabId title lastAccessedAt } } }' --json | python3 -c "
-import json, sys, time
-data = json.load(sys.stdin)
-cutoff = (time.time() - 7*86400) * 1000
-for t in data['data']['tabs']['items']:
-    ts = t.get('lastAccessedAt') or 0
-    if ts < cutoff:
-        print(f\"{t['tabId']}: {t['title'][:60]}\")
-"
-```
-
-## Narrow scope
-
-Use one or more of: `--window`, `--group`, `--group-id`, `--tab`, `--ungrouped`.
-If scope is unclear, ask for it before running mutating commands.
+Use `ping` for connectivity/version health and `history` to find undo transactions.
 
 ## Troubleshooting
 
-- Check profile health: `tabctl doctor`
-- Auto-repair broken profiles and resync extension files: `tabctl doctor --fix`
-- Verify connection + runtime version sync: `tabctl ping --json`
-- Read version state only from `ping`/`version` surfaces (not from `open`/`list` output payloads).
-- For local release-like sync checks during development, run a scoped command with `TABCTL_AUTO_SYNC_MODE=release-like` (example: `TABCTL_AUTO_SYNC_MODE=release-like tabctl list --all`).
-
-## Output flags
-
-- Use `--json` for JSON output (list/analyze/inspect/etc.).
-- `--format` is only for `report` (e.g., `tabctl report --format md`).
-
-## Wait modes for inspect/screenshot
-
-Use `--wait-for` to control when inspection runs:
-
-- `load` – wait for page load event (may miss JS-set titles)
-- `dom` – wait for DOMContentLoaded
-- `settle` – wait for URL and title to stabilize (500ms quiet period); use for JS-heavy pages or freshly opened tabs
-- `none` – no waiting (default)
-
-Example for newly opened tabs:
-```bash
-tabctl open --url "https://example.com" --json
-tabctl inspect --tab <new_tab_id> --wait-for settle --wait-timeout-ms 10000 --json
-```
+- `tabctl ping --json` is the canonical runtime health check.
+- `tabctl doctor --fix` repairs local profile wiring and sync drift.
+- `TABCTL_AUTO_SYNC_MODE=release-like tabctl query '{ tabs { total } }'` forces runtime sync behavior during local release-like testing.

@@ -25,10 +25,10 @@ fn test_help_command() {
 
     // Subcommand help
     let (sub_stdout, _) =
-        run_tabctl_raw(&bin, &["help", "list"]).expect("help list should succeed");
+        run_tabctl_raw(&bin, &["help", "query"]).expect("help query should succeed");
     assert!(
-        sub_stdout.contains("list") || sub_stdout.contains("List"),
-        "help list should describe the list command: {sub_stdout}"
+        sub_stdout.contains("query") || sub_stdout.contains("GraphQL"),
+        "help query should describe the query command: {sub_stdout}"
     );
 }
 

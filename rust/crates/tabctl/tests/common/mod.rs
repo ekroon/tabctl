@@ -8,12 +8,21 @@
 
 use serde_json::Value;
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::OnceLock;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tabctl_shared::{RequestEnvelope, ResponseEnvelope, SocketEndpoint};
+
+#[cfg(not(windows))]
+use std::net::TcpStream;
+#[cfg(windows)]
+use std::net::TcpStream;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 
 // ── Utility helpers ─────────────────────────────────────────────────────────
 
@@ -90,6 +99,10 @@ pub fn assert_ok(action: &str, payload: &Value) {
 
 pub fn response_data(payload: &Value) -> &Value {
     payload.get("data").unwrap_or(payload)
+}
+
+pub fn gql_string(value: &str) -> String {
+    serde_json::to_string(value).expect("serialize GraphQL string literal")
 }
 
 // ── RAII guards ─────────────────────────────────────────────────────────────
@@ -354,38 +367,206 @@ impl SharedBrowser {
         )
     }
 
+    pub fn run_query(&self, query: &str) -> Value {
+        self.run_query_result(query)
+            .unwrap_or_else(|e| panic!("tabctl query failed: {e}\nquery: {query}"))
+    }
+
+    pub fn run_query_result(&self, query: &str) -> Result<Value, String> {
+        let mut last_error = None;
+        for attempt in 0..6 {
+            match run_tabctl_json(
+                &self.tabctl_bin,
+                &self.root,
+                &self.profile_name,
+                &self.config_home,
+                &self.state_home,
+                &["query", query],
+            ) {
+                Ok(value) => return Ok(value),
+                Err(err) if attempt < 5 && is_transient_host_error(&err) => {
+                    last_error = Some(err);
+                    sleep(Duration::from_millis(500));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| "tabctl query failed".to_string()))
+    }
+
     /// Create an isolated test window with the given URLs and optional group.
     /// Returns `(window_id, created_tab_ids)`.
     pub fn create_test_window(&self, urls: &[&str], group: Option<&str>) -> (i64, Vec<i64>) {
-        let mut args: Vec<&str> = vec!["open", "--new-window"];
-        for url in urls {
-            args.push("--url");
-            args.push(url);
-        }
-        if let Some(g) = group {
-            args.push("--group");
-            args.push(g);
-        }
-        let open = self.run(&args);
+        let urls = urls
+            .iter()
+            .map(|url| gql_string(url))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let open = self.run_query(&format!(
+            "mutation {{ openTabs(urls: [{urls}], newWindow: true) {{ windowId tabs {{ tabId }} }} }}"
+        ));
         assert_ok("create_test_window", &open);
         let data = response_data(&open);
         let window_id = data
-            .pointer("/windowId")
+            .pointer("/openTabs/windowId")
             .and_then(Value::as_i64)
             .expect("create_test_window: missing windowId");
-        let tab_ids = data
-            .pointer("/createdTabIds")
+        let tab_ids: Vec<i64> = data
+            .pointer("/openTabs/tabs")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_i64).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|tab| tab.get("tabId").and_then(Value::as_i64))
+                    .collect()
+            })
             .unwrap_or_default();
+        if let Some(group_title) = group {
+            let ids = tab_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let assign = self.run_query(&format!(
+                "mutation {{ assignToGroup(tabIds: [{ids}], groupTitle: {}) {{ groupId title }} }}",
+                gql_string(group_title)
+            ));
+            assert_ok("create_test_window assignToGroup", &assign);
+        }
         (window_id, tab_ids)
     }
 
     /// Close a test window (best-effort cleanup, errors ignored).
     pub fn close_test_window(&self, window_id: i64) {
-        let win_str = window_id.to_string();
-        let _ = self.run_result(&["close", "--window", &win_str, "--confirm"]);
+        let query =
+            format!("query {{ tabs(windowId: {window_id}, limit: 200) {{ items {{ tabId }} }} }}");
+        let Ok(payload) = self.run_query_result(&query) else {
+            return;
+        };
+        let tab_ids: Vec<i64> = response_data(&payload)
+            .pointer("/tabs/items")
+            .and_then(Value::as_array)
+            .map(|tabs| {
+                tabs.iter()
+                    .filter_map(|tab| tab.get("tabId").and_then(Value::as_i64))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if tab_ids.is_empty() {
+            return;
+        }
+        let ids = tab_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = self.run_query_result(&format!(
+            "mutation {{ closeTabs(tabIds: [{ids}], confirm: true) {{ txid closedTabs }} }}"
+        ));
     }
+
+    pub fn send_host_request(&self, action: &str, params: Value) -> Value {
+        let profile = self.run(&["profile-show"]);
+        let endpoint = response_data(&profile)
+            .get("socket")
+            .and_then(Value::as_str)
+            .expect("profile-show should return socket uri");
+        let endpoint = SocketEndpoint::parse(endpoint).expect("parse socket endpoint");
+        let data_dir = response_data(&profile)
+            .get("dataDir")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let auth_token = match endpoint {
+            SocketEndpoint::Tcp { .. } => data_dir.and_then(|dir| {
+                fs::read_to_string(PathBuf::from(dir).join("auth-token"))
+                    .ok()
+                    .map(|token| token.trim().to_string())
+                    .filter(|token| !token.is_empty())
+            }),
+            _ => None,
+        };
+
+        let request = RequestEnvelope {
+            id: Some(format!("itest-{}", now_ms())),
+            action: action.to_string(),
+            params,
+            auth_token,
+        };
+
+        let response = match endpoint {
+            SocketEndpoint::Unix { path } => {
+                #[cfg(unix)]
+                {
+                    let stream = UnixStream::connect(path).expect("connect unix socket");
+                    send_host_request_over_stream(stream, &request)
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = path;
+                    panic!("unix sockets are unsupported on this target")
+                }
+            }
+            SocketEndpoint::Tcp { host, port } => {
+                let stream = TcpStream::connect((host.as_str(), port)).expect("connect tcp socket");
+                send_host_request_over_stream(stream, &request)
+            }
+            SocketEndpoint::Pipe { path } => {
+                #[cfg(windows)]
+                {
+                    let stream = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(path)
+                        .expect("connect named pipe");
+                    send_host_request_over_stream(stream, &request)
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = path;
+                    panic!("named pipes are unsupported on this target")
+                }
+            }
+        };
+
+        if response.ok {
+            response.data.unwrap_or_else(|| serde_json::json!({}))
+        } else {
+            serde_json::json!({
+                "ok": false,
+                "error": {
+                    "message": response.error.map(|err| err.message).unwrap_or_else(|| "request failed".to_string())
+                }
+            })
+        }
+    }
+}
+
+fn is_transient_host_error(err: &str) -> bool {
+    err.contains("Failed to connect to host")
+        || err.contains("Connection refused")
+        || err.contains("ECONNREFUSED")
+}
+
+fn send_host_request_over_stream<S>(mut stream: S, request: &RequestEnvelope) -> ResponseEnvelope
+where
+    S: std::io::Read + Write,
+{
+    serde_json::to_writer(&mut stream, request).expect("encode host request");
+    stream.write_all(b"\n").expect("write request terminator");
+    stream.flush().expect("flush host request");
+
+    let reader = BufReader::new(stream);
+    for line in reader.lines() {
+        let line = line.expect("read host response");
+        if line.trim().is_empty() {
+            continue;
+        }
+        let response: ResponseEnvelope = serde_json::from_str(&line).expect("decode host response");
+        if response.progress.unwrap_or(false) {
+            continue;
+        }
+        return response;
+    }
+    panic!("no host response received");
 }
 
 static BROWSER: OnceLock<SharedBrowser> = OnceLock::new();

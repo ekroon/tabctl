@@ -158,47 +158,23 @@ mod tests {
     }
 
     #[test]
-    fn routes_group_alias_to_group_list_action() {
+    fn routes_ping_without_params() {
         let matches = build_cli()
-            .try_get_matches_from(["tabctl", "group", "--window", "12"])
+            .try_get_matches_from(["tabctl", "ping"])
             .expect("parse command");
         let routed = route_command(&matches).expect("route command");
-        assert_eq!(routed.action, "group-list");
-        assert_eq!(routed.params["windowId"], "12");
+        assert_eq!(routed.action, "ping");
+        assert_eq!(routed.params, json!({}));
     }
 
     #[test]
-    fn maps_close_flags_to_host_params() {
+    fn routes_history_limit_to_host_params() {
         let matches = build_cli()
-            .try_get_matches_from(["tabctl", "close", "--tab", "1", "--confirm", "--dry-run"])
+            .try_get_matches_from(["tabctl", "history", "--limit", "5"])
             .expect("parse command");
         let routed = route_command(&matches).expect("route command");
-        assert_eq!(routed.action, "close");
-        assert_eq!(routed.params["tabIds"], json!([1]));
-        assert_eq!(routed.params["confirmed"], json!(true));
-        assert_eq!(routed.params["dryRun"], json!(true));
-    }
-
-    #[test]
-    fn close_rejects_all_scope_flag() {
-        let err = build_cli()
-            .try_get_matches_from(["tabctl", "close", "--all", "--confirm"])
-            .unwrap_err();
-        let message = err.to_string();
-        assert!(
-            message.contains("--all"),
-            "expected error mentioning --all, got: {message}"
-        );
-    }
-
-    #[test]
-    fn supports_dedupe_alias_with_analyze_action() {
-        let matches = build_cli()
-            .try_get_matches_from(["tabctl", "dedupe", "--window", "active"])
-            .expect("parse command");
-        let routed = route_command(&matches).expect("route command");
-        assert_eq!(routed.action, "analyze");
-        assert_eq!(routed.params["dedupe"], json!(true));
+        assert_eq!(routed.action, "history");
+        assert_eq!(routed.params["limit"], json!(5));
     }
 
     #[test]
@@ -210,15 +186,39 @@ mod tests {
                 "--no-pretty",
                 "--profile",
                 "edge-work",
-                "list",
-                "--all",
+                "ping",
             ])
             .expect("parse command");
         let routed = route_command(&matches).expect("route command");
         assert!(routed.json);
         assert!(!routed.pretty);
         assert_eq!(routed.profile.as_deref(), Some("edge-work"));
-        assert_eq!(routed.params["all"], json!(true));
+        assert_eq!(routed.action, "ping");
+    }
+
+    #[test]
+    fn query_command_accepts_graphql_string() {
+        let matches = build_cli()
+            .try_get_matches_from(["tabctl", "query", "query { ping { ok } }"])
+            .expect("parse command");
+        let (command, sub) = matches.subcommand().expect("subcommand");
+        assert_eq!(command, "query");
+        assert_eq!(
+            sub.get_one::<String>("graphql").map(String::as_str),
+            Some("query { ping { ok } }")
+        );
+    }
+
+    #[test]
+    fn removed_browser_commands_are_unknown() {
+        for command in ["list", "open", "close", "raw"] {
+            assert!(
+                build_cli()
+                    .try_get_matches_from(["tabctl", command])
+                    .is_err(),
+                "expected {command} to be removed from the public CLI"
+            );
+        }
     }
 
     #[test]
@@ -279,36 +279,6 @@ mod tests {
             compact_response_payload(&response),
             json!({"ok": false, "error": {"message": "boom"}})
         );
-    }
-
-    #[test]
-    fn maps_no_page_and_valid_tab_ids_only() {
-        let matches = build_cli()
-            .try_get_matches_from([
-                "tabctl",
-                "list",
-                "--tab",
-                "11",
-                "--tab",
-                "bad",
-                "--tab",
-                "14",
-                "--no-page",
-            ])
-            .expect("parse command");
-        let routed = route_command(&matches).expect("route command");
-        assert_eq!(routed.params["tabIds"], json!([11, 14]));
-        assert_eq!(routed.params["page"], json!(false));
-    }
-
-    #[test]
-    fn list_groups_flag_routes_to_group_list_action() {
-        let matches = build_cli()
-            .try_get_matches_from(["tabctl", "list", "--groups", "--window", "12"])
-            .expect("parse command");
-        let routed = route_command(&matches).expect("route command");
-        assert_eq!(routed.action, "group-list");
-        assert_eq!(routed.params["windowId"], "12");
     }
 
     #[test]
@@ -840,7 +810,7 @@ mod tests {
     fn should_runtime_auto_sync_skips_reload() {
         assert!(should_runtime_auto_sync("ping"));
         assert!(!should_runtime_auto_sync("reload"));
-        assert!(should_runtime_auto_sync("list"));
+        assert!(should_runtime_auto_sync("query"));
     }
 
     #[test]
@@ -1931,213 +1901,6 @@ mod tests {
             },
         );
         let _ = std::fs::remove_dir_all(&temp_root);
-    }
-
-    #[test]
-    fn maps_inspect_flags_to_host_params() {
-        let matches = build_cli()
-            .try_get_matches_from([
-                "tabctl",
-                "--progress",
-                "inspect",
-                "--tab",
-                "42",
-                "--signal",
-                "page-meta",
-                "--signal",
-                "selector",
-                "--selector",
-                "links=a[href]",
-                "--selector-attr",
-                "href-url",
-                "--signal-concurrency",
-                "4",
-                "--signal-timeout-ms",
-                "5000",
-                "--wait-for",
-                "settle",
-                "--wait-timeout-ms",
-                "3000",
-            ])
-            .expect("parse command");
-        let routed = route_command(&matches).expect("route command");
-        assert_eq!(routed.action, "inspect");
-        assert_eq!(routed.params["tabIds"], json!([42]));
-        assert_eq!(routed.params["signals"], json!(["page-meta", "selector"]));
-        assert_eq!(routed.params["selectorAttr"], json!("href-url"));
-        assert_eq!(routed.params["signalConcurrency"], json!(4));
-        assert_eq!(routed.params["signalTimeoutMs"], json!(5000));
-        assert_eq!(routed.params["waitFor"], json!("settle"));
-        assert_eq!(routed.params["waitTimeoutMs"], json!(3000));
-        assert_eq!(routed.params["progress"], json!(true));
-        // selectorSpecs should contain one entry with default attr from --selector-attr
-        let specs = routed.params["selectorSpecs"].as_array().unwrap();
-        assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0]["name"], json!("links"));
-        assert_eq!(specs[0]["selector"], json!("a[href]"));
-        assert_eq!(specs[0]["attr"], json!("href-url"));
-    }
-
-    #[test]
-    fn inspect_selector_json_format() {
-        let matches = build_cli()
-            .try_get_matches_from([
-                "tabctl",
-                "inspect",
-                "--tab",
-                "1",
-                "--selector",
-                r#"{"name":"price","selector":".amount","attr":"text","all":true}"#,
-            ])
-            .expect("parse command");
-        let routed = route_command(&matches).expect("route command");
-        let specs = routed.params["selectorSpecs"].as_array().unwrap();
-        assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0]["name"], json!("price"));
-        assert_eq!(specs[0]["selector"], json!(".amount"));
-        assert_eq!(specs[0]["attr"], json!("text"));
-        assert_eq!(specs[0]["all"], json!(true));
-    }
-
-    #[test]
-    fn inspect_selector_invalid_format_rejected() {
-        let matches = build_cli()
-            .try_get_matches_from([
-                "tabctl",
-                "inspect",
-                "--tab",
-                "1",
-                "--selector",
-                "noequalssign",
-            ])
-            .expect("parse command");
-        let err = route_command(&matches).unwrap_err();
-        assert!(err.contains("Invalid --selector format"), "got: {err}");
-    }
-
-    #[test]
-    fn maps_screenshot_flags_to_host_params() {
-        let matches = build_cli()
-            .try_get_matches_from([
-                "tabctl",
-                "--progress",
-                "screenshot",
-                "--tab",
-                "7",
-                "--mode",
-                "full",
-                "--format",
-                "jpeg",
-                "--quality",
-                "80",
-                "--tile-max-dim",
-                "4096",
-                "--max-bytes",
-                "500000",
-                "--wait-for",
-                "load",
-                "--wait-timeout-ms",
-                "2000",
-                "--out",
-                "/tmp/shots",
-            ])
-            .expect("parse command");
-        let routed = route_command(&matches).expect("route command");
-        assert_eq!(routed.action, "screenshot");
-        assert_eq!(routed.params["tabIds"], json!([7]));
-        assert_eq!(routed.params["mode"], json!("full"));
-        assert_eq!(routed.params["format"], json!("jpeg"));
-        assert_eq!(routed.params["quality"], json!(80));
-        assert_eq!(routed.params["tileMaxDim"], json!(4096));
-        assert_eq!(routed.params["maxBytes"], json!(500000));
-        assert_eq!(routed.params["waitFor"], json!("load"));
-        assert_eq!(routed.params["waitTimeoutMs"], json!(2000));
-        assert_eq!(routed.params["out"], json!("/tmp/shots"));
-        assert_eq!(routed.params["progress"], json!(true));
-    }
-
-    #[test]
-    fn maps_analyze_flags_to_host_params() {
-        let matches = build_cli()
-            .try_get_matches_from([
-                "tabctl",
-                "analyze",
-                "--window",
-                "active",
-                "--stale-days",
-                "14",
-                "--window-title",
-            ])
-            .expect("parse command");
-        let routed = route_command(&matches).expect("route command");
-        assert_eq!(routed.action, "analyze");
-        assert_eq!(routed.params["staleDays"], json!(14));
-        assert_eq!(routed.params["windowTitle"], json!(true));
-        assert!(routed.params.get("dedupe").is_none());
-    }
-
-    #[test]
-    fn maps_dedupe_flags_to_host_params() {
-        let matches = build_cli()
-            .try_get_matches_from([
-                "tabctl",
-                "dedupe",
-                "--all",
-                "--stale-days",
-                "7",
-                "--include-stale",
-                "--window-title",
-                "--confirm",
-            ])
-            .expect("parse command");
-        let routed = route_command(&matches).expect("route command");
-        assert_eq!(routed.action, "analyze");
-        assert_eq!(routed.params["dedupe"], json!(true));
-        assert_eq!(routed.params["staleDays"], json!(7));
-        assert_eq!(routed.params["includeStale"], json!(true));
-        assert_eq!(routed.params["windowTitle"], json!(true));
-        assert_eq!(routed.params["confirmed"], json!(true));
-    }
-
-    #[test]
-    fn maps_move_tab_flags_to_host_params() {
-        let matches = build_cli()
-            .try_get_matches_from([
-                "tabctl",
-                "move-tab",
-                "--tab",
-                "5",
-                "--after-tab",
-                "10",
-                "--before-group",
-                "Work",
-            ])
-            .expect("parse command");
-        let routed = route_command(&matches).expect("route command");
-        assert_eq!(routed.action, "move-tab");
-        assert_eq!(routed.params["tabIds"], json!([5]));
-        assert_eq!(routed.params["afterTabId"], json!(10));
-        assert_eq!(routed.params["beforeGroupTitle"], json!("Work"));
-    }
-
-    #[test]
-    fn maps_move_group_flags_to_host_params() {
-        let matches = build_cli()
-            .try_get_matches_from([
-                "tabctl",
-                "move-group",
-                "--group",
-                "Research",
-                "--new-window",
-                "--after-group",
-                "Archive",
-            ])
-            .expect("parse command");
-        let routed = route_command(&matches).expect("route command");
-        assert_eq!(routed.action, "move-group");
-        assert_eq!(routed.params["groupTitle"], json!("Research"));
-        assert_eq!(routed.params["newWindow"], json!(true));
-        assert_eq!(routed.params["afterGroupTitle"], json!("Archive"));
     }
 
     #[test]
