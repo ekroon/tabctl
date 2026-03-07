@@ -432,6 +432,106 @@ pub(crate) struct HistoryEntry {
     pub created_at: f64,
 }
 
+/// Summary metadata for a persisted browser-state checkpoint.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct BrowserStateHistoryEntry {
+    /// Snapshot identifier in the persistence store.
+    pub snapshot_id: i32,
+    /// Unix timestamp (ms) when the checkpoint was recorded.
+    pub recorded_at: f64,
+    /// Why the checkpoint was captured (startup, event, snapshot).
+    pub reason: String,
+    /// Number of browser events coalesced into this checkpoint.
+    pub event_count: i32,
+    /// Event kinds seen in this checkpoint batch.
+    pub event_kinds: Vec<String>,
+    /// Previous persisted checkpoint ID, if any.
+    pub previous_snapshot_id: Option<i32>,
+    /// Number of windows in the stored checkpoint.
+    pub window_count: i32,
+    /// Number of groups in the stored checkpoint.
+    pub group_count: i32,
+    /// Number of tabs in the stored checkpoint.
+    pub tab_count: i32,
+}
+
+/// A single browser-observed event captured into persistent history.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct BrowserStateEvent {
+    /// Event identifier in the persistence store.
+    pub event_id: i32,
+    /// Unix timestamp (ms) when the event was recorded.
+    pub recorded_at: f64,
+    /// Why the enclosing checkpoint was captured.
+    pub reason: String,
+    /// Snapshot ID before the event batch, if any.
+    pub before_snapshot_id: Option<i32>,
+    /// Snapshot ID after the event batch was stored.
+    pub after_snapshot_id: i32,
+    /// Browser event kind (for example tabs.onUpdated).
+    pub kind: String,
+    /// Browser window identifier from the event payload, if any.
+    pub browser_window_id: Option<i32>,
+    /// Browser group identifier from the event payload, if any.
+    pub browser_group_id: Option<i32>,
+    /// Browser tab identifier from the event payload, if any.
+    pub browser_tab_id: Option<i32>,
+    /// Raw JSON payload for the captured browser event.
+    pub payload_json: String,
+}
+
+/// A persisted group observation with stable logical identity metadata.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct BrowserStateGroupEntry {
+    /// Stable logical group ID assigned by tabctl persistence.
+    pub logical_group_id: String,
+    /// Stable logical window ID assigned by tabctl persistence.
+    pub logical_window_id: String,
+    /// Browser group ID observed in this checkpoint.
+    pub browser_group_id: i32,
+    /// Browser window ID observed in this checkpoint.
+    pub browser_window_id: i32,
+    /// Zero-based window order within the checkpoint.
+    pub window_ordinal: i32,
+    /// Group title as observed.
+    pub title: String,
+    /// Group color as observed.
+    pub color: String,
+    /// Whether the group was collapsed, if known.
+    pub collapsed: Option<bool>,
+    /// Number of tabs in the group at the checkpoint.
+    pub tab_count: i32,
+    /// Normalized URLs observed in the group at the checkpoint.
+    pub tab_urls: Vec<String>,
+    /// Snapshot identifier for this observation, if available.
+    pub snapshot_id: Option<i32>,
+    /// Unix timestamp (ms) for this observation, if available.
+    pub recorded_at: Option<f64>,
+    /// Why this observation was captured, if available.
+    pub reason: Option<String>,
+}
+
+/// A persisted browser-state snapshot with restore-ready metadata.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct BrowserStateSnapshot {
+    /// Snapshot identifier in the persistence store.
+    pub snapshot_id: i32,
+    /// Unix timestamp (ms) when the checkpoint was recorded.
+    pub recorded_at: f64,
+    /// Why the checkpoint was captured.
+    pub reason: String,
+    /// Number of browser events coalesced into this checkpoint.
+    pub event_count: i32,
+    /// Event kinds seen in this checkpoint batch.
+    pub event_kinds: Vec<String>,
+    /// Previous persisted checkpoint ID, if any.
+    pub previous_snapshot_id: Option<i32>,
+    /// Full window/tab snapshot captured at that point in time.
+    pub windows: Vec<Window>,
+    /// Normalized group lineage entries for the snapshot.
+    pub groups: Vec<BrowserStateGroupEntry>,
+}
+
 /// Result of a reloadExtension mutation.
 #[derive(Debug, Clone, GraphQLObject)]
 pub(crate) struct ReloadResult {

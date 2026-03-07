@@ -1,3 +1,4 @@
+mod browser_state;
 mod dispatch;
 mod focus_store;
 mod orchestrate;
@@ -351,6 +352,119 @@ mod tests {
         );
 
         let _ = fs::remove_file(undo_path);
+    }
+
+    #[test]
+    fn ingests_unsolicited_browser_state_sync_and_serves_queries() {
+        let undo_path = temp_undo_path();
+        let state_db = undo_path.parent().expect("undo parent").join("state.db");
+        let mut state =
+            HostState::new(undo_path.clone(), temp_focus_db_path(), Some("edge".into()));
+
+        let effects = state.handle_native_message(NativeMessage {
+            id: "browser-sync-1".to_string(),
+            action: Some("browser-state-sync".to_string()),
+            ok: Some(true),
+            progress: None,
+            params: None,
+            data: Some(serde_json::json!({
+                "reason": "startup",
+                "recordedAt": 1700000000000_i64,
+                "events": [{
+                    "kind": "tabGroups.onCreated",
+                    "occurredAt": 1700000000000_i64,
+                    "windowId": 100,
+                    "groupId": 10
+                }],
+                "snapshot": {
+                    "generatedAt": 1700000000000_i64,
+                    "windows": [{
+                        "windowId": 100,
+                        "focused": true,
+                        "state": "normal",
+                        "tabs": [{
+                            "tabId": 1,
+                            "windowId": 100,
+                            "index": 0,
+                            "url": "https://example.com",
+                            "title": "Example",
+                            "active": true,
+                            "pinned": false,
+                            "groupId": 10,
+                            "groupTitle": "Work",
+                            "groupColor": "blue",
+                            "groupCollapsed": false
+                        }],
+                        "groups": [{
+                            "groupId": 10,
+                            "title": "Work",
+                            "color": "blue",
+                            "collapsed": false
+                        }]
+                    }]
+                }
+            })),
+            error: None,
+        });
+        assert!(
+            effects.is_empty(),
+            "browser-state sync should not respond to clients"
+        );
+
+        let history_effects = state.handle_cli_request(
+            7,
+            RequestEnvelope {
+                id: Some("req-browser-history".to_string()),
+                action: "browser-state-history".to_string(),
+                params: Value::Object(Map::from_iter([(
+                    "limit".to_string(),
+                    Value::Number(10.into()),
+                )])),
+                auth_token: None,
+            },
+        );
+        let HostEffect::Respond {
+            payload: history_payload,
+            ..
+        } = &history_effects[0]
+        else {
+            panic!("expected browser-state history response");
+        };
+        let history_items = history_payload
+            .data
+            .as_ref()
+            .and_then(|value| value.as_array())
+            .expect("browser-state history array");
+        assert_eq!(history_items.len(), 1);
+        assert_eq!(history_items[0]["reason"], "startup");
+
+        let latest_effects = state.handle_cli_request(
+            7,
+            RequestEnvelope {
+                id: Some("req-browser-latest".to_string()),
+                action: "browser-state-latest".to_string(),
+                params: Value::Object(Map::new()),
+                auth_token: None,
+            },
+        );
+        let HostEffect::Respond {
+            payload: latest_payload,
+            ..
+        } = &latest_effects[0]
+        else {
+            panic!("expected browser-state latest response");
+        };
+        assert_eq!(
+            latest_payload
+                .data
+                .as_ref()
+                .and_then(|value| value.get("reason"))
+                .and_then(|value| value.as_str()),
+            Some("startup")
+        );
+
+        let _ = fs::remove_file(undo_path);
+        let _ = fs::remove_file(state_db);
     }
 
     #[test]
