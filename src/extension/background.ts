@@ -21,6 +21,7 @@ const VERSION_INFO = {
 
 const KEEPALIVE_ALARM = "tabctl-keepalive";
 const KEEPALIVE_INTERVAL_MINUTES = 1;
+const BROWSER_STATE_SYNC_DEBOUNCE_MS = 750;
 const screenshot = require("./lib/screenshot") as typeof import("./lib/screenshot");
 const content = require("./lib/content") as typeof import("./lib/content");
 const { delay, executeWithTimeout } = content;
@@ -34,6 +35,12 @@ function requireFiniteId(value: unknown, name: string): number {
 
 const state = {
   port: null,
+};
+
+const browserState = {
+  nextId: 1,
+  syncTimer: null as ReturnType<typeof setTimeout> | null,
+  pendingEvents: [] as Array<Record<string, unknown>>,
 };
 
 function log(...args: Array<unknown>) {
@@ -78,10 +85,205 @@ function connectNative() {
       state.port = null;
     });
     log("Native host connected");
+    queueBrowserStateSync("startup");
   } catch (error) {
     log("Native host connection failed", error);
   }
 }
+
+function nextBrowserStateId() {
+  const id = browserState.nextId;
+  browserState.nextId += 1;
+  return `browser-state-${Date.now()}-${id}`;
+}
+
+function normalizeEventPayload(
+  kind: string,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  const event: Record<string, unknown> = {
+    kind,
+    occurredAt: Date.now(),
+  };
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === undefined) {
+      continue;
+    }
+    event[key] = value;
+  }
+  return event;
+}
+
+async function postBrowserStateSync(reason: string) {
+  if (!state.port) {
+    return;
+  }
+
+  const events = browserState.pendingEvents.splice(0, browserState.pendingEvents.length);
+  try {
+    const snapshot = await getTabSnapshot();
+    state.port.postMessage({
+      id: nextBrowserStateId(),
+      action: "browser-state-sync",
+      ok: true,
+      data: {
+        reason,
+        recordedAt: Date.now(),
+        events,
+        snapshot,
+      },
+    });
+  } catch (error) {
+    log("Browser state sync failed", error);
+  }
+}
+
+function queueBrowserStateSync(reason: string) {
+  if (!state.port) {
+    connectNative();
+    if (!state.port) {
+      return;
+    }
+  }
+  if (browserState.syncTimer) {
+    clearTimeout(browserState.syncTimer);
+  }
+  const delayMs = reason === "startup" ? 0 : BROWSER_STATE_SYNC_DEBOUNCE_MS;
+  browserState.syncTimer = setTimeout(() => {
+    browserState.syncTimer = null;
+    void postBrowserStateSync(reason);
+  }, delayMs);
+}
+
+function enqueueBrowserStateEvent(kind: string, payload: Record<string, unknown>, reason = "event") {
+  browserState.pendingEvents.push(normalizeEventPayload(kind, payload));
+  queueBrowserStateSync(reason);
+}
+
+function registerBrowserStateListeners() {
+  chrome.tabs?.onCreated?.addListener((tab) => {
+    enqueueBrowserStateEvent("tabs.onCreated", {
+      tabId: tab.id,
+      windowId: tab.windowId,
+      groupId: tab.groupId,
+      url: tab.url,
+      title: tab.title,
+      index: tab.index,
+    });
+  });
+
+  chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
+    const interesting = ["url", "title", "status", "pinned", "audible", "discarded", "favIconUrl"];
+    if (!interesting.some((key) => key in changeInfo)) {
+      return;
+    }
+    enqueueBrowserStateEvent("tabs.onUpdated", {
+      tabId,
+      windowId: tab.windowId,
+      groupId: tab.groupId,
+      changeInfo,
+    });
+  });
+
+  chrome.tabs?.onMoved?.addListener((tabId, moveInfo) => {
+    enqueueBrowserStateEvent("tabs.onMoved", {
+      tabId,
+      windowId: moveInfo.windowId,
+      fromIndex: moveInfo.fromIndex,
+      toIndex: moveInfo.toIndex,
+    });
+  });
+
+  chrome.tabs?.onAttached?.addListener((tabId, attachInfo) => {
+    enqueueBrowserStateEvent("tabs.onAttached", {
+      tabId,
+      windowId: attachInfo.newWindowId,
+      newPosition: attachInfo.newPosition,
+    });
+  });
+
+  chrome.tabs?.onDetached?.addListener((tabId, detachInfo) => {
+    enqueueBrowserStateEvent("tabs.onDetached", {
+      tabId,
+      windowId: detachInfo.oldWindowId,
+      oldPosition: detachInfo.oldPosition,
+    });
+  });
+
+  chrome.tabs?.onRemoved?.addListener((tabId, removeInfo) => {
+    enqueueBrowserStateEvent("tabs.onRemoved", {
+      tabId,
+      windowId: removeInfo.windowId,
+      isWindowClosing: removeInfo.isWindowClosing,
+    });
+  });
+
+  chrome.tabs?.onActivated?.addListener((activeInfo) => {
+    enqueueBrowserStateEvent("tabs.onActivated", {
+      tabId: activeInfo.tabId,
+      windowId: activeInfo.windowId,
+    });
+  });
+
+  chrome.tabGroups?.onCreated?.addListener((group) => {
+    enqueueBrowserStateEvent("tabGroups.onCreated", {
+      groupId: group.id,
+      windowId: group.windowId,
+      title: group.title,
+      color: group.color,
+      collapsed: group.collapsed,
+    });
+  });
+
+  chrome.tabGroups?.onUpdated?.addListener((group) => {
+    enqueueBrowserStateEvent("tabGroups.onUpdated", {
+      groupId: group.id,
+      windowId: group.windowId,
+      title: group.title,
+      color: group.color,
+      collapsed: group.collapsed,
+    });
+  });
+
+  chrome.tabGroups?.onMoved?.addListener((group) => {
+    enqueueBrowserStateEvent("tabGroups.onMoved", {
+      groupId: group.id,
+      windowId: group.windowId,
+      title: group.title,
+      color: group.color,
+      collapsed: group.collapsed,
+    });
+  });
+
+  chrome.tabGroups?.onRemoved?.addListener((group) => {
+    enqueueBrowserStateEvent("tabGroups.onRemoved", {
+      groupId: group.id,
+      windowId: group.windowId,
+      title: group.title,
+      color: group.color,
+      collapsed: group.collapsed,
+    });
+  });
+
+  chrome.windows?.onCreated?.addListener((window) => {
+    enqueueBrowserStateEvent("windows.onCreated", {
+      windowId: window.id,
+      focused: window.focused,
+      state: window.state,
+    });
+  });
+
+  chrome.windows?.onRemoved?.addListener((windowId) => {
+    enqueueBrowserStateEvent("windows.onRemoved", { windowId });
+  });
+
+  chrome.windows?.onFocusChanged?.addListener((windowId) => {
+    enqueueBrowserStateEvent("windows.onFocusChanged", { windowId });
+  });
+}
+
+connectNative();
+registerBrowserStateListeners();
 
 chrome.runtime.onInstalled.addListener(() => {
   connectNative();
