@@ -119,7 +119,8 @@ async function postBrowserStateSync(reason: string) {
     return;
   }
 
-  const events = browserState.pendingEvents.splice(0, browserState.pendingEvents.length);
+  const eventCount = browserState.pendingEvents.length;
+  const events = browserState.pendingEvents.slice(0, eventCount);
   try {
     const snapshot = await getTabSnapshot();
     state.port.postMessage({
@@ -133,6 +134,7 @@ async function postBrowserStateSync(reason: string) {
         snapshot,
       },
     });
+    browserState.pendingEvents.splice(0, eventCount);
   } catch (error) {
     log("Browser state sync failed", error);
   }
