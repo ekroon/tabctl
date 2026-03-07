@@ -449,8 +449,11 @@ async function handleAction(action: string, params: Record<string, unknown>, req
 }
 
 async function getTabSnapshot() {
-  const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
-  const groups = await chrome.tabGroups.query({});
+  const windows = (await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] }))
+    .filter((win) => !win.incognito);
+  const windowIds = new Set(windows.map((win) => win.id).filter((id): id is number => typeof id === "number"));
+  const groups = (await chrome.tabGroups.query({}))
+    .filter((group) => windowIds.has(group.windowId));
   const groupById = new Map(groups.map((group) => [group.id, group]));
 
   const snapshot = windows.map((win) => {
