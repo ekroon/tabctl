@@ -9,6 +9,7 @@ use super::OrchStep;
 #[derive(Debug, Clone)]
 pub(crate) struct GroupMatch {
     pub(crate) window_id: i64,
+    pub(crate) window_incognito: bool,
     pub(crate) group_id: i64,
     pub(crate) title: Option<String>,
     pub(crate) color: Option<String>,
@@ -47,6 +48,10 @@ pub(crate) fn resolve_group(
 
     for win in &windows {
         let win_id = win.get("windowId").and_then(Value::as_i64).unwrap_or(0);
+        let win_incognito = win
+            .get("incognito")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let groups = win.get("groups").and_then(Value::as_array);
         let tabs = win.get("tabs").and_then(Value::as_array);
 
@@ -91,6 +96,7 @@ pub(crate) fn resolve_group(
 
             matches.push(GroupMatch {
                 window_id: win_id,
+                window_incognito: win_incognito,
                 group_id: gid,
                 title: gtitle.map(String::from),
                 color: gcolor.map(String::from),
@@ -130,6 +136,19 @@ pub(crate) fn resolve_group(
             }
         }
     }
+}
+
+pub(crate) fn window_is_incognito(snapshot: &Value, window_id: i64) -> bool {
+    snapshot
+        .get("windows")
+        .and_then(Value::as_array)
+        .and_then(|windows| {
+            windows
+                .iter()
+                .find(|window| window.get("windowId").and_then(Value::as_i64) == Some(window_id))
+        })
+        .and_then(|window| window.get("incognito").and_then(Value::as_bool))
+        .unwrap_or(false)
 }
 
 /// Resolve a windowId parameter from snapshot — handles "active" / "last-focused" aliases.

@@ -23,6 +23,7 @@ struct AnalyzeState {
     analysis: Value,
     dedupe_tab_ids: Vec<i64>,
     dedupe_undo_tabs: Vec<Value>,
+    has_incognito: bool,
 }
 
 #[derive(Debug)]
@@ -201,6 +202,9 @@ impl AnalyzeOrchestration {
                 analysis,
                 dedupe_tab_ids: remove_ids.clone(),
                 dedupe_undo_tabs: undo_tabs,
+                has_incognito: url_groups
+                    .values()
+                    .any(|group| group.iter().skip(1).any(|tab| tab.incognito)),
             });
             self.phase = AnalyzePhase::DedupeRemove;
 
@@ -231,6 +235,7 @@ impl AnalyzeOrchestration {
             response: Value::Object(analysis),
             undo: Some(serde_json::json!({
                 "action": "close",
+                "incognito": state.has_incognito,
                 "tabs": state.dedupe_undo_tabs,
             })),
         }

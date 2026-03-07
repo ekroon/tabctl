@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 
-use super::resolve::resolve_window_id;
+use super::resolve::{resolve_window_id, window_is_incognito};
 use super::scope::select_tabs_by_scope;
 use super::OrchStep;
 
@@ -28,6 +28,7 @@ struct MergeState {
     current_group_id: Option<i64>,
     undo_tabs: Vec<Value>,
     source_closed: bool,
+    has_incognito: bool,
 }
 
 #[derive(Debug)]
@@ -221,6 +222,8 @@ impl MergeWindowOrchestration {
             current_group_id: None,
             undo_tabs,
             source_closed: false,
+            has_incognito: from_tabs.iter().any(|tab| tab.incognito)
+                || window_is_incognito(&snapshot, to_window_id),
         });
 
         self.start_next_batch()
@@ -371,6 +374,7 @@ impl MergeWindowOrchestration {
             }),
             undo: Some(serde_json::json!({
                 "action": "merge-window",
+                "incognito": state.has_incognito,
                 "fromWindowId": state.from_window_id,
                 "toWindowId": state.to_window_id,
                 "closedSource": state.source_closed,

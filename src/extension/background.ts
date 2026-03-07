@@ -41,6 +41,9 @@ const browserState = {
   nextId: 1,
   syncTimer: null as ReturnType<typeof setTimeout> | null,
   pendingEvents: [] as Array<Record<string, unknown>>,
+  incognitoWindowIds: new Set<number>(),
+  incognitoTabIds: new Set<number>(),
+  incognitoGroupIds: new Set<number>(),
 };
 
 function log(...args: Array<unknown>) {
@@ -111,7 +114,47 @@ function normalizeEventPayload(
     }
     event[key] = value;
   }
+  if (event.incognito !== true && inferIncognitoEvent(payload)) {
+    event.incognito = true;
+  }
   return event;
+}
+
+function inferIncognitoEvent(payload: Record<string, unknown>): boolean {
+  const tabId = typeof payload.tabId === "number" ? payload.tabId : null;
+  if (tabId !== null && browserState.incognitoTabIds.has(tabId)) {
+    return true;
+  }
+  const groupId = typeof payload.groupId === "number" ? payload.groupId : null;
+  if (groupId !== null && browserState.incognitoGroupIds.has(groupId)) {
+    return true;
+  }
+  const windowId = typeof payload.windowId === "number" ? payload.windowId : null;
+  return windowId !== null && browserState.incognitoWindowIds.has(windowId);
+}
+
+function updateIncognitoState(
+  snapshot: { windows?: Array<{ windowId?: number; incognito?: boolean; tabs?: Array<{ tabId?: number }>; groups?: Array<{ groupId?: number }> }> },
+) {
+  browserState.incognitoWindowIds.clear();
+  browserState.incognitoTabIds.clear();
+  browserState.incognitoGroupIds.clear();
+  for (const window of snapshot.windows || []) {
+    if (window.incognito !== true || typeof window.windowId !== "number") {
+      continue;
+    }
+    browserState.incognitoWindowIds.add(window.windowId);
+    for (const tab of window.tabs || []) {
+      if (typeof tab.tabId === "number") {
+        browserState.incognitoTabIds.add(tab.tabId);
+      }
+    }
+    for (const group of window.groups || []) {
+      if (typeof group.groupId === "number") {
+        browserState.incognitoGroupIds.add(group.groupId);
+      }
+    }
+  }
 }
 
 async function postBrowserStateSync(reason: string) {
@@ -123,6 +166,7 @@ async function postBrowserStateSync(reason: string) {
   const events = browserState.pendingEvents.slice(0, eventCount);
   try {
     const snapshot = await getTabSnapshot();
+    updateIncognitoState(snapshot);
     state.port.postMessage({
       id: nextBrowserStateId(),
       action: "browser-state-sync",
@@ -168,6 +212,7 @@ function registerBrowserStateListeners() {
       tabId: tab.id,
       windowId: tab.windowId,
       groupId: tab.groupId,
+      incognito: tab.incognito,
       url: tab.url,
       title: tab.title,
       index: tab.index,
@@ -183,6 +228,7 @@ function registerBrowserStateListeners() {
       tabId,
       windowId: tab.windowId,
       groupId: tab.groupId,
+      incognito: tab.incognito,
       changeInfo,
     });
   });
@@ -270,6 +316,7 @@ function registerBrowserStateListeners() {
   chrome.windows?.onCreated?.addListener((window) => {
     enqueueBrowserStateEvent("windows.onCreated", {
       windowId: window.id,
+      incognito: window.incognito,
       focused: window.focused,
       state: window.state,
     });
@@ -449,11 +496,8 @@ async function handleAction(action: string, params: Record<string, unknown>, req
 }
 
 async function getTabSnapshot() {
-  const windows = (await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] }))
-    .filter((win) => !win.incognito);
-  const windowIds = new Set(windows.map((win) => win.id).filter((id): id is number => typeof id === "number"));
-  const groups = (await chrome.tabGroups.query({}))
-    .filter((group) => windowIds.has(group.windowId));
+  const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
+  const groups = await chrome.tabGroups.query({});
   const groupById = new Map(groups.map((group) => [group.id, group]));
 
   const snapshot = windows.map((win) => {
@@ -463,6 +507,7 @@ async function getTabSnapshot() {
         tabId: tab.id,
         windowId: win.id,
         index: tab.index,
+        incognito: win.incognito || false,
         url: tab.url,
         title: tab.title,
         active: tab.active,
@@ -491,6 +536,7 @@ async function getTabSnapshot() {
     return {
       windowId: win.id,
       focused: win.focused,
+      incognito: win.incognito || false,
       state: win.state,
       tabs,
       groups: windowGroups,

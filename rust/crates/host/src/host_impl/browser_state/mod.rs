@@ -411,6 +411,104 @@ fn snapshot_counts(snapshot: &Value) -> (i64, i64, i64) {
     (window_count, group_count, tab_count)
 }
 
+fn sanitized_snapshot(snapshot: &Value) -> Value {
+    let Some(windows) = snapshot.get("windows").and_then(Value::as_array) else {
+        return snapshot.clone();
+    };
+
+    let filtered_windows = windows
+        .iter()
+        .filter(|window| window.get("incognito").and_then(Value::as_bool) != Some(true))
+        .map(|window| {
+            let mut cloned = window.clone();
+            if let Some(window_obj) = cloned.as_object_mut() {
+                window_obj.remove("incognito");
+                if let Some(tabs) = window_obj.get_mut("tabs").and_then(Value::as_array_mut) {
+                    for tab in tabs.iter_mut() {
+                        if let Some(tab_obj) = tab.as_object_mut() {
+                            tab_obj.remove("incognito");
+                        }
+                    }
+                }
+            }
+            cloned
+        })
+        .collect::<Vec<_>>();
+
+    let mut sanitized = snapshot.clone();
+    if let Some(snapshot_obj) = sanitized.as_object_mut() {
+        snapshot_obj.insert("windows".to_string(), Value::Array(filtered_windows));
+    }
+    sanitized
+}
+
+fn incognito_ids(snapshot: &Value) -> (HashSet<i64>, HashSet<i64>, HashSet<i64>) {
+    let windows = snapshot
+        .get("windows")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut window_ids = HashSet::new();
+    let mut tab_ids = HashSet::new();
+    let mut group_ids = HashSet::new();
+    for window in windows {
+        if window.get("incognito").and_then(Value::as_bool) != Some(true) {
+            continue;
+        }
+        if let Some(window_id) = window.get("windowId").and_then(Value::as_i64) {
+            window_ids.insert(window_id);
+        }
+        if let Some(tabs) = window.get("tabs").and_then(Value::as_array) {
+            for tab in tabs {
+                if let Some(tab_id) = tab.get("tabId").and_then(Value::as_i64) {
+                    tab_ids.insert(tab_id);
+                }
+            }
+        }
+        if let Some(groups) = window.get("groups").and_then(Value::as_array) {
+            for group in groups {
+                if let Some(group_id) = group.get("groupId").and_then(Value::as_i64) {
+                    group_ids.insert(group_id);
+                }
+            }
+        }
+    }
+    (window_ids, group_ids, tab_ids)
+}
+
+fn sanitized_events(snapshot: &Value, events: &[Value]) -> Vec<Value> {
+    let (incognito_window_ids, incognito_group_ids, incognito_tab_ids) = incognito_ids(snapshot);
+    events
+        .iter()
+        .filter_map(|event| {
+            let is_incognito = event.get("incognito").and_then(Value::as_bool) == Some(true)
+                || event
+                    .get("windowId")
+                    .and_then(Value::as_i64)
+                    .map(|window_id| incognito_window_ids.contains(&window_id))
+                    .unwrap_or(false)
+                || event
+                    .get("tabId")
+                    .and_then(Value::as_i64)
+                    .map(|tab_id| incognito_tab_ids.contains(&tab_id))
+                    .unwrap_or(false)
+                || event
+                    .get("groupId")
+                    .and_then(Value::as_i64)
+                    .map(|group_id| incognito_group_ids.contains(&group_id))
+                    .unwrap_or(false);
+            if is_incognito {
+                return None;
+            }
+            let mut sanitized = event.clone();
+            if let Some(event_obj) = sanitized.as_object_mut() {
+                event_obj.remove("incognito");
+            }
+            Some(sanitized)
+        })
+        .collect()
+}
+
 pub(super) fn ingest_sync(
     db_path: &Path,
     profile: Option<&str>,
@@ -427,6 +525,8 @@ pub(super) fn ingest_sync(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let events = sanitized_events(&snapshot, &events);
+    let snapshot = sanitized_snapshot(&snapshot);
     let reason = payload
         .get("reason")
         .and_then(Value::as_str)
@@ -1056,5 +1156,85 @@ mod tests {
         let items = history.as_array().expect("history items");
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["logicalGroupId"], items[1]["logicalGroupId"]);
+    }
+
+    #[test]
+    fn excludes_incognito_windows_from_persisted_snapshots() {
+        let db = TempDbPath::new();
+        ingest_sync(
+            db.as_path(),
+            Some("edge"),
+            &serde_json::json!({
+                "reason": "startup",
+                "recordedAt": 1000,
+                "events": [],
+                "snapshot": {
+                    "generatedAt": 1000,
+                    "windows": [
+                        {
+                            "windowId": 100,
+                            "focused": true,
+                            "tabs": [{"tabId": 1, "windowId": 100, "incognito": false, "index": 0, "url": "https://example.com", "title": "Visible", "active": true, "pinned": false, "groupId": -1}],
+                            "groups": []
+                        },
+                        {
+                            "windowId": 200,
+                            "focused": false,
+                            "incognito": true,
+                            "tabs": [{"tabId": 2, "windowId": 200, "incognito": true, "index": 0, "url": "https://secret.example", "title": "Secret", "active": false, "pinned": false, "groupId": -1}],
+                            "groups": []
+                        }
+                    ]
+                }
+            }),
+        )
+        .expect("ingest");
+
+        let latest = latest_snapshot(db.as_path(), Some("edge")).expect("latest");
+        let windows = latest["snapshot"]["windows"].as_array().expect("windows");
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0]["windowId"].as_i64(), Some(100));
+    }
+
+    #[test]
+    fn preserves_normal_removal_events_while_dropping_incognito_events() {
+        let db = TempDbPath::new();
+        ingest_sync(
+            db.as_path(),
+            Some("edge"),
+            &serde_json::json!({
+                "reason": "event",
+                "recordedAt": 1000,
+                "events": [
+                    {"kind": "tabs.onRemoved", "tabId": 999, "windowId": 100},
+                    {"kind": "tabs.onRemoved", "tabId": 555, "windowId": 200, "incognito": true}
+                ],
+                "snapshot": {
+                    "generatedAt": 1000,
+                    "windows": [
+                        {
+                            "windowId": 100,
+                            "focused": true,
+                            "tabs": [{"tabId": 1, "windowId": 100, "incognito": false, "index": 0, "url": "https://example.com", "title": "Visible", "active": true, "pinned": false, "groupId": -1}],
+                            "groups": []
+                        },
+                        {
+                            "windowId": 200,
+                            "focused": false,
+                            "incognito": true,
+                            "tabs": [{"tabId": 2, "windowId": 200, "incognito": true, "index": 0, "url": "https://secret.example", "title": "Secret", "active": false, "pinned": false, "groupId": -1}],
+                            "groups": []
+                        }
+                    ]
+                }
+            }),
+        )
+        .expect("ingest");
+
+        let events = list_events(db.as_path(), Some("edge"), Some(10), None).expect("events");
+        let items = events.as_array().expect("event items");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["kind"], "tabs.onRemoved");
+        assert_eq!(items[0]["browserTabId"].as_i64(), Some(999));
     }
 }

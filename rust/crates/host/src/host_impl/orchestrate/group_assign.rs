@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 
-use super::resolve::{resolve_group, resolve_window_id};
+use super::resolve::{resolve_group, resolve_window_id, window_is_incognito};
 use super::OrchStep;
 
 /// Orchestration for the `group-assign` command.
@@ -24,6 +24,7 @@ struct AssignState {
     move_ids: Vec<i64>,
     skipped: Vec<Value>,
     undo_tabs: Vec<Value>,
+    has_incognito: bool,
 }
 
 #[derive(Debug)]
@@ -117,11 +118,16 @@ impl GroupAssignOrchestration {
         let mut source_windows = std::collections::HashSet::new();
         let mut skipped = Vec::new();
         let mut undo_tabs = Vec::new();
+        let mut has_incognito = false;
 
         for tab_id in &raw_tab_ids {
             if let Some((tab, win_id)) = tab_index.get(tab_id) {
                 resolved_tab_ids.push(*tab_id);
                 source_windows.insert(*win_id);
+                has_incognito |= tab
+                    .get("incognito")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 undo_tabs.push(serde_json::json!({
                     "tabId": tab_id,
                     "windowId": win_id,
@@ -206,6 +212,7 @@ impl GroupAssignOrchestration {
                 hint: None,
             };
         };
+        has_incognito |= window_is_incognito(&snapshot, target_window_id);
 
         // Find tabs that need cross-window move
         let move_ids: Vec<i64> = resolved_tab_ids
@@ -223,6 +230,7 @@ impl GroupAssignOrchestration {
             move_ids: move_ids.clone(),
             skipped,
             undo_tabs,
+            has_incognito,
         });
 
         if !move_ids.is_empty() {
@@ -323,6 +331,7 @@ impl GroupAssignOrchestration {
 
         let undo = serde_json::json!({
             "action": "group-assign",
+            "incognito": state.has_incognito,
             "groupId": state.target_group_id,
             "groupTitle": state.target_title,
             "groupColor": color,

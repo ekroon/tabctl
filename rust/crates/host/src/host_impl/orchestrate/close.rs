@@ -18,6 +18,7 @@ pub(crate) struct CloseOrchestration {
 struct CloseState {
     valid_tabs: Vec<ClosedTabInfo>,
     skipped: Vec<Value>,
+    has_incognito: bool,
 }
 
 #[derive(Debug)]
@@ -26,6 +27,7 @@ struct ClosedTabInfo {
     title: Option<String>,
     pinned: Option<bool>,
     active: Option<bool>,
+    incognito: bool,
     window_id: i64,
     index: Option<i64>,
     group_id: i64,
@@ -160,6 +162,7 @@ impl super::Orchestration for CloseOrchestration {
                         title: tab.title.clone(),
                         pinned: tab.pinned,
                         active: tab.active,
+                        incognito: tab.incognito,
                         window_id: tab.window_id,
                         index: tab.index,
                         group_id: tab.group_id,
@@ -186,9 +189,11 @@ impl super::Orchestration for CloseOrchestration {
                     };
                 }
 
+                let has_incognito = valid_tabs.iter().any(|tab| tab.incognito);
                 self.close_state = Some(CloseState {
                     valid_tabs,
                     skipped,
+                    has_incognito,
                 });
                 self.phase = ClosePhase::RemoveTabs;
 
@@ -231,6 +236,7 @@ impl super::Orchestration for CloseOrchestration {
                     }),
                     undo: Some(serde_json::json!({
                         "action": "close",
+                        "incognito": state.has_incognito,
                         "tabs": undo_tabs,
                     })),
                 }
@@ -287,6 +293,20 @@ mod tests {
                 "groups": [
                     {"groupId": 10, "title": "Dev", "color": "blue", "collapsed": false}
                 ]
+            }]
+        })
+    }
+
+    fn incognito_snapshot() -> Value {
+        serde_json::json!({
+            "windows": [{
+                "windowId": 100,
+                "focused": true,
+                "incognito": true,
+                "tabs": [
+                    {"tabId": 1, "windowId": 100, "incognito": true, "index": 0, "url": "https://secret.example", "title": "Secret", "active": true, "pinned": false, "groupId": -1}
+                ],
+                "groups": []
             }]
         })
     }
@@ -358,5 +378,23 @@ mod tests {
         assert!(
             matches!(&step, OrchStep::SendPrimitive { action, .. } if action == "p:tab-remove")
         );
+    }
+
+    #[test]
+    fn close_marks_incognito_undo_records() {
+        let params = serde_json::json!({"tabIds": [1], "confirmed": true});
+        let mut orch = CloseOrchestration::new(&params);
+        let _ = orch.start();
+
+        let step = orch.step(incognito_snapshot());
+        assert!(
+            matches!(&step, OrchStep::SendPrimitive { action, .. } if action == "p:tab-remove")
+        );
+
+        let step = orch.step(serde_json::json!({"removed": true}));
+        let OrchStep::Complete { undo, .. } = step else {
+            panic!("expected Complete");
+        };
+        assert_eq!(undo.unwrap()["incognito"], true);
     }
 }
