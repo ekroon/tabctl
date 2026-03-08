@@ -157,16 +157,24 @@ pub(super) fn enrich_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_STORE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     struct TempStorePath(std::path::PathBuf);
 
     impl TempStorePath {
         fn new() -> Self {
+            let counter = TEMP_STORE_COUNTER.fetch_add(1, Ordering::Relaxed);
             let unique = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
-            Self(std::env::temp_dir().join(format!("tabctl-focus-store-{unique}.json")))
+            let pid = std::process::id();
+            Self(
+                std::env::temp_dir()
+                    .join(format!("tabctl-focus-store-{pid}-{unique}-{counter}.json")),
+            )
         }
 
         fn as_path(&self) -> &Path {
