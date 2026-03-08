@@ -1,27 +1,56 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to release (for example v0.6.0)
+        required: true
+        type: string
 
 permissions:
   contents: write
   id-token: write
 
 jobs:
-  # ── Validate release tag against package.json version ──────────────
+  resolve-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Resolve release tag
+        id: resolve
+        shell: bash
+        run: |
+          tag='${{ inputs.tag || github.ref_name }}'
+          if [ -z "$tag" ]; then
+            echo "Release tag is required." >&2
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
   validate:
+    needs: resolve-tag
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.check.outputs.version }}
       dist_tag: ${{ steps.check.outputs.dist_tag }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - name: Validate tag and resolve channel
         id: check
         shell: bash
         run: |
-          tag='${{ github.event.release.tag_name }}'
+          tag='${{ needs.resolve-tag.outputs.tag }}'
           version="$(node -p "require('./package.json').version")"
           expected_tag="v${version}"
           if [ "$tag" != "$expected_tag" ]; then
@@ -32,11 +61,14 @@ jobs:
           const fs = require("fs");
           const path = require("path");
           const root = process.cwd();
-          const packageVersion = require(path.join(root, "package.json")).version;
+          const packageJson = require(path.join(root, "package.json"));
+          const packageVersion = packageJson.version;
           const winPackageVersion = require(path.join(root, "packages", "win32-x64", "package.json")).version;
+          const winOptionalDependencyVersion = packageJson.optionalDependencies?.["tabctl-win32-x64"];
           const cargoFiles = [
             "rust/crates/shared/Cargo.toml",
             "rust/crates/host/Cargo.toml",
+            "rust/crates/graphql/Cargo.toml",
             "rust/crates/tabctl/Cargo.toml",
           ];
           const mismatches = [];
@@ -52,6 +84,10 @@ jobs:
 
           if (winPackageVersion !== packageVersion) {
             mismatches.push(`packages/win32-x64/package.json=${winPackageVersion} (expected ${packageVersion})`);
+          }
+
+          if (winOptionalDependencyVersion !== packageVersion) {
+            mismatches.push(`package.json optionalDependencies.tabctl-win32-x64=${winOptionalDependencyVersion} (expected ${packageVersion})`);
           }
 
           for (const file of cargoFiles) {
@@ -70,26 +106,22 @@ jobs:
           }
           NODE
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-          if [ '${{ github.event.release.prerelease }}' = 'true' ]; then
-            if [[ "$version" == *-alpha.* ]]; then
-              echo "dist_tag=alpha" >> "$GITHUB_OUTPUT"
-            elif [[ "$version" == *-rc.* ]]; then
-              echo "dist_tag=rc" >> "$GITHUB_OUTPUT"
-            else
-              echo "Prerelease must use an -alpha.N or -rc.N version." >&2
-              exit 1
-            fi
+          if [[ "$version" == *-alpha.* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "dist_tag=alpha" >> "$GITHUB_OUTPUT"
+          elif [[ "$version" == *-rc.* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "dist_tag=rc" >> "$GITHUB_OUTPUT"
+          elif [[ "$version" == *-* ]]; then
+            echo "Only -alpha.N and -rc.N prerelease versions are supported." >&2
+            exit 1
           else
-            if [[ "$version" == *-* ]]; then
-              echo "Stable releases must not publish prerelease versions." >&2
-              exit 1
-            fi
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
             echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
           fi
 
-  # ── Build cross-platform Rust binaries ─────────────────────────────
   build:
-    needs: validate
+    needs: [resolve-tag, validate]
     strategy:
       matrix:
         include:
@@ -116,6 +148,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -136,25 +170,27 @@ jobs:
         if: matrix.archive == 'tar.gz'
         run: |
           cd rust/target/${{ matrix.target }}/release
-          tar czf "$GITHUB_WORKSPACE/tabctl-${{ github.event.release.tag_name }}-${{ matrix.asset_suffix }}.tar.gz" tabctl
+          tar czf "$GITHUB_WORKSPACE/tabctl-${{ needs.resolve-tag.outputs.tag }}-${{ matrix.asset_suffix }}.tar.gz" tabctl
 
       - name: Package (zip)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          Compress-Archive -Path "rust/target/${{ matrix.target }}/release/tabctl.exe" -DestinationPath "tabctl-${{ github.event.release.tag_name }}-${{ matrix.asset_suffix }}.zip"
+          Compress-Archive -Path "rust/target/${{ matrix.target }}/release/tabctl.exe" -DestinationPath "tabctl-${{ needs.resolve-tag.outputs.tag }}-${{ matrix.asset_suffix }}.zip"
 
-      - name: Upload release asset
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload '${{ github.event.release.tag_name }}' tabctl-${{ github.event.release.tag_name }}-${{ matrix.asset_suffix }}.* --clobber
+      - name: Upload packaged binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: tabctl-${{ matrix.asset_suffix }}
+          path: tabctl-${{ needs.resolve-tag.outputs.tag }}-${{ matrix.asset_suffix }}.*
 
-  # ── Build and upload browser extension ─────────────────────────────
   extension:
-    needs: validate
+    needs: [resolve-tag, validate]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -166,19 +202,22 @@ jobs:
           mkdir -p artifacts
           (cd dist && zip -qr ../artifacts/tabctl-extension.zip extension)
           shasum -a 256 artifacts/tabctl-extension.zip > artifacts/tabctl-extension.zip.sha256
-      - name: Upload extension assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload '${{ github.event.release.tag_name }}' artifacts/tabctl-extension.zip artifacts/tabctl-extension.zip.sha256 --clobber
+      - name: Upload extension artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tabctl-extension
+          path: |
+            artifacts/tabctl-extension.zip
+            artifacts/tabctl-extension.zip.sha256
 
-  # ── Publish to npm (secondary distribution channel) ────────────────
-  npm-publish:
-    needs: [validate, build, extension]
+  npm_publish:
+    needs: [resolve-tag, validate, build, extension]
     runs-on: ubuntu-latest
-    # Set to false to skip npm publish; useful during Rust migration
     if: ${{ vars.PUBLISH_NPM != 'false' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -208,18 +247,40 @@ jobs:
         env:
           TABCTL_VERSION_MODE: release
 
-      - name: Sync platform package version
-        run: |
-          node -e "
-            const pkg = require('./package.json');
-            const win = require('./packages/win32-x64/package.json');
-            win.version = pkg.version;
-            require('fs').writeFileSync('./packages/win32-x64/package.json', JSON.stringify(win, null, 2) + '\n');
-          "
-
       - name: Publish tabctl-win32-x64
         run: npm publish --provenance --access public --tag '${{ needs.validate.outputs.dist_tag }}'
         working-directory: packages/win32-x64
 
       - name: Publish tabctl
         run: npm publish --provenance --access public --tag '${{ needs.validate.outputs.dist_tag }}'
+
+  create-release:
+    needs: [resolve-tag, validate, build, extension, npm_publish]
+    if: ${{ always() && needs.validate.result == 'success' && needs.build.result == 'success' && needs.extension.result == 'success' && (needs.npm_publish.result == 'success' || needs.npm_publish.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.resolve-tag.outputs.tag }}
+          IS_PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+        shell: bash
+        run: |
+          if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
+            gh release upload "${TAG_NAME}" artifacts/* --clobber
+            exit 0
+          fi
+          prerelease_flag=()
+          if [ "${IS_PRERELEASE}" = "true" ]; then
+            prerelease_flag+=(--prerelease)
+          fi
+          gh release create "${TAG_NAME}" \
+            --title "${TAG_NAME}" \
+            --generate-notes \
+            "${prerelease_flag[@]}" \
+            artifacts/*

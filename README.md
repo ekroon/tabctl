@@ -369,8 +369,14 @@ Pre-release staging flow:
 - `bump:rc` promotes alpha to `x.y.z-rc.1` (or increments RC)
 - `bump:stable` drops the prerelease suffix for final stable publish
 
-Release publishing (`.github/workflows/publish.yml`) enforces:
+Release automation:
+- Run the **Prepare Release** workflow to choose or auto-detect the next version and open a release PR.
+- When that PR merges, **Tag Release** creates `v<version>` and dispatches **Release**.
+- The root `package.json` version and `optionalDependencies.tabctl-win32-x64` are kept in sync by `scripts/bump-version.js`.
+
+Release publishing (`.github/workflows/release.yml`) supports both tag pushes and explicit workflow dispatch, and enforces:
 - Git tag must match `package.json` version (`v<version>`)
+- `package.json.optionalDependencies["tabctl-win32-x64"]` must match `package.json` version
 - prerelease tags publish to `alpha`/`rc`; stable publishes to `latest`
 - `npm run build` and `npm test` must pass before publish
 - release assets include `tabctl-extension.zip` plus `tabctl-extension.zip.sha256`

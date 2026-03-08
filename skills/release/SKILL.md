@@ -11,11 +11,23 @@ Automate the full release cycle: version bump → test → build → commit → 
 
 Direct pushes to `main` are blocked by a branch ruleset. All releases go through a PR.
 
+## Preferred GitHub Actions flow
+
+The default release path is now GitHub Actions-driven:
+
+1. Run the **Prepare Release** workflow (`.github/workflows/prepare-release.yml`)
+2. Review/approve the generated release PR
+3. Let GitHub auto-merge the PR after checks pass
+4. The **Tag Release** workflow (`.github/workflows/tag-release.yml`) tags the merge commit
+5. The **Release** workflow (`.github/workflows/release.yml`) runs for that tag and publishes the artifacts
+
+The manual flow below remains the fallback/operator path when you need to release outside GitHub Actions.
+
 ## Version files
 
 All version files must stay in sync. The `scripts/bump-version.js` script (exposed via `npm run bump:*`) updates all of them in one command. The release workflow (`release.yml`) validates they match:
 
-1. `package.json` — root package version (single source of truth)
+1. `package.json` — root package version (single source of truth) and `optionalDependencies.tabctl-win32-x64`
 2. `package-lock.json` — lockfile
 3. `packages/win32-x64/package.json` — Windows platform package
 4. `rust/crates/tabctl/Cargo.toml` — main Rust binary
