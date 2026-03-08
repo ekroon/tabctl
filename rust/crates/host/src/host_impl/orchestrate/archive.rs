@@ -25,6 +25,7 @@ struct ArchiveState {
     batch_idx: usize,
     current_group_id: Option<i64>,
     undo_tabs: Vec<Value>,
+    has_incognito: bool,
 }
 
 #[derive(Debug)]
@@ -160,6 +161,7 @@ impl ArchiveOrchestration {
             batch_idx: 0,
             current_group_id: None,
             undo_tabs,
+            has_incognito: tabs.iter().any(|tab| tab.incognito),
         });
 
         let state = self.state.as_ref().unwrap();
@@ -282,6 +284,7 @@ impl ArchiveOrchestration {
             }),
             undo: Some(serde_json::json!({
                 "action": "archive",
+                "incognito": state.has_incognito,
                 "tabs": state.undo_tabs,
             })),
         }

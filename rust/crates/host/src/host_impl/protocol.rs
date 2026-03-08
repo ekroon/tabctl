@@ -45,7 +45,15 @@ pub(super) fn create_id(prefix: &str) -> String {
 }
 
 pub(super) fn local_actions() -> HashSet<&'static str> {
-    HashSet::from(["history", "undo", "version"])
+    HashSet::from([
+        "history",
+        "undo",
+        "version",
+        "browser-state-history",
+        "browser-state-latest",
+        "browser-state-events",
+        "browser-state-group-history",
+    ])
 }
 
 pub(super) fn undo_actions() -> HashSet<&'static str> {

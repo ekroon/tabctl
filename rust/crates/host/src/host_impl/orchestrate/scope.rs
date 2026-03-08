@@ -13,6 +13,7 @@ pub(crate) struct ScopedTab {
     pub(crate) tab_id: i64,
     pub(crate) window_id: i64,
     pub(crate) index: Option<i64>,
+    pub(crate) incognito: bool,
     pub(crate) url: Option<String>,
     pub(crate) title: Option<String>,
     pub(crate) active: Option<bool>,
@@ -30,6 +31,10 @@ impl ScopedTab {
             tab_id: tab.get("tabId").and_then(Value::as_i64)?,
             window_id,
             index: tab.get("index").and_then(Value::as_i64),
+            incognito: tab
+                .get("incognito")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             url: tab.get("url").and_then(Value::as_str).map(String::from),
             title: tab.get("title").and_then(Value::as_str).map(String::from),
             active: tab.get("active").and_then(Value::as_bool),

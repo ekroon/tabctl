@@ -153,6 +153,74 @@ fn test_group_and_window_graphql_workflows() {
 
 #[test]
 #[ignore = "requires built dist artifacts and Chrome"]
+fn test_browser_state_history_graphql_workflows() {
+    let b = shared_browser();
+    let ts = now_ms();
+    let group_name = format!("TEST-BrowserState-{ts}");
+    let group_name_gql = gql_string(&group_name);
+
+    let (window_id, tab_ids) =
+        b.create_test_window(&["https://example.com", "https://example.org"], None);
+    sleep(Duration::from_secs(2));
+
+    let initial_group = b.send_host_request(
+        "p:tab-group",
+        json!({"tabIds": tab_ids, "createProperties": {"windowId": window_id}}),
+    );
+    let group_id = response_data(&initial_group)["groupId"]
+        .as_i64()
+        .expect("group id");
+    b.send_host_request(
+        "p:group-update",
+        json!({"groupId": group_id, "title": group_name, "color": "blue"}),
+    );
+
+    sleep(Duration::from_secs(2));
+
+    let latest = b.run_query(
+        "query { latestBrowserState { snapshotId reason groups { logicalGroupId title browserGroupId tabUrls } } }",
+    );
+    assert_ok("latestBrowserState", &latest);
+    assert!(
+        response_data(&latest)["latestBrowserState"]["groups"]
+            .as_array()
+            .is_some_and(|groups| groups.iter().any(|group| {
+                group["browserGroupId"].as_i64() == Some(group_id)
+                    && group["title"].as_str() == Some(group_name.as_str())
+            })),
+        "expected latest browser state to include test group: {latest}"
+    );
+
+    let history = b.run_query(
+        "query { browserStateHistory(limit: 5) { snapshotId reason eventCount eventKinds } }",
+    );
+    assert_ok("browserStateHistory", &history);
+    assert!(
+        response_data(&history)["browserStateHistory"]
+            .as_array()
+            .is_some_and(|entries| !entries.is_empty()),
+        "expected persisted browser-state history entries: {history}"
+    );
+
+    let group_history = b.run_query(&format!(
+        "query {{ browserStateGroupHistory(title: {group_name_gql}, limit: 10) {{ logicalGroupId title browserGroupId tabUrls }} }}"
+    ));
+    assert_ok("browserStateGroupHistory", &group_history);
+    assert!(
+        response_data(&group_history)["browserStateGroupHistory"]
+            .as_array()
+            .is_some_and(|entries| entries.iter().any(|entry| {
+                entry["browserGroupId"].as_i64() == Some(group_id)
+                    && entry["title"].as_str() == Some(group_name.as_str())
+            })),
+        "expected persisted group history for test group: {group_history}"
+    );
+
+    b.close_test_window(window_id);
+}
+
+#[test]
+#[ignore = "requires built dist artifacts and Chrome"]
 fn test_tab_graphql_workflows() {
     let b = shared_browser();
     let (window_id, tab_ids) = b.create_test_window(

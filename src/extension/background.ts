@@ -21,6 +21,7 @@ const VERSION_INFO = {
 
 const KEEPALIVE_ALARM = "tabctl-keepalive";
 const KEEPALIVE_INTERVAL_MINUTES = 1;
+const BROWSER_STATE_SYNC_DEBOUNCE_MS = 750;
 const screenshot = require("./lib/screenshot") as typeof import("./lib/screenshot");
 const content = require("./lib/content") as typeof import("./lib/content");
 const { delay, executeWithTimeout } = content;
@@ -34,6 +35,15 @@ function requireFiniteId(value: unknown, name: string): number {
 
 const state = {
   port: null,
+};
+
+const browserState = {
+  nextId: 1,
+  syncTimer: null as ReturnType<typeof setTimeout> | null,
+  pendingEvents: [] as Array<Record<string, unknown>>,
+  incognitoWindowIds: new Set<number>(),
+  incognitoTabIds: new Set<number>(),
+  incognitoGroupIds: new Set<number>(),
 };
 
 function log(...args: Array<unknown>) {
@@ -78,10 +88,250 @@ function connectNative() {
       state.port = null;
     });
     log("Native host connected");
+    queueBrowserStateSync("startup");
   } catch (error) {
     log("Native host connection failed", error);
   }
 }
+
+function nextBrowserStateId() {
+  const id = browserState.nextId;
+  browserState.nextId += 1;
+  return `browser-state-${Date.now()}-${id}`;
+}
+
+function normalizeEventPayload(
+  kind: string,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  const event: Record<string, unknown> = {
+    kind,
+    occurredAt: Date.now(),
+  };
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === undefined) {
+      continue;
+    }
+    event[key] = value;
+  }
+  if (event.incognito !== true && inferIncognitoEvent(payload)) {
+    event.incognito = true;
+  }
+  return event;
+}
+
+function inferIncognitoEvent(payload: Record<string, unknown>): boolean {
+  const tabId = typeof payload.tabId === "number" ? payload.tabId : null;
+  if (tabId !== null && browserState.incognitoTabIds.has(tabId)) {
+    return true;
+  }
+  const groupId = typeof payload.groupId === "number" ? payload.groupId : null;
+  if (groupId !== null && browserState.incognitoGroupIds.has(groupId)) {
+    return true;
+  }
+  const windowId = typeof payload.windowId === "number" ? payload.windowId : null;
+  return windowId !== null && browserState.incognitoWindowIds.has(windowId);
+}
+
+function updateIncognitoState(
+  snapshot: { windows?: Array<{ windowId?: number; incognito?: boolean; tabs?: Array<{ tabId?: number }>; groups?: Array<{ groupId?: number }> }> },
+) {
+  browserState.incognitoWindowIds.clear();
+  browserState.incognitoTabIds.clear();
+  browserState.incognitoGroupIds.clear();
+  for (const window of snapshot.windows || []) {
+    if (window.incognito !== true || typeof window.windowId !== "number") {
+      continue;
+    }
+    browserState.incognitoWindowIds.add(window.windowId);
+    for (const tab of window.tabs || []) {
+      if (typeof tab.tabId === "number") {
+        browserState.incognitoTabIds.add(tab.tabId);
+      }
+    }
+    for (const group of window.groups || []) {
+      if (typeof group.groupId === "number") {
+        browserState.incognitoGroupIds.add(group.groupId);
+      }
+    }
+  }
+}
+
+async function postBrowserStateSync(reason: string) {
+  if (!state.port) {
+    return;
+  }
+
+  const eventCount = browserState.pendingEvents.length;
+  const events = browserState.pendingEvents.slice(0, eventCount);
+  try {
+    const snapshot = await getTabSnapshot();
+    updateIncognitoState(snapshot);
+    state.port.postMessage({
+      id: nextBrowserStateId(),
+      action: "browser-state-sync",
+      ok: true,
+      data: {
+        reason,
+        recordedAt: Date.now(),
+        events,
+        snapshot,
+      },
+    });
+    browserState.pendingEvents.splice(0, eventCount);
+  } catch (error) {
+    log("Browser state sync failed", error);
+  }
+}
+
+function queueBrowserStateSync(reason: string) {
+  if (!state.port) {
+    connectNative();
+    // Let connectNative() schedule the immediate startup sync after reconnect.
+    return;
+  }
+  if (browserState.syncTimer) {
+    clearTimeout(browserState.syncTimer);
+  }
+  const delayMs = reason === "startup" ? 0 : BROWSER_STATE_SYNC_DEBOUNCE_MS;
+  browserState.syncTimer = setTimeout(() => {
+    browserState.syncTimer = null;
+    void postBrowserStateSync(reason);
+  }, delayMs);
+}
+
+function enqueueBrowserStateEvent(kind: string, payload: Record<string, unknown>, reason = "event") {
+  browserState.pendingEvents.push(normalizeEventPayload(kind, payload));
+  queueBrowserStateSync(reason);
+}
+
+function registerBrowserStateListeners() {
+  chrome.tabs?.onCreated?.addListener((tab) => {
+    enqueueBrowserStateEvent("tabs.onCreated", {
+      tabId: tab.id,
+      windowId: tab.windowId,
+      groupId: tab.groupId,
+      incognito: tab.incognito,
+      url: tab.url,
+      title: tab.title,
+      index: tab.index,
+    });
+  });
+
+  chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
+    const interesting = ["url", "title", "status", "pinned", "audible", "discarded", "favIconUrl"];
+    if (!interesting.some((key) => key in changeInfo)) {
+      return;
+    }
+    enqueueBrowserStateEvent("tabs.onUpdated", {
+      tabId,
+      windowId: tab.windowId,
+      groupId: tab.groupId,
+      incognito: tab.incognito,
+      changeInfo,
+    });
+  });
+
+  chrome.tabs?.onMoved?.addListener((tabId, moveInfo) => {
+    enqueueBrowserStateEvent("tabs.onMoved", {
+      tabId,
+      windowId: moveInfo.windowId,
+      fromIndex: moveInfo.fromIndex,
+      toIndex: moveInfo.toIndex,
+    });
+  });
+
+  chrome.tabs?.onAttached?.addListener((tabId, attachInfo) => {
+    enqueueBrowserStateEvent("tabs.onAttached", {
+      tabId,
+      windowId: attachInfo.newWindowId,
+      newPosition: attachInfo.newPosition,
+    });
+  });
+
+  chrome.tabs?.onDetached?.addListener((tabId, detachInfo) => {
+    enqueueBrowserStateEvent("tabs.onDetached", {
+      tabId,
+      windowId: detachInfo.oldWindowId,
+      oldPosition: detachInfo.oldPosition,
+    });
+  });
+
+  chrome.tabs?.onRemoved?.addListener((tabId, removeInfo) => {
+    enqueueBrowserStateEvent("tabs.onRemoved", {
+      tabId,
+      windowId: removeInfo.windowId,
+      isWindowClosing: removeInfo.isWindowClosing,
+    });
+  });
+
+  chrome.tabs?.onActivated?.addListener((activeInfo) => {
+    enqueueBrowserStateEvent("tabs.onActivated", {
+      tabId: activeInfo.tabId,
+      windowId: activeInfo.windowId,
+    });
+  });
+
+  chrome.tabGroups?.onCreated?.addListener((group) => {
+    enqueueBrowserStateEvent("tabGroups.onCreated", {
+      groupId: group.id,
+      windowId: group.windowId,
+      title: group.title,
+      color: group.color,
+      collapsed: group.collapsed,
+    });
+  });
+
+  chrome.tabGroups?.onUpdated?.addListener((group) => {
+    enqueueBrowserStateEvent("tabGroups.onUpdated", {
+      groupId: group.id,
+      windowId: group.windowId,
+      title: group.title,
+      color: group.color,
+      collapsed: group.collapsed,
+    });
+  });
+
+  chrome.tabGroups?.onMoved?.addListener((group) => {
+    enqueueBrowserStateEvent("tabGroups.onMoved", {
+      groupId: group.id,
+      windowId: group.windowId,
+      title: group.title,
+      color: group.color,
+      collapsed: group.collapsed,
+    });
+  });
+
+  chrome.tabGroups?.onRemoved?.addListener((group) => {
+    enqueueBrowserStateEvent("tabGroups.onRemoved", {
+      groupId: group.id,
+      windowId: group.windowId,
+      title: group.title,
+      color: group.color,
+      collapsed: group.collapsed,
+    });
+  });
+
+  chrome.windows?.onCreated?.addListener((window) => {
+    enqueueBrowserStateEvent("windows.onCreated", {
+      windowId: window.id,
+      incognito: window.incognito,
+      focused: window.focused,
+      state: window.state,
+    });
+  });
+
+  chrome.windows?.onRemoved?.addListener((windowId) => {
+    enqueueBrowserStateEvent("windows.onRemoved", { windowId });
+  });
+
+  chrome.windows?.onFocusChanged?.addListener((windowId) => {
+    enqueueBrowserStateEvent("windows.onFocusChanged", { windowId });
+  });
+}
+
+connectNative();
+registerBrowserStateListeners();
 
 chrome.runtime.onInstalled.addListener(() => {
   connectNative();
@@ -256,6 +506,7 @@ async function getTabSnapshot() {
         tabId: tab.id,
         windowId: win.id,
         index: tab.index,
+        incognito: win.incognito || false,
         url: tab.url,
         title: tab.title,
         active: tab.active,
@@ -284,6 +535,7 @@ async function getTabSnapshot() {
     return {
       windowId: win.id,
       focused: win.focused,
+      incognito: win.incognito || false,
       state: win.state,
       tabs,
       groups: windowGroups,

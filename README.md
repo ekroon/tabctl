@@ -167,6 +167,11 @@ tabctl query '{ reportTabs(windowId: 123) { entries { tabId title url descriptio
 # Capture screenshots
 tabctl query 'query { captureScreenshots(tabIds: [456], mode: "viewport") { entries { tabId tiles { index width height } } } }'
 
+# Inspect persisted browser-state history for future restore tooling
+tabctl query 'query { latestBrowserState { snapshotId reason groups { logicalGroupId title browserGroupId tabUrls } } }'
+tabctl query 'query { browserStateHistory(limit: 10) { snapshotId recordedAt reason eventCount eventKinds } }'
+tabctl query 'query { browserStateGroupHistory(title: "Research", limit: 10) { snapshotId logicalGroupId title browserGroupId tabUrls } }'
+
 # Open tabs in a new grouped window
 tabctl query 'mutation { openTabs(urls: ["https://example.com"], group: "Research", newWindow: true) { windowId groupId tabs { tabId url } } }'
 
@@ -227,6 +232,7 @@ See [CLI.md](CLI.md#configuration) for full details.
 ## Runtime state
 - Socket: `<dataDir>/tabctl.sock` (default: `~/.local/state/tabctl/tabctl.sock`)
 - Undo log: `<dataDir>/undo.jsonl` (default: `~/.local/state/tabctl/undo.jsonl`)
+- Browser-state history DB: `<dataDir>/state.db` (default: `~/.local/state/tabctl/state.db`)
 - Profile registry: `<configDir>/profiles.json`
 - WSL TCP port file: `<dataDir>/tcp-port` (written by the Windows host)
 

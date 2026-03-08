@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 
-use super::resolve::{resolve_group, resolve_window_id};
+use super::resolve::{resolve_group, resolve_window_id, window_is_incognito};
 use super::OrchStep;
 
 /// Find a tab's index in the snapshot.
@@ -32,6 +32,7 @@ pub(crate) struct MoveTabOrchestration {
 #[derive(Debug)]
 struct MoveState {
     tab_id: i64,
+    has_incognito: bool,
     from_window_id: i64,
     from_index: Option<i64>,
     from_group_id: i64,
@@ -132,6 +133,7 @@ impl MoveTabOrchestration {
 
         self.state = Some(MoveState {
             tab_id,
+            has_incognito: source_tab.incognito,
             from_window_id: source_tab.window_id,
             from_index: source_tab.index,
             from_group_id: source_tab.group_id,
@@ -222,9 +224,11 @@ impl MoveTabOrchestration {
             };
 
             let target_window_id = target_window_id.unwrap_or(source_tab.window_id);
+            let target_incognito = window_is_incognito(&snapshot, target_window_id);
 
             if let Some(state) = self.state.as_mut() {
                 state.to_window_id = Some(target_window_id);
+                state.has_incognito |= target_incognito;
             }
 
             // When moving within the same window, removing the source tab shifts
@@ -311,6 +315,7 @@ impl MoveTabOrchestration {
             }),
             undo: Some(serde_json::json!({
                 "action": "move-tab",
+                "incognito": state.has_incognito,
                 "tabId": state.tab_id,
                 "from": {
                     "windowId": state.from_window_id,

@@ -251,6 +251,111 @@ impl Query {
         Ok(entries)
     }
 
+    /// Persisted browser-state checkpoints captured from live browser events and startup syncs.
+    fn browser_state_history(
+        ctx: &GqlContext,
+        #[graphql(description = "Maximum number of persisted checkpoints to return (default 20).")]
+        limit: Option<i32>,
+    ) -> FieldResult<Vec<BrowserStateHistoryEntry>> {
+        let mut params = serde_json::Map::new();
+        if let Some(lim) = limit {
+            params.insert("limit".to_string(), serde_json::json!(lim));
+        }
+        let response = ctx
+            .sender
+            .send("browser-state-history", serde_json::Value::Object(params))
+            .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
+        let entries = response
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .filter_map(browser_state_history_from_value)
+            .collect();
+        Ok(entries)
+    }
+
+    /// The most recently persisted browser-state snapshot.
+    fn latest_browser_state(ctx: &GqlContext) -> FieldResult<Option<BrowserStateSnapshot>> {
+        let response = ctx
+            .sender
+            .send("browser-state-latest", serde_json::json!({}))
+            .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
+        if response.is_null() {
+            return Ok(None);
+        }
+        Ok(browser_state_snapshot_from_value(&response))
+    }
+
+    /// Raw browser-observed event history captured into the persisted store.
+    fn browser_state_events(
+        ctx: &GqlContext,
+        #[graphql(description = "Maximum number of events to return (default 50).")] limit: Option<
+            i32,
+        >,
+        #[graphql(description = "Optional event kind filter, e.g. tabs.onUpdated.")] kind: Option<
+            String,
+        >,
+    ) -> FieldResult<Vec<BrowserStateEvent>> {
+        let mut params = serde_json::Map::new();
+        if let Some(lim) = limit {
+            params.insert("limit".to_string(), serde_json::json!(lim));
+        }
+        if let Some(kind) = kind {
+            params.insert("kind".to_string(), serde_json::json!(kind));
+        }
+        let response = ctx
+            .sender
+            .send("browser-state-events", serde_json::Value::Object(params))
+            .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
+        let entries = response
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .filter_map(browser_state_event_from_value)
+            .collect();
+        Ok(entries)
+    }
+
+    /// Group history with stable logical identity metadata for future restore tooling.
+    fn browser_state_group_history(
+        ctx: &GqlContext,
+        #[graphql(description = "Maximum number of group-history entries to return (default 50).")]
+        limit: Option<i32>,
+        #[graphql(description = "Optional filter by current or historical group title.")]
+        title: Option<String>,
+        #[graphql(description = "Optional filter by logical group ID.")] logical_group_id: Option<
+            String,
+        >,
+    ) -> FieldResult<Vec<BrowserStateGroupEntry>> {
+        let mut params = serde_json::Map::new();
+        if let Some(lim) = limit {
+            params.insert("limit".to_string(), serde_json::json!(lim));
+        }
+        if let Some(title) = title {
+            params.insert("title".to_string(), serde_json::json!(title));
+        }
+        if let Some(logical_group_id) = logical_group_id {
+            params.insert(
+                "logicalGroupId".to_string(),
+                serde_json::json!(logical_group_id),
+            );
+        }
+        let response = ctx
+            .sender
+            .send(
+                "browser-state-group-history",
+                serde_json::Value::Object(params),
+            )
+            .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
+        let entries = response
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .filter_map(browser_state_group_from_value)
+            .collect();
+        Ok(entries)
+    }
+
     /// Inspect tabs with page-meta and selector signals.
     #[allow(clippy::too_many_arguments)]
     fn inspect_tabs(
@@ -413,6 +518,190 @@ fn paginate_tabs(tabs: Vec<Tab>, limit: Option<i32>, offset: Option<i32>) -> Tab
         offset: off as i32,
         has_more,
     }
+}
+
+fn browser_state_history_from_value(value: &serde_json::Value) -> Option<BrowserStateHistoryEntry> {
+    Some(BrowserStateHistoryEntry {
+        snapshot_id: value.get("snapshotId").and_then(|v| v.as_i64())? as i32,
+        recorded_at: value
+            .get("recordedAt")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
+        reason: value
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        event_count: value
+            .get("eventCount")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32,
+        event_kinds: value
+            .get("eventKinds")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        previous_snapshot_id: value
+            .get("previousSnapshotId")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32),
+        window_count: value
+            .get("windowCount")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32,
+        group_count: value
+            .get("groupCount")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32,
+        tab_count: value.get("tabCount").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+    })
+}
+
+fn browser_state_event_from_value(value: &serde_json::Value) -> Option<BrowserStateEvent> {
+    Some(BrowserStateEvent {
+        event_id: value.get("eventId").and_then(|v| v.as_i64())? as i32,
+        recorded_at: value
+            .get("recordedAt")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
+        reason: value
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        before_snapshot_id: value
+            .get("beforeSnapshotId")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32),
+        after_snapshot_id: value
+            .get("afterSnapshotId")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32,
+        kind: value
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        browser_window_id: value
+            .get("browserWindowId")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32),
+        browser_group_id: value
+            .get("browserGroupId")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32),
+        browser_tab_id: value
+            .get("browserTabId")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32),
+        payload_json: value
+            .get("payloadJson")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+    })
+}
+
+fn browser_state_group_from_value(value: &serde_json::Value) -> Option<BrowserStateGroupEntry> {
+    Some(BrowserStateGroupEntry {
+        logical_group_id: value
+            .get("logicalGroupId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        logical_window_id: value
+            .get("logicalWindowId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        browser_group_id: value.get("browserGroupId").and_then(|v| v.as_i64())? as i32,
+        browser_window_id: value.get("browserWindowId").and_then(|v| v.as_i64())? as i32,
+        window_ordinal: value
+            .get("windowOrdinal")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32,
+        title: value
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        color: value
+            .get("color")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        collapsed: value.get("collapsed").and_then(|v| v.as_bool()),
+        tab_count: value.get("tabCount").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+        tab_urls: value
+            .get("tabUrls")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        snapshot_id: value
+            .get("snapshotId")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32),
+        recorded_at: value.get("recordedAt").and_then(|v| v.as_f64()),
+        reason: value
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+    })
+}
+
+fn browser_state_snapshot_from_value(value: &serde_json::Value) -> Option<BrowserStateSnapshot> {
+    let snapshot = value.get("snapshot")?;
+    Some(BrowserStateSnapshot {
+        snapshot_id: value.get("snapshotId").and_then(|v| v.as_i64())? as i32,
+        recorded_at: value
+            .get("recordedAt")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
+        reason: value
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        event_count: value
+            .get("eventCount")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32,
+        event_kinds: value
+            .get("eventKinds")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        previous_snapshot_id: value
+            .get("previousSnapshotId")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32),
+        windows: windows_from_snapshot(snapshot),
+        groups: value
+            .get("groups")
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(browser_state_group_from_value)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    })
 }
 
 fn duplicate_candidate_tabs(response: &serde_json::Value) -> Vec<Tab> {
@@ -1436,6 +1725,71 @@ mod tests {
                 "history" => Ok(serde_json::json!([
                     {"txid": "tx-1", "action": "close", "summary": {"closedTabs": 1}, "createdAt": 1700000000000.0}
                 ])),
+                "browser-state-history" => Ok(serde_json::json!([
+                    {
+                        "snapshotId": 7,
+                        "recordedAt": 1700000001111.0,
+                        "reason": "event",
+                        "eventCount": 2,
+                        "eventKinds": ["tabs.onMoved", "tabGroups.onUpdated"],
+                        "previousSnapshotId": 6,
+                        "windowCount": 1,
+                        "groupCount": 1,
+                        "tabCount": 2
+                    }
+                ])),
+                "browser-state-latest" => Ok(serde_json::json!({
+                    "snapshotId": 7,
+                    "recordedAt": 1700000001111.0,
+                    "reason": "event",
+                    "eventCount": 2,
+                    "eventKinds": ["tabs.onMoved", "tabGroups.onUpdated"],
+                    "previousSnapshotId": 6,
+                    "snapshot": sample_snapshot(),
+                    "groups": [{
+                        "logicalGroupId": "grp-123",
+                        "logicalWindowId": "win-456",
+                        "browserGroupId": 10,
+                        "browserWindowId": 100,
+                        "windowOrdinal": 0,
+                        "title": "Work",
+                        "color": "blue",
+                        "collapsed": false,
+                        "tabCount": 2,
+                        "tabUrls": ["a.com", "b.com"]
+                    }]
+                })),
+                "browser-state-events" => Ok(serde_json::json!([
+                    {
+                        "eventId": 11,
+                        "recordedAt": 1700000001111.0,
+                        "reason": "event",
+                        "beforeSnapshotId": 6,
+                        "afterSnapshotId": 7,
+                        "kind": "tabGroups.onUpdated",
+                        "browserWindowId": 100,
+                        "browserGroupId": 10,
+                        "browserTabId": serde_json::Value::Null,
+                        "payloadJson": "{\"kind\":\"tabGroups.onUpdated\"}"
+                    }
+                ])),
+                "browser-state-group-history" => Ok(serde_json::json!([
+                    {
+                        "logicalGroupId": "grp-123",
+                        "logicalWindowId": "win-456",
+                        "browserGroupId": 10,
+                        "browserWindowId": 100,
+                        "windowOrdinal": 0,
+                        "title": "Work",
+                        "color": "blue",
+                        "collapsed": false,
+                        "tabCount": 2,
+                        "tabUrls": ["a.com", "b.com"],
+                        "snapshotId": 7,
+                        "recordedAt": 1700000001111.0,
+                        "reason": "event"
+                    }
+                ])),
                 "focus" => Ok(serde_json::json!({ "tabId": 1, "windowId": 100 })),
                 "undo" => Ok(serde_json::json!({
                     "txid": "tx-test-1",
@@ -1742,6 +2096,60 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["txid"], "tx-1");
         assert_eq!(entries[0]["action"], "close");
+    }
+
+    #[test]
+    fn query_browser_state_history() {
+        let result = exec(
+            "{ browserStateHistory { snapshotId reason eventCount eventKinds previousSnapshotId groupCount } }",
+        );
+        assert!(result.get("errors").is_none());
+        let entries = result["data"]["browserStateHistory"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["snapshotId"], 7);
+        assert_eq!(entries[0]["reason"], "event");
+        assert_eq!(entries[0]["eventCount"], 2);
+        assert_eq!(entries[0]["previousSnapshotId"], 6);
+    }
+
+    #[test]
+    fn query_latest_browser_state() {
+        let result = exec(
+            "{ latestBrowserState { snapshotId reason eventKinds windows { windowId tabs { tabId } } groups { logicalGroupId title tabUrls } } }",
+        );
+        assert!(result.get("errors").is_none());
+        let latest = &result["data"]["latestBrowserState"];
+        assert_eq!(latest["snapshotId"], 7);
+        assert_eq!(latest["reason"], "event");
+        assert_eq!(latest["windows"][0]["windowId"], 100);
+        assert_eq!(latest["groups"][0]["logicalGroupId"], "grp-123");
+    }
+
+    #[test]
+    fn query_browser_state_events() {
+        let result = exec(
+            "{ browserStateEvents { eventId kind beforeSnapshotId afterSnapshotId payloadJson } }",
+        );
+        assert!(result.get("errors").is_none());
+        let entries = result["data"]["browserStateEvents"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["eventId"], 11);
+        assert_eq!(entries[0]["kind"], "tabGroups.onUpdated");
+        assert_eq!(entries[0]["beforeSnapshotId"], 6);
+    }
+
+    #[test]
+    fn query_browser_state_group_history() {
+        let result = exec(
+            "{ browserStateGroupHistory(title: \"Work\") { logicalGroupId title browserGroupId browserWindowId tabUrls } }",
+        );
+        assert!(result.get("errors").is_none());
+        let entries = result["data"]["browserStateGroupHistory"]
+            .as_array()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["logicalGroupId"], "grp-123");
+        assert_eq!(entries[0]["title"], "Work");
     }
 
     #[test]

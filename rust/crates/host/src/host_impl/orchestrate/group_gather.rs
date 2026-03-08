@@ -22,6 +22,7 @@ struct GatherState {
     current_idx: usize,
     merged: Vec<Value>,
     undo_tabs: Vec<Value>,
+    has_incognito: bool,
 }
 
 #[derive(Debug)]
@@ -84,9 +85,14 @@ impl GroupGatherOrchestration {
         let mut merge_queue = Vec::new();
         let mut merged_info = Vec::new();
         let mut undo_tabs = Vec::new();
+        let mut has_incognito = false;
 
         for win in &windows {
             let win_id = win.get("windowId").and_then(Value::as_i64).unwrap_or(0);
+            let window_incognito = win
+                .get("incognito")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             if matches!(window_id_param, Some(id) if id != win_id) {
                 continue;
             }
@@ -163,6 +169,10 @@ impl GroupGatherOrchestration {
 
                     // Record undo entries
                     for tab in &dup.1 {
+                        has_incognito |= tab
+                            .get("incognito")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(window_incognito);
                         undo_tabs.push(serde_json::json!({
                             "tabId": tab.get("tabId"),
                             "windowId": win_id,
@@ -209,6 +219,7 @@ impl GroupGatherOrchestration {
             current_idx: 0,
             merged: merged_info,
             undo_tabs,
+            has_incognito,
         });
         self.phase = GatherPhase::MergeGroups;
         self.send_next_merge()
@@ -263,6 +274,7 @@ impl GroupGatherOrchestration {
             }),
             undo: Some(serde_json::json!({
                 "action": "group-gather",
+                "incognito": state.has_incognito,
                 "tabs": state.undo_tabs,
             })),
         }

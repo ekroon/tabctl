@@ -17,6 +17,7 @@ pub(crate) struct GroupUngroupOrchestration {
 struct UngroupPreState {
     group_id: i64,
     window_id: i64,
+    incognito: bool,
     group_title: Option<String>,
     group_color: Option<String>,
     group_collapsed: Option<bool>,
@@ -103,6 +104,7 @@ impl super::Orchestration for GroupUngroupOrchestration {
                 self.pre_state = Some(UngroupPreState {
                     group_id: matched.group_id,
                     window_id: matched.window_id,
+                    incognito: matched.window_incognito,
                     group_title: matched.title,
                     group_color: matched.color,
                     group_collapsed: matched.collapsed,
@@ -121,6 +123,7 @@ impl super::Orchestration for GroupUngroupOrchestration {
 
                 let undo = serde_json::json!({
                     "action": "group-ungroup",
+                    "incognito": pre.incognito,
                     "groupId": pre.group_id,
                     "windowId": pre.window_id,
                     "groupTitle": pre.group_title,

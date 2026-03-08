@@ -3,11 +3,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tabctl_shared::{ClientInfo, NativeMessage, ProtocolError, RequestEnvelope, ResponseEnvelope};
 
+use super::browser_state;
 use super::focus_store;
 use super::orchestrate::{orchestration_for, OrchStep, Orchestration};
 use super::protocol::{
     add_host_metadata, add_ping_metadata, base_response, create_id, host_version, local_actions,
-    now_ms, undo_actions, value_object, version_info_value, REQUEST_TIMEOUT_MS,
+    log_line, now_ms, undo_actions, value_object, version_info_value, REQUEST_TIMEOUT_MS,
 };
 use super::undo::{
     append_undo_record, filter_by_retention, find_latest_undo_record, find_undo_record,
@@ -36,6 +37,7 @@ pub(super) struct HostState {
     pending: HashMap<String, PendingRequest>,
     analyses: HashMap<String, AnalysisRecord>,
     undo_log: PathBuf,
+    state_db_path: PathBuf,
     focus_db_path: PathBuf,
     profile_name: Option<String>,
 }
@@ -55,10 +57,15 @@ impl HostState {
         focus_db_path: PathBuf,
         profile_name: Option<String>,
     ) -> Self {
+        let state_db_path = undo_log
+            .parent()
+            .map(|parent| parent.join("state.db"))
+            .unwrap_or_else(|| PathBuf::from("state.db"));
         Self {
             pending: HashMap::new(),
             analyses: HashMap::new(),
             undo_log,
+            state_db_path,
             focus_db_path,
             profile_name,
         }
@@ -167,6 +174,115 @@ impl HostState {
                     .map(Value::Object)
                     .collect(),
             ));
+            return vec![HostEffect::Respond {
+                client_id,
+                payload: resp,
+            }];
+        }
+
+        if action == "browser-state-history" {
+            let limit = request
+                .params
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
+            let data = browser_state::list_history(
+                &self.state_db_path,
+                self.profile_name.as_deref(),
+                limit,
+            );
+            let mut resp = base_response(data.is_ok(), Some(action), request.id);
+            match data {
+                Ok(data) => resp.data = Some(data),
+                Err(message) => {
+                    resp.error = Some(ProtocolError {
+                        message,
+                        hint: None,
+                    })
+                }
+            }
+            return vec![HostEffect::Respond {
+                client_id,
+                payload: resp,
+            }];
+        }
+
+        if action == "browser-state-latest" {
+            let data =
+                browser_state::latest_snapshot(&self.state_db_path, self.profile_name.as_deref());
+            let mut resp = base_response(data.is_ok(), Some(action), request.id);
+            match data {
+                Ok(data) => resp.data = Some(data),
+                Err(message) => {
+                    resp.error = Some(ProtocolError {
+                        message,
+                        hint: None,
+                    })
+                }
+            }
+            return vec![HostEffect::Respond {
+                client_id,
+                payload: resp,
+            }];
+        }
+
+        if action == "browser-state-events" {
+            let limit = request
+                .params
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
+            let kind = request.params.get("kind").and_then(|v| v.as_str());
+            let data = browser_state::list_events(
+                &self.state_db_path,
+                self.profile_name.as_deref(),
+                limit,
+                kind,
+            );
+            let mut resp = base_response(data.is_ok(), Some(action), request.id);
+            match data {
+                Ok(data) => resp.data = Some(data),
+                Err(message) => {
+                    resp.error = Some(ProtocolError {
+                        message,
+                        hint: None,
+                    })
+                }
+            }
+            return vec![HostEffect::Respond {
+                client_id,
+                payload: resp,
+            }];
+        }
+
+        if action == "browser-state-group-history" {
+            let limit = request
+                .params
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
+            let title = request.params.get("title").and_then(|v| v.as_str());
+            let logical_group_id = request
+                .params
+                .get("logicalGroupId")
+                .and_then(|v| v.as_str());
+            let data = browser_state::list_group_history(
+                &self.state_db_path,
+                self.profile_name.as_deref(),
+                limit,
+                title,
+                logical_group_id,
+            );
+            let mut resp = base_response(data.is_ok(), Some(action), request.id);
+            match data {
+                Ok(data) => resp.data = Some(data),
+                Err(message) => {
+                    resp.error = Some(ProtocolError {
+                        message,
+                        hint: None,
+                    })
+                }
+            }
             return vec![HostEffect::Respond {
                 client_id,
                 payload: resp,
@@ -344,6 +460,29 @@ impl HostState {
 
     pub(super) fn handle_native_message(&mut self, message: NativeMessage) -> Vec<HostEffect> {
         let message_id = message.id.clone();
+
+        if !self.pending.contains_key(&message_id) {
+            if message.action.as_deref() == Some("browser-state-sync") {
+                let mut payload = message.data.unwrap_or(Value::Object(Map::new()));
+                if let Some(snapshot) = payload.get_mut("snapshot") {
+                    if let Err(err) = focus_store::enrich_snapshot(
+                        &self.focus_db_path,
+                        snapshot,
+                        self.profile_name.as_deref(),
+                    ) {
+                        log_line(&format!("browser-state focus enrichment failed: {err}"));
+                    }
+                }
+                if let Err(err) = browser_state::ingest_sync(
+                    &self.state_db_path,
+                    self.profile_name.as_deref(),
+                    &payload,
+                ) {
+                    log_line(&format!("browser-state sync ingest failed: {err}"));
+                }
+            }
+            return Vec::new();
+        }
 
         // Timeout check
         if let Some(pending) = self.pending.get(&message_id) {

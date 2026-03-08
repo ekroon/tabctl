@@ -19,6 +19,7 @@ pub(crate) struct GroupUpdateOrchestration {
 struct PreState {
     group_id: i64,
     window_id: i64,
+    incognito: bool,
     title: Option<String>,
     color: Option<String>,
     collapsed: Option<bool>,
@@ -97,6 +98,7 @@ impl super::Orchestration for GroupUpdateOrchestration {
                 self.pre_state = Some(PreState {
                     group_id: matched.group_id,
                     window_id: matched.window_id,
+                    incognito: matched.window_incognito,
                     title: matched.title,
                     color: matched.color,
                     collapsed: matched.collapsed,
@@ -114,6 +116,7 @@ impl super::Orchestration for GroupUpdateOrchestration {
 
                 let undo = serde_json::json!({
                     "action": "group-update",
+                    "incognito": pre.incognito,
                     "groupId": pre.group_id,
                     "windowId": pre.window_id,
                     "previous": {

@@ -72,6 +72,11 @@ Use `tabctl schema` when you need field discovery, then use `tabctl query` for b
 
 # Capture screenshots
  tabctl query 'query { captureScreenshots(tabIds: [456], mode: "viewport") { totals { tabs tiles } entries { tabId tiles { index width height } } } }'
+
+# Persisted browser-state checkpoints and logical group history
+ tabctl query 'query { latestBrowserState { snapshotId reason groups { logicalGroupId title browserGroupId tabUrls } } }'
+ tabctl query 'query { browserStateHistory(limit: 10) { snapshotId recordedAt reason eventCount eventKinds } }'
+ tabctl query 'query { browserStateGroupHistory(title: "Inbox", limit: 10) { snapshotId logicalGroupId title browserGroupId tabUrls } }'
 ```
 
 ### Mutation examples
@@ -149,4 +154,5 @@ tabctl policy --init
 - `--progress` is supported for GraphQL operations that trigger progress-emitting host actions.
 - `tabctl ping --json` is the canonical runtime version check.
 - `tabctl history --json` returns a top-level JSON array.
+- Persisted browser-state history is stored in `<dataDir>/state.db` and exposed via GraphQL query fields such as `latestBrowserState`, `browserStateHistory`, and `browserStateGroupHistory`.
 - Runtime auto-sync skips reload itself, but runs for `ping`, `history`, and `query`.

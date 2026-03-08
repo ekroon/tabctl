@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 
-use super::resolve::{resolve_group, resolve_window_id};
+use super::resolve::{resolve_group, resolve_window_id, window_is_incognito};
 use super::OrchStep;
 
 /// Find a tab's index in the snapshot.
@@ -37,6 +37,7 @@ pub(crate) struct MoveGroupOrchestration {
 struct MoveGroupState {
     source_group_id: i64,
     source_window_id: i64,
+    has_incognito: bool,
     group_title: Option<String>,
     group_color: Option<String>,
     group_collapsed: Option<bool>,
@@ -225,6 +226,10 @@ impl MoveGroupOrchestration {
         self.state = Some(MoveGroupState {
             source_group_id: gm.group_id,
             source_window_id: gm.window_id,
+            has_incognito: gm.window_incognito
+                || target_window_id
+                    .map(|window_id| window_is_incognito(&snapshot, window_id))
+                    .unwrap_or(false),
             group_title: gm.title.clone(),
             group_color: gm.color.clone(),
             group_collapsed: gm.collapsed,
@@ -419,6 +424,7 @@ impl MoveGroupOrchestration {
             response,
             undo: Some(serde_json::json!({
                 "action": "move-group",
+                "incognito": state.has_incognito,
                 "groupId": state.source_group_id,
                 "windowId": state.source_window_id,
                 "movedToWindowId": state.target_window_id,
