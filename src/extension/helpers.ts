@@ -18,7 +18,7 @@ export function parseVersionName(versionName: string): { gitSha: string | null; 
   if (!match) {
     return { gitSha: null, dirty: false };
   }
-  return { gitSha: match[1] || null, dirty: Boolean(match[2]) };
+  return { gitSha: match[1], dirty: Boolean(match[2]) };
 }
 
 export function requireFiniteId(value: unknown, name: string): number {

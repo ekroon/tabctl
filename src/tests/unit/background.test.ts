@@ -9,6 +9,11 @@
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createChromeStub, makePort, type ChromeStub, type PortStub } from "./chrome-stub.ts";
+import {
+  normalizeEventPayload,
+  updateIncognitoState,
+  type IncognitoState,
+} from "../../extension/helpers.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -130,16 +135,7 @@ describe("browser-state sync", () => {
 // Incognito handling — events from incognito windows are tagged
 // ---------------------------------------------------------------------------
 describe("incognito handling", () => {
-  test("incognito tab events are tagged when tabId is in incognito set", async () => {
-    const { normalizeEventPayload, updateIncognitoState } = await import(
-      "../../extension/helpers.ts"
-    );
-    type IncognitoState = {
-      incognitoWindowIds: Set<number>;
-      incognitoTabIds: Set<number>;
-      incognitoGroupIds: Set<number>;
-    };
-
+  test("incognito tab events are tagged when tabId is in incognito set", () => {
     const state: IncognitoState = {
       incognitoWindowIds: new Set(),
       incognitoTabIds: new Set([55]),
@@ -150,14 +146,7 @@ describe("incognito handling", () => {
     assert.equal(event.incognito, true);
   });
 
-  test("snapshot with incognito windows populates incognito state", async () => {
-    const { updateIncognitoState } = await import("../../extension/helpers.ts");
-    type IncognitoState = {
-      incognitoWindowIds: Set<number>;
-      incognitoTabIds: Set<number>;
-      incognitoGroupIds: Set<number>;
-    };
-
+  test("snapshot with incognito windows populates incognito state", () => {
     const state: IncognitoState = {
       incognitoWindowIds: new Set(),
       incognitoTabIds: new Set(),
@@ -187,14 +176,7 @@ describe("incognito handling", () => {
     assert.ok(!state.incognitoTabIds.has(999), "normal tab not tracked");
   });
 
-  test("incognito state is cleared on each snapshot update", async () => {
-    const { updateIncognitoState } = await import("../../extension/helpers.ts");
-    type IncognitoState = {
-      incognitoWindowIds: Set<number>;
-      incognitoTabIds: Set<number>;
-      incognitoGroupIds: Set<number>;
-    };
-
+  test("incognito state is cleared on each snapshot update", () => {
     const state: IncognitoState = {
       incognitoWindowIds: new Set([1, 2]),
       incognitoTabIds: new Set([10, 20]),
@@ -209,14 +191,7 @@ describe("incognito handling", () => {
     assert.equal(state.incognitoGroupIds.size, 0, "group IDs cleared");
   });
 
-  test("events from non-incognito tabs are not tagged", async () => {
-    const { normalizeEventPayload } = await import("../../extension/helpers.ts");
-    type IncognitoState = {
-      incognitoWindowIds: Set<number>;
-      incognitoTabIds: Set<number>;
-      incognitoGroupIds: Set<number>;
-    };
-
+  test("events from non-incognito tabs are not tagged", () => {
     const state: IncognitoState = {
       incognitoWindowIds: new Set(),
       incognitoTabIds: new Set(),
