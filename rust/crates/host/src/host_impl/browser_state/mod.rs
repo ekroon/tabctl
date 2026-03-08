@@ -63,11 +63,12 @@ fn hash_string(input: &str) -> String {
 }
 
 fn open_db(db_path: &Path) -> Result<Connection, String> {
-    let Some(parent) = db_path.parent() else {
-        return Err("Database path missing parent directory".to_string());
-    };
-    std::fs::create_dir_all(parent)
-        .map_err(|e| format!("Failed to create browser-state db dir: {e}"))?;
+    if let Some(parent) = db_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create browser-state db dir: {e}"))?;
+        }
+    }
     let conn = Connection::open(db_path).map_err(|e| format!("Failed to open sqlite db: {e}"))?;
     conn.execute_batch(
         r#"
@@ -1156,6 +1157,20 @@ mod tests {
         let items = history.as_array().expect("history items");
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["logicalGroupId"], items[1]["logicalGroupId"]);
+    }
+
+    #[test]
+    fn open_db_allows_relative_paths() {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::path::PathBuf::from(format!(
+            "tabctl-browser-state-relative-{}-{seq}.sqlite",
+            now_ms()
+        ));
+        let conn = open_db(&path).expect("open relative db");
+        drop(conn);
+        assert!(path.exists());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
