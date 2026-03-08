@@ -7,7 +7,9 @@ This project controls a live browser session (Edge or Chrome). The testing appro
 ```bash
 npm install          # Install deps + configure git hooks (via prepare script)
 npm run build        # Bundle extension & build Rust binary
-npm test             # Build + run unit tests (no browser needed)
+npm test             # Build + run all unit tests (no browser needed)
+npm run test:unit    # Run TypeScript + Rust unit tests (no build, no browser)
+npm run test:unit:ts # Run TypeScript unit tests only (fast, no build, no browser)
 npm run test:integration  # Run integration tests (requires Chrome)
 ```
 
@@ -28,10 +30,14 @@ rust/
     shared/      # Shared utilities (config, profiles, WSL support)
 src/
   extension/     # Chrome extension (background service worker) — only TypeScript component
+    helpers.ts       # Pure helper functions (version parsing, incognito state, event normalisation)
     lib/
       content.ts     # Content-script functions for execute-script primitive
       screenshot.ts  # Screenshot capture + OffscreenCanvas tiling
-  tests/unit/    # Unit tests (no browser required)
+  tests/unit/    # TypeScript unit tests (no browser required)
+    chrome-stub.ts      # Lightweight Chrome API stub
+    helpers.test.ts     # Tests for pure extension helpers
+    background.test.ts  # Behavioural tests (reconnect, sync, incognito)
 ```
 
 **Architecture:** The extension is a thin primitive layer (~16 Chrome API wrappers with `p:` prefix). All command orchestration lives in the Rust host (`rust/crates/host/src/host_impl/orchestrate/`), which sequences primitives per CLI request. This makes orchestration logic unit-testable without a browser.
@@ -164,15 +170,24 @@ tabctl list --profile chrome-work --all
 When creating smoke tests, ensure you are connected to the correct profile. Use `tabctl profile-list` to see all available profiles.
 
 ## Unit tests (no browser required)
-These tests validate the CLI/host helpers using a mocked socket and extension logic using a chrome API stub. No browser needed.
+These tests validate extension helpers and Rust CLI/host logic. No browser needed.
 
 Run:
+- `npm run test:unit` (TypeScript + Rust unit tests, no build step)
+- `npm run test:unit:ts` (TypeScript tests only, fastest feedback loop)
 - `npm test` (builds first, then runs all unit tests)
 
 Notes:
-- Source in `src/tests/unit/`, compiled to `dist/tests/unit/`.
-- CLI tests use a mock socket to avoid browser interaction.
-- Extension tests (e.g., `extension.tabs.test.ts`) use a lightweight chrome stub on `globalThis.chrome` that records API calls and returns predictable results.
+- TypeScript tests live in `src/tests/unit/` and run directly via Node 24's built-in
+  `--experimental-strip-types` flag — no compilation step needed.
+- `src/tests/unit/chrome-stub.ts` provides a lightweight Chrome API stub that records
+  calls and returns predictable results.
+- `src/tests/unit/helpers.test.ts` tests pure functions: version parsing, ID validation,
+  incognito state tracking, and event normalisation.
+- `src/tests/unit/background.test.ts` tests behavioural properties: reconnect guards,
+  browser-state sync message shape, and incognito event tagging.
+- Rust tests live in `rust/crates/*/src/` (unit) and `rust/crates/tabctl/tests/` (integration).
+- Rust integration tests require Chrome and run via `npm run test:integration`.
 
 ## Required end-of-task checks
 Always finish with:

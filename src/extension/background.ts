@@ -1,15 +1,11 @@
+import * as screenshot from "./lib/screenshot.ts";
+import { delay, executeWithTimeout, extractPageMeta, extractSelectorSignal } from "./lib/content.ts";
+import { parseVersionName, requireFiniteId, normalizeEventPayload, updateIncognitoState } from "./helpers.ts";
+
 const HOST_NAME = "com.erwinkroon.tabctl";
 const manifest = chrome.runtime.getManifest();
 const MANIFEST_VERSION = manifest.version || "0.0.0";
 const MANIFEST_VERSION_NAME = manifest.version_name || MANIFEST_VERSION;
-
-function parseVersionName(versionName: string) {
-  const match = versionName.match(/-dev\.([0-9a-f]+)(\.dirty)?$/i);
-  if (!match) {
-    return { gitSha: null as string | null, dirty: false };
-  }
-  return { gitSha: match[1] || null, dirty: Boolean(match[2]) };
-}
 
 const parsed = parseVersionName(MANIFEST_VERSION_NAME);
 const VERSION_INFO = {
@@ -22,16 +18,7 @@ const VERSION_INFO = {
 const KEEPALIVE_ALARM = "tabctl-keepalive";
 const KEEPALIVE_INTERVAL_MINUTES = 1;
 const BROWSER_STATE_SYNC_DEBOUNCE_MS = 750;
-const screenshot = require("./lib/screenshot") as typeof import("./lib/screenshot");
-const content = require("./lib/content") as typeof import("./lib/content");
-const { delay, executeWithTimeout } = content;
 const DESCRIPTION_MAX_LENGTH = 250;
-
-function requireFiniteId(value: unknown, name: string): number {
-  const n = Number(value);
-  if (!Number.isFinite(n)) throw new Error(`${name} must be a finite number, got: ${String(value)}`);
-  return n;
-}
 
 const state = {
   port: null,
@@ -100,61 +87,12 @@ function nextBrowserStateId() {
   return `browser-state-${Date.now()}-${id}`;
 }
 
-function normalizeEventPayload(
-  kind: string,
-  payload: Record<string, unknown>,
-): Record<string, unknown> {
-  const event: Record<string, unknown> = {
-    kind,
-    occurredAt: Date.now(),
-  };
-  for (const [key, value] of Object.entries(payload)) {
-    if (value === undefined) {
-      continue;
-    }
-    event[key] = value;
-  }
-  if (event.incognito !== true && inferIncognitoEvent(payload)) {
-    event.incognito = true;
-  }
-  return event;
+function normalizeEvent(kind: string, payload: Record<string, unknown>): Record<string, unknown> {
+  return normalizeEventPayload(kind, payload, browserState);
 }
 
-function inferIncognitoEvent(payload: Record<string, unknown>): boolean {
-  const tabId = typeof payload.tabId === "number" ? payload.tabId : null;
-  if (tabId !== null && browserState.incognitoTabIds.has(tabId)) {
-    return true;
-  }
-  const groupId = typeof payload.groupId === "number" ? payload.groupId : null;
-  if (groupId !== null && browserState.incognitoGroupIds.has(groupId)) {
-    return true;
-  }
-  const windowId = typeof payload.windowId === "number" ? payload.windowId : null;
-  return windowId !== null && browserState.incognitoWindowIds.has(windowId);
-}
-
-function updateIncognitoState(
-  snapshot: { windows?: Array<{ windowId?: number; incognito?: boolean; tabs?: Array<{ tabId?: number }>; groups?: Array<{ groupId?: number }> }> },
-) {
-  browserState.incognitoWindowIds.clear();
-  browserState.incognitoTabIds.clear();
-  browserState.incognitoGroupIds.clear();
-  for (const window of snapshot.windows || []) {
-    if (window.incognito !== true || typeof window.windowId !== "number") {
-      continue;
-    }
-    browserState.incognitoWindowIds.add(window.windowId);
-    for (const tab of window.tabs || []) {
-      if (typeof tab.tabId === "number") {
-        browserState.incognitoTabIds.add(tab.tabId);
-      }
-    }
-    for (const group of window.groups || []) {
-      if (typeof group.groupId === "number") {
-        browserState.incognitoGroupIds.add(group.groupId);
-      }
-    }
-  }
+function updateIncognito(snapshot: { windows?: Array<{ windowId?: number; incognito?: boolean; tabs?: Array<{ tabId?: number }>; groups?: Array<{ groupId?: number }> }> }) {
+  updateIncognitoState(snapshot, browserState);
 }
 
 async function postBrowserStateSync(reason: string) {
@@ -166,7 +104,7 @@ async function postBrowserStateSync(reason: string) {
   const events = browserState.pendingEvents.slice(0, eventCount);
   try {
     const snapshot = await getTabSnapshot();
-    updateIncognitoState(snapshot);
+    updateIncognito(snapshot);
     state.port.postMessage({
       id: nextBrowserStateId(),
       action: "browser-state-sync",
@@ -201,7 +139,7 @@ function queueBrowserStateSync(reason: string) {
 }
 
 function enqueueBrowserStateEvent(kind: string, payload: Record<string, unknown>, reason = "event") {
-  browserState.pendingEvents.push(normalizeEventPayload(kind, payload));
+  browserState.pendingEvents.push(normalizeEvent(kind, payload));
   queueBrowserStateSync(reason);
 }
 
@@ -463,12 +401,12 @@ async function handleAction(action: string, params: Record<string, unknown>, req
 
       switch (funcName) {
         case "extractPageMeta":
-          return await content.extractPageMeta(targetTabId, timeoutMs, (funcArgs[0] as number) || DESCRIPTION_MAX_LENGTH);
+          return await extractPageMeta(targetTabId, timeoutMs, (funcArgs[0] as number) || DESCRIPTION_MAX_LENGTH);
         case "extractSelectorSignal": {
           const specs = funcArgs[0] as Array<Record<string, unknown>> | undefined;
           if (!Array.isArray(specs)) throw new Error("extractSelectorSignal requires specs array as first arg");
           const selectorMaxLen = (funcArgs[1] as number) || 500;
-          return await content.extractSelectorSignal(targetTabId, specs, timeoutMs, selectorMaxLen);
+          return await extractSelectorSignal(targetTabId, specs, timeoutMs, selectorMaxLen);
         }
         default:
           throw new Error(`Unknown execute-script func: ${funcName}`);

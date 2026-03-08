@@ -39,8 +39,9 @@
     "rust:check": "cargo check --manifest-path rust/Cargo.toml --workspace --all-targets",
     "rust:test": "cargo test --manifest-path rust/Cargo.toml --workspace --all-targets",
     "rust:verify": "cargo fmt --manifest-path rust/Cargo.toml --all -- --check && cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings && npm run rust:test",
-    "test": "npm run build && npm run rust:verify",
-    "test:unit": "npm run rust:test",
+    "test:unit:ts": "tsc -p tsconfig.test.json --noEmit && node --experimental-strip-types --no-warnings=MODULE_TYPELESS_PACKAGE_JSON --test 'src/tests/unit/**/*.test.ts'",
+    "test": "npm run build && npm run test:unit:ts && npm run rust:verify",
+    "test:unit": "npm run test:unit:ts && npm run rust:test",
     "test:integration": "cargo test --manifest-path rust/Cargo.toml --test browser_integration --test browser_coverage --test browser_primitives --test local_commands -- --ignored --nocapture --test-threads=1",
     "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" ",
     "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true"
