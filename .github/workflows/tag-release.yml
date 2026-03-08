@@ -1,0 +1,70 @@
+name: Tag Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  tag:
+    if: ${{ github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'chore/release-v') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Fetch tags
+        run: git fetch --force --tags origin
+
+      - name: Resolve release tag
+        id: resolve
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          tag="v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag if needed
+        id: tag
+        env:
+          TAG_NAME: ${{ steps.resolve.outputs.tag }}
+        shell: bash
+        run: |
+          if git rev-parse "${TAG_NAME}" >/dev/null 2>&1; then
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG_NAME}" -m "Release ${TAG_NAME}"
+          git push origin "${TAG_NAME}"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch release workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.resolve.outputs.tag }}
+        shell: bash
+        run: GH_PAGER="" gh workflow run release.yml --ref main -f tag="${TAG_NAME}"
+
+      - name: Summarize
+        run: |
+          echo "### Tag release" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| PR | #${{ github.event.pull_request.number }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version | \`${{ steps.resolve.outputs.version }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Tag | \`${{ steps.resolve.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Tag created in this run | ${{ steps.tag.outputs.created }} |" >> "$GITHUB_STEP_SUMMARY"
