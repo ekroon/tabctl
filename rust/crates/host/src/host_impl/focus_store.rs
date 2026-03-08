@@ -99,6 +99,14 @@ fn lookup_access(store: &FocusStore, url: &str) -> Option<i64> {
         .max()
 }
 
+fn is_incognito_window(window: &Value) -> bool {
+    window.get("incognito").and_then(Value::as_bool) == Some(true)
+}
+
+fn is_incognito_tab(tab: &Value, window_is_incognito: bool) -> bool {
+    window_is_incognito || tab.get("incognito").and_then(Value::as_bool) == Some(true)
+}
+
 pub(super) fn enrich_snapshot(
     store_path: &Path,
     snapshot: &mut Value,
@@ -110,11 +118,15 @@ pub(super) fn enrich_snapshot(
     };
 
     for window in windows.iter_mut() {
+        let window_is_incognito = is_incognito_window(window);
         let Some(tabs) = window.get_mut("tabs").and_then(Value::as_array_mut) else {
             continue;
         };
 
         for tab in tabs.iter_mut() {
+            if is_incognito_tab(tab, window_is_incognito) {
+                continue;
+            }
             let url = tab.get("url").and_then(Value::as_str).unwrap_or("");
             if url.is_empty() {
                 continue;
@@ -240,5 +252,54 @@ mod tests {
         assert_eq!(tabs[0]["lastAccessedAt"], 5000);
         assert_eq!(tabs[1]["lastAccessedAt"], 3000);
         assert_eq!(lookup_access(&persisted, "https://b.com"), Some(3000));
+    }
+
+    #[test]
+    fn enrich_snapshot_skips_incognito_tabs() {
+        let path = TempStorePath::new();
+        let mut store = FocusStore::default();
+        upsert_access(
+            &mut store,
+            "https://secret.example",
+            Some("Secret"),
+            5000,
+            None,
+        );
+        save_store(path.as_path(), &store).unwrap();
+
+        let mut snapshot = serde_json::json!({
+            "windows": [
+                {
+                    "windowId": 1,
+                    "tabs": [
+                        {"tabId": 1, "url": "https://visible.example", "title": "Visible", "lastAccessedAt": 3000}
+                    ]
+                },
+                {
+                    "windowId": 2,
+                    "incognito": true,
+                    "tabs": [
+                        {"tabId": 2, "url": "https://secret.example", "title": "Secret"},
+                        {"tabId": 3, "url": "https://secret-new.example", "title": "Secret New", "lastAccessedAt": 9000}
+                    ]
+                }
+            ]
+        });
+
+        enrich_snapshot(path.as_path(), &mut snapshot, None).unwrap();
+        let persisted = load_store(path.as_path()).unwrap();
+
+        assert_eq!(
+            snapshot["windows"][1]["tabs"][0].get("lastAccessedAt"),
+            None,
+        );
+        assert_eq!(
+            lookup_access(&persisted, "https://visible.example"),
+            Some(3000)
+        );
+        assert_eq!(
+            lookup_access(&persisted, "https://secret-new.example"),
+            None
+        );
     }
 }
