@@ -30,16 +30,28 @@ changed_files="$(mktemp)"
 trap 'rm -f "$changed_files"' EXIT
 
 zero_sha='0000000000000000000000000000000000000000'
+checked_refs=0
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ -z "${local_ref:-}" ] && continue
   [ "${local_sha}" = "${zero_sha}" ] && continue
+  case "${local_ref}" in
+    refs/tags/*)
+      continue
+      ;;
+  esac
+  checked_refs=1
   if [ "${remote_sha}" = "${zero_sha}" ]; then
     git diff --name-only "${local_sha}^..${local_sha}" >>"${changed_files}"
   else
     git diff --name-only "${remote_sha}..${local_sha}" >>"${changed_files}"
   fi
 done
+
+if [ "${checked_refs}" -eq 0 ]; then
+  echo "pre-push: tag-only push detected, skipping heavy checks"
+  exit 0
+fi
 
 if ! grep -qE '(^rust/)|(^Cargo\.toml$)|(^Cargo\.lock$)|(^\.githooks/)|(^\.github/workflows/)|(^package\.json$)|(^scripts/)' "${changed_files}"; then
   echo "pre-push: no Rust/build/hook changes detected, skipping heavy checks"
