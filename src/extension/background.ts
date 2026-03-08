@@ -187,9 +187,8 @@ async function postBrowserStateSync(reason: string) {
 function queueBrowserStateSync(reason: string) {
   if (!state.port) {
     connectNative();
-    if (!state.port) {
-      return;
-    }
+    // Let connectNative() schedule the immediate startup sync after reconnect.
+    return;
   }
   if (browserState.syncTimer) {
     clearTimeout(browserState.syncTimer);
