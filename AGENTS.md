@@ -94,7 +94,7 @@ tabctl dedupe --window 123 --confirm # Execute after review
 
 Direct pushes to `main` are blocked by a branch ruleset (requires PR + CI checks + Copilot review).
 
-**Version management:** All version files are synced by `scripts/bump-version.js` (exposed as `npm run bump:<kind>`). Never edit version fields manually.
+**Version management:** `rust/Cargo.toml` is the Rust version source of truth. `scripts/bump-version.js` (exposed as `npm run bump:<kind>`) updates that workspace version and mirrors it to the npm/package manifests. Never edit version fields manually.
 
 ```bash
 npm run bump:alpha    # next alpha
@@ -116,7 +116,7 @@ npm run bump:major    # major bump
 
 ## Scripts
 
-- `scripts/bump-version.js` — syncs all version files (package.json, win32-x64, 3× Cargo.toml, lockfiles)
+- `scripts/bump-version.js` — bumps `rust/Cargo.toml`, mirrors package versions, and refreshes lockfiles
 - `scripts/ci-wait-merge.sh` — waits for CI, merges PR, tags, creates GitHub release
 - `scripts/test-mise-release.sh` — integration test comparing npm stable vs mise alpha channels
 - `scripts/gen-version.js` — generates extension manifest version at build time

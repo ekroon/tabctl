@@ -51,20 +51,21 @@ jobs:
         shell: bash
         run: |
           tag='${{ needs.resolve-tag.outputs.tag }}'
-          version="$(node -p "require('./package.json').version")"
+          version="$(node -e "process.stdout.write(require('./scripts/version-utils').readWorkspaceVersion(process.cwd()))")"
           expected_tag="v${version}"
           if [ "$tag" != "$expected_tag" ]; then
             echo "Release tag ($tag) must match package version tag ($expected_tag)." >&2
             exit 1
           fi
           node - <<'NODE'
-          const fs = require("fs");
           const path = require("path");
+          const { readCargoPackageVersion, readJson, readWorkspaceVersion } = require("./scripts/version-utils");
           const root = process.cwd();
-          const packageJson = require(path.join(root, "package.json"));
+          const workspaceVersion = readWorkspaceVersion(root);
+          const packageJson = readJson(path.join(root, "package.json"));
           const packageVersion = packageJson.version;
-          const winPackageVersion = require(path.join(root, "packages", "win32-x64", "package.json")).version;
-          const winOptionalDependencyVersion = packageJson.optionalDependencies?.["tabctl-win32-x64"];
+          const launcherVersion = packageJson.optionalDependencies && packageJson.optionalDependencies["tabctl-win32-x64"];
+          const winPackageVersion = readJson(path.join(root, "packages", "win32-x64", "package.json")).version;
           const cargoFiles = [
             "rust/crates/shared/Cargo.toml",
             "rust/crates/host/Cargo.toml",
@@ -73,27 +74,22 @@ jobs:
           ];
           const mismatches = [];
 
-          const readCargoPackageVersion = (relativePath) => {
-            const content = fs.readFileSync(path.join(root, relativePath), "utf8");
-            const match = content.match(/\[package\][\s\S]*?\nversion\s*=\s*"([^"]+)"/m);
-            if (!match) {
-              throw new Error(`Could not find [package].version in ${relativePath}`);
-            }
-            return match[1];
-          };
-
-          if (winPackageVersion !== packageVersion) {
-            mismatches.push(`packages/win32-x64/package.json=${winPackageVersion} (expected ${packageVersion})`);
+          if (packageVersion !== workspaceVersion) {
+            mismatches.push(`package.json=${packageVersion} (expected ${workspaceVersion})`);
           }
 
-          if (winOptionalDependencyVersion !== packageVersion) {
-            mismatches.push(`package.json optionalDependencies.tabctl-win32-x64=${winOptionalDependencyVersion} (expected ${packageVersion})`);
+          if (launcherVersion !== workspaceVersion) {
+            mismatches.push(`package.json optionalDependencies.tabctl-win32-x64=${launcherVersion} (expected ${workspaceVersion})`);
+          }
+
+          if (winPackageVersion !== workspaceVersion) {
+            mismatches.push(`packages/win32-x64/package.json=${winPackageVersion} (expected ${workspaceVersion})`);
           }
 
           for (const file of cargoFiles) {
-            const cargoVersion = readCargoPackageVersion(file);
-            if (cargoVersion !== packageVersion) {
-              mismatches.push(`${file}=${cargoVersion} (expected ${packageVersion})`);
+            const cargoVersion = readCargoPackageVersion(path.join(root, file), workspaceVersion);
+            if (cargoVersion !== workspaceVersion) {
+              mismatches.push(`${file}=${cargoVersion} (expected ${workspaceVersion})`);
             }
           }
 
@@ -247,6 +243,20 @@ jobs:
         env:
           TABCTL_VERSION_MODE: release
 
+      - name: Sync platform package version
+        run: |
+          node -e "
+            const version = require('./scripts/version-utils').readWorkspaceVersion(process.cwd());
+            const pkg = require('./package.json');
+            const win = require('./packages/win32-x64/package.json');
+            pkg.version = version;
+            if (pkg.optionalDependencies && pkg.optionalDependencies['tabctl-win32-x64']) {
+              pkg.optionalDependencies['tabctl-win32-x64'] = version;
+            }
+            win.version = version;
+            require('fs').writeFileSync('./package.json', JSON.stringify(pkg, null, 2) + '\n');
+            require('fs').writeFileSync('./packages/win32-x64/package.json', JSON.stringify(win, null, 2) + '\n');
+          "
       - name: Publish tabctl-win32-x64
         run: npm publish --provenance --access public --tag '${{ needs.validate.outputs.dist_tag }}'
         working-directory: packages/win32-x64

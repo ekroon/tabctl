@@ -52,7 +52,7 @@
     "typescript": "^5.4.5"
   },
   "optionalDependencies": {
-    "tabctl-win32-x64": "0.3.0"
+    "tabctl-win32-x64": "0.6.0-rc.3"
   },
   "dependencies": {
     "normalize-url": "^8.1.1"
