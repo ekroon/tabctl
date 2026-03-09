@@ -8,7 +8,7 @@ PROFILE ?= $(BROWSER)
 EXTENSION_DIR ?= dist/extension
 TABCTL := $(CARGO) run --manifest-path rust/Cargo.toml -p tabctl --
 
-.PHONY: help dev-build dev-setup dev-up dev-profile-show dev-ping dev-list-all dev-run dev-run-release-like
+.PHONY: help dev-build dev-setup dev-up dev-profile-show dev-ping dev-list-all dev-run dev-run-release-like dev-check-targets
 
 help:
 	@echo "tabctl local development targets"
@@ -20,6 +20,7 @@ help:
 	@echo "  make dev-list-all [PROFILE=edge]"
 	@echo "  make dev-run CMD='list --all --json' [PROFILE=edge]"
 	@echo "  make dev-run-release-like CMD='list --all --json' [PROFILE=edge]"
+	@echo "  make dev-check-targets"
 	@echo "  (override npm path when needed: NPM=~/.local/share/mise/shims/npm)"
 
 dev-build:
@@ -46,3 +47,6 @@ dev-run:
 dev-run-release-like:
 	@test -n "$(CMD)" || (echo "Usage: make dev-run-release-like CMD='list --all --json' [PROFILE=edge]" && exit 1)
 	TABCTL_AUTO_SYNC_MODE=release-like $(TABCTL) --profile $(PROFILE) $(CMD)
+
+dev-check-targets:
+	$(NPM) run check:targets

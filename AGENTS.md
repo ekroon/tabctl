@@ -14,6 +14,7 @@ npm run test:integration  # Run integration tests (requires Chrome)
 A **split hook gate** is active via `core.hooksPath=.githooks` (set by `npm install`):
 - **pre-commit** (`.githooks/pre-commit`) runs fast unit checks (`npm run test:unit`).
 - **pre-push** (`.githooks/pre-push`) runs heavier checks (`npm run rust:verify` and `npm run test:integration`) when Rust/build/hook-related files changed.
+- **local cross-target checks** are opt-in via `npm run check:targets` / `make dev-check-targets`; they are not mandatory in pre-push because this workspace's SQLite dependency chain compiles C code during cross-target `cargo check`.
 - CI `wsl` job validates the WSL -> Windows invocation bridge (setup + Windows command/native-host invocation + integration handoff); it does not compile Rust inside WSL.
 
 ## Project architecture
@@ -117,6 +118,7 @@ npm run bump:major    # major bump
 ## Scripts
 
 - `scripts/bump-version.js` — bumps `rust/Cargo.toml`, mirrors package versions, and refreshes lockfiles
+- `scripts/check-targets.sh` — optional local cross-target cargo check; requires extra host toolchains for Linux/Windows targets
 - `scripts/ci-wait-merge.sh` — waits for CI, merges PR, tags, creates GitHub release
 - `scripts/test-mise-release.sh` — integration test comparing npm stable vs mise alpha channels
 - `scripts/gen-version.js` — generates extension manifest version at build time
