@@ -543,15 +543,22 @@ pub(super) fn profile_connectivity_report(profile_name: &str, entry: &ProfileEnt
 }
 
 pub(super) fn connectivity_manual_steps(profile_name: &str, entry: &ProfileEntry) -> Vec<String> {
-    vec![
+    let mut steps = vec![
         format!("Verify connection: tabctl --profile {profile_name} ping"),
+        "Inspect the active profile and resolved paths: tabctl profile-show --json".to_string(),
         "Ensure the browser extension is loaded and active for this profile.".to_string(),
         format!(
             "Rerun setup for this profile: tabctl setup --browser {} --name {profile_name} --extension-id {}",
             browser_name(&entry.browser),
             entry.extension_id
         ),
-    ]
+    ];
+    if cfg!(windows) {
+        steps.push(
+            "If ping reports a named-pipe error, compare TABCTL_PROFILE, TABCTL_CONFIG_DIR, and TABCTL_DATA_DIR between the generated wrapper and the CLI shell.".to_string(),
+        );
+    }
+    steps
 }
 
 pub(super) fn profile_health_report(

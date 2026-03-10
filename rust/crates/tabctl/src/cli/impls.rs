@@ -10,8 +10,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(windows)]
+use tabctl_shared::windows_pipe_path;
 use tabctl_shared::{
-    Browser, ProfileEntry, ProfileRegistry, RequestEnvelope, ResponseEnvelope, SocketEndpoint,
+    normalize_path_for_current_platform, path_to_platform_string, Browser, ProfileEntry,
+    ProfileRegistry, RequestEnvelope, ResponseEnvelope, SocketEndpoint,
 };
 
 use sha2::{Digest, Sha256};
@@ -1020,6 +1023,30 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn resolves_windows_pipe_endpoint_for_mixed_separator_variants() {
+        let canonical = resolve_windows_pipe_endpoint(r"C:\Users\tester\AppData\Local\tabctl");
+        let mixed = resolve_windows_pipe_endpoint(r"C:/Users/tester/AppData/Local/tabctl");
+        assert_eq!(canonical, mixed);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_pipe_connect_error_includes_profile_data_dir_and_hint() {
+        let err = std::io::Error::from_raw_os_error(5);
+        let rendered = format_windows_pipe_connect_error(
+            Some("edge"),
+            r"C:\Users\tester\AppData\Local\tabctl\profiles\edge",
+            r"\\.\pipe\tabctl-test",
+            &err,
+        );
+        assert!(rendered.contains(r"\\.\pipe\tabctl-test"));
+        assert!(rendered.contains("profile: edge"));
+        assert!(rendered.contains(r"data dir: C:\Users\tester\AppData\Local\tabctl\profiles\edge"));
+        assert!(rendered.contains("named-pipe ACLs") || rendered.contains("Windows denied access"));
+    }
+
     #[test]
     fn resolve_manifest_dir_rejects_invalid_browser() {
         let result = resolve_manifest_dir("firefox");
@@ -1932,6 +1959,12 @@ mod tests {
             );
             assert!(
                 steps.iter().any(|step| {
+                    step.as_str() == Some("Inspect the active profile and resolved paths: tabctl profile-show --json")
+                }),
+                "manual steps should include profile inspection guidance"
+            );
+            assert!(
+                steps.iter().any(|step| {
                     step.as_str().map(|value| {
                         value.contains(
                             "tabctl setup --browser edge --name edge --extension-id mpglnmehddpkinfhheeahiicfieegcon",
@@ -2027,6 +2060,12 @@ mod tests {
                         step.as_str() == Some("Verify connection: tabctl --profile edge ping")
                     }),
                     "manual steps should include ping verification"
+                );
+                assert!(
+                    steps.iter().any(|step| {
+                        step.as_str() == Some("Inspect the active profile and resolved paths: tabctl profile-show --json")
+                    }),
+                    "manual steps should include profile inspection guidance"
                 );
             },
         );

@@ -1,5 +1,34 @@
 use super::*;
 
+#[cfg(windows)]
+fn format_windows_pipe_connect_error(
+    profile: Option<&str>,
+    data_dir: &str,
+    pipe_path: &str,
+    err: &std::io::Error,
+) -> String {
+    let profile_name = profile.unwrap_or("<default>");
+    let code = err
+        .raw_os_error()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let cause_hint = match err.raw_os_error() {
+        Some(2) | Some(3) => {
+            "The named pipe was not found. The host may not be running yet, or the CLI and wrapper may be resolving different profile/data-dir values."
+        }
+        Some(5) => {
+            "Windows denied access to the named pipe. If the wrapper and CLI are running in the same shell/user context, the remaining likely causes are named-pipe ACLs or a profile/data-dir mismatch."
+        }
+        _ => {
+            "Verify that the generated wrapper and the CLI resolve the same TABCTL_PROFILE, TABCTL_CONFIG_DIR, and TABCTL_DATA_DIR values."
+        }
+    };
+
+    format!(
+        "Failed to connect to host at named pipe {pipe_path}: {err} (os error {code})\nprofile: {profile_name}\ndata dir: {data_dir}\nhint: {cause_hint}"
+    )
+}
+
 pub(super) fn resolve_socket_endpoint(profile: Option<&str>) -> Result<SocketEndpoint, String> {
     if let Ok(path) = std::env::var("TABCTL_SOCKET") {
         if !path.trim().is_empty() {
@@ -54,7 +83,9 @@ pub(super) fn resolve_socket_endpoint(profile: Option<&str>) -> Result<SocketEnd
     }
     #[cfg(not(windows))]
     {
-        SocketEndpoint::parse(&format!("{data_dir}/tabctl.sock"))
+        SocketEndpoint::parse(&path_to_platform_string(
+            &PathBuf::from(&data_dir).join("tabctl.sock"),
+        ))
     }
 }
 
@@ -177,22 +208,15 @@ pub(super) fn read_tcp_port_file(path: &Path) -> Option<u16> {
 
 #[cfg(windows)]
 pub(super) fn resolve_windows_pipe_endpoint(data_dir: &str) -> SocketEndpoint {
-    let mut hasher = Sha256::new();
-    hasher.update(data_dir.as_bytes());
-    let digest = hasher.finalize();
-    let hash = digest[..6]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
     SocketEndpoint::Pipe {
-        path: format!(r"\\.\pipe\tabctl-{hash}"),
+        path: windows_pipe_path(data_dir),
     }
 }
 
 pub(super) fn resolve_data_dir(profile: Option<&str>) -> Result<String, String> {
     if let Ok(path) = std::env::var("TABCTL_DATA_DIR") {
         if !path.trim().is_empty() {
-            return Ok(path);
+            return Ok(normalize_path_for_current_platform(&path));
         }
     }
     let config_dir = resolve_config_dir()?;
@@ -201,7 +225,7 @@ pub(super) fn resolve_data_dir(profile: Option<&str>) -> Result<String, String> 
         if let Ok(contents) = fs::read_to_string(profiles_path) {
             if let Ok(registry) = serde_json::from_str::<ProfileRegistry>(&contents) {
                 if let Some(profile_entry) = registry.profiles.get(profile_name) {
-                    return Ok(profile_entry.data_dir.clone());
+                    return Ok(normalize_path_for_current_platform(&profile_entry.data_dir));
                 }
             }
         }
@@ -211,25 +235,29 @@ pub(super) fn resolve_data_dir(profile: Option<&str>) -> Result<String, String> 
     }
     if let Ok(path) = std::env::var("TABCTL_STATE_DIR") {
         if !path.trim().is_empty() {
-            return Ok(path);
+            return Ok(normalize_path_for_current_platform(&path));
         }
     }
     if let Ok(path) = std::env::var("XDG_STATE_HOME") {
-        return Ok(format!("{path}/tabctl"));
+        return Ok(path_to_platform_string(&PathBuf::from(path).join("tabctl")));
     }
     let home = dirs::home_dir().ok_or_else(|| "Unable to resolve home directory".to_string())?;
-    Ok(format!("{}/.local/state/tabctl", home.display()))
+    Ok(path_to_platform_string(
+        &home.join(".local").join("state").join("tabctl"),
+    ))
 }
 
 pub(super) fn resolve_config_dir() -> Result<String, String> {
     if let Ok(path) = std::env::var("TABCTL_CONFIG_DIR") {
-        return Ok(path);
+        return Ok(normalize_path_for_current_platform(&path));
     }
     if let Ok(path) = std::env::var("XDG_CONFIG_HOME") {
-        return Ok(format!("{path}/tabctl"));
+        return Ok(path_to_platform_string(&PathBuf::from(path).join("tabctl")));
     }
     let home = dirs::home_dir().ok_or_else(|| "Unable to resolve home directory".to_string())?;
-    Ok(format!("{}/.config/tabctl", home.display()))
+    Ok(path_to_platform_string(
+        &home.join(".config").join("tabctl"),
+    ))
 }
 
 pub(super) fn resolve_effective_profile(profile: Option<&str>) -> Option<String> {
@@ -322,11 +350,15 @@ pub(super) fn send_request(
         SocketEndpoint::Pipe { path } => {
             #[cfg(windows)]
             {
+                let data_dir =
+                    resolve_data_dir(resolved_profile).unwrap_or_else(|_| "<unknown>".to_string());
                 let stream = fs::OpenOptions::new()
                     .read(true)
                     .write(true)
-                    .open(path)
-                    .map_err(|e| format!("Failed to connect to host: {e}"))?;
+                    .open(&path)
+                    .map_err(|e| {
+                        format_windows_pipe_connect_error(resolved_profile, &data_dir, &path, &e)
+                    })?;
                 send_request_over_stream(stream, action, params, show_progress, None)
             }
             #[cfg(not(windows))]

@@ -16,7 +16,12 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use tabctl_shared::{ProfileRegistry, SocketEndpoint, TabctlConfig};
+#[cfg(windows)]
+use tabctl_shared::windows_pipe_path;
+use tabctl_shared::{
+    normalize_path_for_current_platform, path_to_platform_string, ProfileRegistry, SocketEndpoint,
+    TabctlConfig,
+};
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE};
 #[cfg(windows)]
@@ -79,30 +84,23 @@ fn default_state_base() -> PathBuf {
 fn resolve_socket_path(data_dir: &Path) -> String {
     #[cfg(windows)]
     {
-        let mut hasher = Sha256::new();
-        hasher.update(data_dir.to_string_lossy().as_bytes());
-        let digest = hasher.finalize();
-        let hash = digest[..6]
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
-        format!(r"\\.\pipe\tabctl-{hash}")
+        windows_pipe_path(&path_to_platform_string(data_dir))
     }
     #[cfg(not(windows))]
     {
-        data_dir.join("tabctl.sock").to_string_lossy().to_string()
+        path_to_platform_string(&data_dir.join("tabctl.sock"))
     }
 }
 
 fn resolve_base_data_dir() -> PathBuf {
     if let Ok(path) = std::env::var("TABCTL_DATA_DIR") {
         if !path.trim().is_empty() {
-            return PathBuf::from(path);
+            return PathBuf::from(normalize_path_for_current_platform(&path));
         }
     }
     if let Ok(path) = std::env::var("TABCTL_STATE_DIR") {
         if !path.trim().is_empty() {
-            return PathBuf::from(path);
+            return PathBuf::from(normalize_path_for_current_platform(&path));
         }
     }
     if let Ok(state_home) = std::env::var("XDG_STATE_HOME") {
@@ -125,15 +123,15 @@ fn resolve_profile_data_dir(config_dir: &Path, profile_name: &str) -> Option<Pat
     registry
         .profiles
         .get(profile_name)
-        .map(|entry| PathBuf::from(&entry.data_dir))
+        .map(|entry| PathBuf::from(normalize_path_for_current_platform(&entry.data_dir)))
 }
 
 pub(super) fn resolve_config() -> TabctlConfig {
     let config_dir = std::env::var("TABCTL_CONFIG_DIR")
-        .map(PathBuf::from)
+        .map(|path| PathBuf::from(normalize_path_for_current_platform(&path)))
         .unwrap_or_else(|_| {
             std::env::var("XDG_CONFIG_HOME")
-                .map(PathBuf::from)
+                .map(|path| PathBuf::from(normalize_path_for_current_platform(&path)))
                 .unwrap_or_else(|_| default_config_base())
                 .join("tabctl")
         });
@@ -149,13 +147,13 @@ pub(super) fn resolve_config() -> TabctlConfig {
         std::env::var("TABCTL_SOCKET").unwrap_or_else(|_| resolve_socket_path(&data_dir));
 
     TabctlConfig {
-        config_dir: config_dir.to_string_lossy().to_string(),
-        data_dir: data_dir.to_string_lossy().to_string(),
-        base_data_dir: base_data_dir.to_string_lossy().to_string(),
+        config_dir: path_to_platform_string(&config_dir),
+        data_dir: path_to_platform_string(&data_dir),
+        base_data_dir: path_to_platform_string(&base_data_dir),
         socket_path,
-        undo_log: data_dir.join("undo.jsonl").to_string_lossy().to_string(),
-        wrapper_dir: data_dir.to_string_lossy().to_string(),
-        policy_path: config_dir.join("policy.json").to_string_lossy().to_string(),
+        undo_log: path_to_platform_string(&data_dir.join("undo.jsonl")),
+        wrapper_dir: path_to_platform_string(&data_dir),
+        policy_path: path_to_platform_string(&config_dir.join("policy.json")),
         active_profile_name,
     }
 }
@@ -303,7 +301,7 @@ fn connect_named_pipe_instance(path: &str) -> io::Result<File> {
 
 fn deterministic_tcp_start_port(data_dir: &Path) -> u16 {
     let mut hasher = Sha256::new();
-    hasher.update(data_dir.to_string_lossy().as_bytes());
+    hasher.update(path_to_platform_string(data_dir).as_bytes());
     let digest = hasher.finalize();
     let seed = u16::from_be_bytes([digest[6], digest[7]]);
     TCP_PORT_BASE + (seed % TCP_PORT_SPAN)

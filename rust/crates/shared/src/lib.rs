@@ -1,11 +1,92 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path;
 use url_normalize::Options as NormalizeOptions;
 
 pub fn workspace_marker() -> &'static str {
     "tabctl-rust-workspace"
+}
+
+pub fn normalize_windows_path_string(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+
+    let replaced = path.replace('/', "\\");
+    let (prefix, rest) = if let Some(rest) = replaced.strip_prefix(r"\\?\UNC\") {
+        (r"\\?\UNC\", rest)
+    } else if let Some(rest) = replaced.strip_prefix(r"\\?\") {
+        (r"\\?\", rest)
+    } else if let Some(rest) = replaced.strip_prefix(r"\\.\") {
+        (r"\\.\", rest)
+    } else if let Some(rest) = replaced.strip_prefix(r"\\") {
+        (r"\\", rest)
+    } else if let Some(rest) = replaced.strip_prefix('\\') {
+        (r"\", rest)
+    } else {
+        ("", replaced.as_str())
+    };
+
+    let had_drive_root = prefix.is_empty()
+        && replaced.len() >= 3
+        && replaced.as_bytes()[1] == b':'
+        && replaced[2..].chars().all(|ch| ch == '\\');
+
+    let mut segments = rest.split('\\').filter(|segment| !segment.is_empty());
+    let Some(first_segment) = segments.next() else {
+        return replaced;
+    };
+
+    let mut normalized = String::from(prefix);
+    if first_segment.len() == 2 && first_segment.as_bytes()[1] == b':' {
+        let drive = first_segment.as_bytes()[0] as char;
+        normalized.push(drive.to_ascii_uppercase());
+        normalized.push(':');
+    } else {
+        normalized.push_str(first_segment);
+    }
+
+    for segment in segments {
+        if !normalized.ends_with('\\') {
+            normalized.push('\\');
+        }
+        normalized.push_str(segment);
+    }
+
+    if had_drive_root && normalized.len() == 2 && normalized.as_bytes()[1] == b':' {
+        normalized.push('\\');
+    }
+
+    normalized
+}
+
+pub fn normalize_path_for_current_platform(path: &str) -> String {
+    #[cfg(windows)]
+    {
+        normalize_windows_path_string(path)
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_string()
+    }
+}
+
+pub fn path_to_platform_string(path: &Path) -> String {
+    normalize_path_for_current_platform(&path.to_string_lossy())
+}
+
+pub fn windows_pipe_path(data_dir: &str) -> String {
+    let normalized = normalize_windows_path_string(data_dir);
+    let mut hasher = Sha256::new();
+    hasher.update(normalized.as_bytes());
+    let digest = hasher.finalize();
+    let hash = digest[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!(r"\\.\pipe\tabctl-{hash}")
 }
 
 /// Normalize a URL for deduplication and storage.
@@ -396,5 +477,29 @@ mod tests {
         assert!(SocketEndpoint::parse("unix://").is_err());
         assert!(SocketEndpoint::parse("udp://127.0.0.1:8008").is_err());
         assert!(SocketEndpoint::parse("relative.sock").is_err());
+    }
+
+    #[test]
+    fn normalize_windows_path_string_unifies_mixed_separators() {
+        let normalized =
+            normalize_windows_path_string(r"C:/Users/tester/AppData\\Local/tabctl/profiles/edge/");
+        assert_eq!(
+            normalized,
+            r"C:\Users\tester\AppData\Local\tabctl\profiles\edge"
+        );
+    }
+
+    #[test]
+    fn normalize_windows_path_string_preserves_unc_prefix() {
+        let normalized = normalize_windows_path_string(r"\\server/share\\tabctl\profiles/edge");
+        assert_eq!(normalized, r"\\server\share\tabctl\profiles\edge");
+    }
+
+    #[test]
+    fn windows_pipe_path_ignores_separator_style() {
+        assert_eq!(
+            windows_pipe_path(r"C:\Users\tester\AppData\Local\tabctl\profiles\edge"),
+            windows_pipe_path(r"C:/Users/tester/AppData/Local/tabctl/profiles/edge")
+        );
     }
 }
