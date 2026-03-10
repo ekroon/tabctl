@@ -30,7 +30,7 @@ jobs:
         id: resolve
         shell: bash
         run: |
-          version="$(node -p "require('./package.json').version")"
+          version="$(node -e "process.stdout.write(require('./scripts/version-utils').readWorkspaceVersion(process.cwd()))")"
           tag="v${version}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
