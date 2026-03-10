@@ -24,8 +24,8 @@ function syncOptionalDependencyVersion(pkg, dependencyName, version) {
 function syncJsonPackageVersion(filePath, version) {
   const parsed = readJson(filePath);
   parsed.version = version;
-  if (filePath === pkgPath && parsed.optionalDependencies && parsed.optionalDependencies["tabctl-win32-x64"]) {
-    parsed.optionalDependencies["tabctl-win32-x64"] = version;
+  if (filePath === pkgPath) {
+    syncOptionalDependencyVersion(parsed, winPackageName, version);
   }
   writeJson(filePath, parsed);
 }

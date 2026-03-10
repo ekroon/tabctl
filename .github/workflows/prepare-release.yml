@@ -56,8 +56,9 @@ jobs:
           const fs = require("fs");
           const { execSync } = require("node:child_process");
           const { bump, formatVersion, parseVersion, recommendReleaseBump } = require("./scripts/versioning");
+          const { readWorkspaceVersion } = require("./scripts/version-utils");
 
-          const currentVersion = require("./package.json").version;
+          const currentVersion = readWorkspaceVersion(process.cwd());
           const requestedBump = process.env.REQUESTED_BUMP;
           const outputPath = process.env.GITHUB_OUTPUT;
           const summaryPath = process.env.GITHUB_STEP_SUMMARY;
@@ -143,7 +144,7 @@ jobs:
         run: |
           git checkout -b "${BRANCH_NAME}"
           npm run "bump:${SELECTED_BUMP}"
-          actual_version="$(node -p "require('./package.json').version")"
+          actual_version="$(node -e "process.stdout.write(require('./scripts/version-utils').readWorkspaceVersion(process.cwd()))")"
           if [ "${actual_version}" != "${NEXT_VERSION}" ]; then
             echo "Expected version ${NEXT_VERSION}, got ${actual_version}" >&2
             exit 1
@@ -158,9 +159,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json packages/win32-x64/package.json \
-            rust/crates/shared/Cargo.toml rust/crates/host/Cargo.toml \
-            rust/crates/graphql/Cargo.toml rust/crates/tabctl/Cargo.toml rust/Cargo.lock
+          git add package.json package-lock.json packages/win32-x64/package.json rust/Cargo.toml rust/Cargo.lock
           git commit -m "${PR_TITLE}"
           git push -u origin "${BRANCH_NAME}"
 
