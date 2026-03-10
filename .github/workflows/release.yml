@@ -54,7 +54,7 @@ jobs:
           version="$(node -e "process.stdout.write(require('./scripts/version-utils').readWorkspaceVersion(process.cwd()))")"
           expected_tag="v${version}"
           if [ "$tag" != "$expected_tag" ]; then
-            echo "Release tag ($tag) must match package version tag ($expected_tag)." >&2
+            echo "Release tag ($tag) must match workspace version tag ($expected_tag)." >&2
             exit 1
           fi
           node - <<'NODE'
