@@ -43,8 +43,6 @@ enum OpenPhase {
     RemoveSeedTab,
     GroupTabs,
     UpdateGroup,
-    VerifyQuery,
-    VerifyGroup,
 }
 
 impl OpenOrchestration {
@@ -132,8 +130,6 @@ impl super::Orchestration for OpenOrchestration {
             OpenPhase::RemoveSeedTab => self.handle_seed_removed(),
             OpenPhase::GroupTabs => self.handle_grouped(response),
             OpenPhase::UpdateGroup => self.handle_group_updated(),
-            OpenPhase::VerifyQuery => self.handle_verify_query(response),
-            OpenPhase::VerifyGroup => self.complete(),
         }
     }
 }
@@ -489,53 +485,6 @@ impl OpenOrchestration {
     }
 
     fn try_verify_grouping(&mut self) -> OrchStep {
-        let target_group_id = self.state.new_group_id.or(self.state.existing_group_id);
-        if target_group_id.is_none() || self.state.created.is_empty() {
-            return self.complete();
-        }
-
-        // Query tabs to verify grouping
-        let window_id = self.state.window_id.unwrap();
-        self.phase = OpenPhase::VerifyQuery;
-        OrchStep::SendPrimitive {
-            action: "p:tab-query".to_string(),
-            params: serde_json::json!({"query": {"windowId": window_id}}),
-        }
-    }
-
-    fn handle_verify_query(&mut self, response: Value) -> OrchStep {
-        let target_group_id = self.state.new_group_id.or(self.state.existing_group_id);
-        let Some(target_gid) = target_group_id else {
-            return self.complete();
-        };
-
-        let created_ids: std::collections::HashSet<i64> = self
-            .state
-            .created
-            .iter()
-            .filter_map(|c| c.get("tabId").and_then(Value::as_i64))
-            .collect();
-
-        // Find tabs that should be grouped but aren't
-        let tabs = response.as_array().unwrap_or(&Vec::new()).clone();
-        let straggler_ids: Vec<i64> = tabs
-            .iter()
-            .filter(|tab| {
-                let tid = tab.get("id").and_then(Value::as_i64).unwrap_or(0);
-                let gid = tab.get("groupId").and_then(Value::as_i64).unwrap_or(-1);
-                created_ids.contains(&tid) && gid != target_gid
-            })
-            .filter_map(|tab| tab.get("id").and_then(Value::as_i64))
-            .collect();
-
-        if !straggler_ids.is_empty() {
-            self.phase = OpenPhase::VerifyGroup;
-            return OrchStep::SendPrimitive {
-                action: "p:tab-group".to_string(),
-                params: serde_json::json!({"groupId": target_gid, "tabIds": straggler_ids}),
-            };
-        }
-
         self.complete()
     }
 
@@ -615,15 +564,8 @@ mod tests {
         assert!(matches!(&step, OrchStep::SendPrimitive { action, params }
                 if action == "p:group-update" && params["title"] == "Test"));
 
-        // updated → verify query
+        // updated → complete
         let step = orch.step(serde_json::json!({"id": 50}));
-        assert!(matches!(&step, OrchStep::SendPrimitive { action, .. } if action == "p:tab-query"));
-
-        // all grouped → complete
-        let step = orch.step(serde_json::json!([
-            {"id": 1, "groupId": 50},
-            {"id": 2, "groupId": 50}
-        ]));
         let OrchStep::Complete { response, .. } = step else {
             panic!("expected Complete");
         };

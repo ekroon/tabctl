@@ -19,9 +19,10 @@ use protocol::{
     MAX_NATIVE_MESSAGE_BYTES,
 };
 #[cfg(test)]
+use runtime::resolve_config;
+#[cfg(all(test, not(windows)))]
 use runtime::{
-    generate_and_write_auth_token, resolve_config, AUTH_TOKEN_FILENAME, AUTH_TOKEN_LENGTH,
-    TCP_PORT_FILENAME,
+    generate_and_write_auth_token, AUTH_TOKEN_FILENAME, AUTH_TOKEN_LENGTH, TCP_PORT_FILENAME,
 };
 #[cfg(test)]
 use serde_json::{Map, Value};
@@ -35,8 +36,10 @@ use std::io;
 use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::Arc;
+#[cfg(all(test, not(windows)))]
+use tabctl_shared::ResponseEnvelope;
 #[cfg(test)]
-use tabctl_shared::{NativeMessage, ProtocolError, RequestEnvelope, ResponseEnvelope};
+use tabctl_shared::{NativeMessage, ProtocolError, RequestEnvelope};
 #[cfg(test)]
 use undo::{append_undo_record, read_undo_records};
 #[cfg(test)]
@@ -495,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn ping_response_preserves_runtime_extension_id() {
+    fn ping_is_served_locally_with_native_channel_flag() {
         let mut state = HostState::new(temp_undo_path(), temp_focus_db_path(), None);
         let effects = state.handle_cli_request(
             5,
@@ -506,37 +509,8 @@ mod tests {
                 auth_token: None,
             },
         );
-        let HostEffect::SendNative(native_req) = &effects[0] else {
-            panic!("expected ping forward");
-        };
-        assert_eq!(native_req.id, "req-ping");
-
-        let native_resp = NativeMessage {
-            id: native_req.id.clone(),
-            action: None,
-            ok: Some(true),
-            progress: None,
-            params: Some(Value::Object(Map::new())),
-            data: Some(Value::Object(Map::from_iter([
-                (
-                    "runtimeId".to_string(),
-                    Value::String("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string()),
-                ),
-                ("version".to_string(), Value::String("1.2.3".to_string())),
-                (
-                    "baseVersion".to_string(),
-                    Value::String("1.2.3".to_string()),
-                ),
-                (
-                    "component".to_string(),
-                    Value::String("extension".to_string()),
-                ),
-            ]))),
-            error: None,
-        };
-        let effects = state.handle_native_message(native_resp);
         let HostEffect::Respond { payload, .. } = &effects[0] else {
-            panic!("expected ping response");
+            panic!("expected local ping response");
         };
         assert_eq!(payload.request_id.as_deref(), Some("req-ping"));
         assert_eq!(payload.component.as_deref(), Some("host"));
@@ -546,26 +520,21 @@ mod tests {
             .as_ref()
             .and_then(|v| v.as_object())
             .expect("response data");
-        assert_eq!(
-            data.get("runtimeId").and_then(|v| v.as_str()),
-            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
-        );
-        assert_eq!(data.get("version").and_then(|v| v.as_str()), Some("1.2.3"));
-        assert_eq!(
-            data.get("component").and_then(|v| v.as_str()),
-            Some("extension")
-        );
+        assert_eq!(data.get("component").and_then(|v| v.as_str()), Some("host"));
         assert_eq!(
             data.get("hostVersion").and_then(|v| v.as_str()),
             Some(host_version())
         );
-        assert!(data.get("hostBaseVersion").is_some());
+        assert_eq!(
+            data.get("nativeChannelAvailable").and_then(|v| v.as_bool()),
+            Some(true)
+        );
         assert_eq!(
             data.get("versionsInSync").and_then(|v| v.as_bool()),
             Some(false)
         );
-        assert!(data.get("extensionVersion").is_none());
-        assert!(data.get("extensionComponent").is_none());
+        assert!(data.get("runtimeId").is_none());
+        assert!(data.get("version").is_none());
         assert!(payload.ok);
     }
 
@@ -669,10 +638,9 @@ mod tests {
         );
     }
 
-    // TCP bridge tests — run on all platforms to validate bridge fundamentals
-    // without requiring WSL. The host TCP listener (Windows) and the CLI TCP
-    // discovery path (WSL) both rely on a simple port file + loopback socket.
+    // TCP bridge tests remain relevant for the Unix opt-in TCP path.
 
+    #[cfg(not(windows))]
     #[test]
     fn tcp_port_file_format_roundtrip() {
         let tmp = std::env::temp_dir().join(format!("tabctl-host-tcp-{}", now_ms()));
@@ -685,6 +653,7 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn tcp_listener_binds_loopback_and_accepts_connection() {
         use std::io::{Read, Write};
@@ -706,6 +675,7 @@ mod tests {
         assert_eq!(buf, b"ping");
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_auth_token_file_generation() {
         let tmp = std::env::temp_dir().join(format!("tabctl-host-auth-{}", now_ms()));
@@ -731,6 +701,7 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn tcp_auth_token_rejects_wrong_token() {
         let undo_path = temp_undo_path();
@@ -781,6 +752,7 @@ mod tests {
         let _ = std::fs::remove_file(undo_path);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn tcp_auth_token_accepts_correct_token() {
         let undo_path = temp_undo_path();
@@ -798,14 +770,16 @@ mod tests {
         let provided = request.auth_token.as_deref().unwrap_or("");
         assert_eq!(provided, expected_token.as_str());
 
-        // With correct token, request should be forwarded normally
+        // With correct token, request should be served normally
         let effects = state.handle_cli_request(101, request);
-        let HostEffect::SendNative(native) = &effects[0] else {
-            panic!("expected ping to be forwarded to extension");
+        let HostEffect::Respond { payload, .. } = &effects[0] else {
+            panic!("expected local ping response");
         };
-        assert_eq!(native.id, "req-good-auth");
+        assert!(payload.ok);
+        assert_eq!(payload.request_id.as_deref(), Some("req-good-auth"));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn tcp_auth_token_missing_token_rejected() {
         let expected_token = Arc::new("correct-token-abc123".to_string());
@@ -839,10 +813,11 @@ mod tests {
         assert!(expected_auth_token.is_none());
 
         let effects = state.handle_cli_request(102, request);
-        let HostEffect::SendNative(native) = &effects[0] else {
-            panic!("expected ping forward without auth check");
+        let HostEffect::Respond { payload, .. } = &effects[0] else {
+            panic!("expected local ping without auth check");
         };
-        assert_eq!(native.id, "req-no-tcp");
+        assert!(payload.ok);
+        assert_eq!(payload.request_id.as_deref(), Some("req-no-tcp"));
     }
 
     #[test]

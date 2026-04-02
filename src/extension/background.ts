@@ -34,7 +34,7 @@ function requireFiniteId(value: unknown, name: string): number {
 }
 
 const state = {
-  port: null,
+  port: null as chrome.runtime.Port | null,
 };
 
 const browserState = {
@@ -50,23 +50,28 @@ function log(...args: Array<unknown>) {
   console.log("[tabctl]", ...args);
 }
 
-function sendResponse(id: string, ok: boolean, payload: unknown) {
-  if (!state.port) {
+function sendResponse(port: chrome.runtime.Port | null, id: string, ok: boolean, payload: unknown) {
+  if (!port) {
+    log("dropping response because native port is unavailable", { id, ok });
     return;
   }
 
-  if (ok) {
-    const data = typeof payload === "object" && payload !== null
-      ? payload
-      : { payload };
-    state.port.postMessage({ id, ok: true, data });
-    return;
-  }
+  try {
+    if (ok) {
+      const data = typeof payload === "object" && payload !== null
+        ? payload
+        : { payload };
+      port.postMessage({ id, ok: true, data });
+      return;
+    }
 
-  const error = payload instanceof Error
-    ? { message: payload.message, stack: payload.stack }
-    : payload;
-  state.port.postMessage({ id, ok: false, error });
+    const error = payload instanceof Error
+      ? { message: payload.message, stack: payload.stack }
+      : payload;
+    port.postMessage({ id, ok: false, error });
+  } catch (error) {
+    log("failed to send native response", { id, ok, error });
+  }
 }
 
 function connectNative() {
@@ -77,7 +82,9 @@ function connectNative() {
   try {
     const port = chrome.runtime.connectNative(HOST_NAME);
     state.port = port;
-    port.onMessage.addListener(handleNativeMessage);
+    port.onMessage.addListener((message) => {
+      void handleNativeMessage(port, message);
+    });
     port.onDisconnect.addListener(() => {
       const lastError = chrome.runtime.lastError;
       if (lastError) {
@@ -349,7 +356,10 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
-async function handleNativeMessage(message: { id?: string; action?: string; params?: Record<string, unknown> }) {
+async function handleNativeMessage(
+  requestPort: chrome.runtime.Port,
+  message: { id?: string; action?: string; params?: Record<string, unknown> },
+) {
   if (!message || typeof message !== "object") {
     return;
   }
@@ -361,9 +371,9 @@ async function handleNativeMessage(message: { id?: string; action?: string; para
 
   try {
     const data = await handleAction(action, params || {}, id);
-    sendResponse(id, true, data);
+    sendResponse(requestPort, id, true, data);
   } catch (error) {
-    sendResponse(id, false, error);
+    sendResponse(requestPort, id, false, error);
   }
 }
 

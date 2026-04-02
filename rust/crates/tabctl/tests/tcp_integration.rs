@@ -2,6 +2,7 @@
 //!
 //! These tests build and spawn the real `tabctl` binary, start the host
 //! with `TABCTL_HOST_TCP=1`, and exercise the CLI over TCP.
+#![cfg(not(windows))]
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;

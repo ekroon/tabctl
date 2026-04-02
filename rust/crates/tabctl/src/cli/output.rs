@@ -79,8 +79,27 @@ pub(super) fn render_ping_human(response: &ResponseEnvelope) -> Result<(), Strin
         .get("hostDirty")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let native_channel_available = data
+        .get("nativeChannelAvailable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let dirty_marker = |d: bool| if d { "+dirty" } else { "" };
+
+    if data.get("version").is_none() {
+        if native_channel_available {
+            println!(
+                "✅ tabctl {} (host reachable; browser channel available)",
+                host_version
+            );
+        } else {
+            println!(
+                "✅ tabctl {} (host reachable; no browser channel)",
+                host_version
+            );
+        }
+        return Ok(());
+    }
 
     if in_sync {
         let has_shas = ext_sha != "unknown" && host_sha != "unknown";

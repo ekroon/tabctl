@@ -1,7 +1,7 @@
 use super::*;
 
 #[cfg(windows)]
-fn format_windows_pipe_connect_error(
+pub(super) fn format_windows_pipe_connect_error(
     profile: Option<&str>,
     data_dir: &str,
     pipe_path: &str,
@@ -29,15 +29,24 @@ fn format_windows_pipe_connect_error(
     )
 }
 
+fn response_timeout_ms() -> u64 {
+    std::env::var("TABCTL_RESPONSE_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(CLI_RESPONSE_TIMEOUT_MS)
+}
+
 pub(super) fn resolve_socket_endpoint(profile: Option<&str>) -> Result<SocketEndpoint, String> {
     if let Ok(path) = std::env::var("TABCTL_SOCKET") {
         if !path.trim().is_empty() {
             let endpoint = SocketEndpoint::parse(&path)?;
             #[cfg(target_os = "linux")]
-            if matches!(endpoint, SocketEndpoint::Pipe { .. }) && is_wsl_environment() {
-                if let Some(tcp) = discover_wsl_tcp_endpoint(profile) {
-                    return Ok(tcp);
-                }
+            if is_wsl_environment() && matches!(endpoint, SocketEndpoint::Tcp { .. }) {
+                return Err(
+                    "TCP transport is disabled in WSL; use the Windows named-pipe bridge."
+                        .to_string(),
+                );
             }
             return Ok(endpoint);
         }
@@ -45,6 +54,13 @@ pub(super) fn resolve_socket_endpoint(profile: Option<&str>) -> Result<SocketEnd
     // Check TABCTL_TRANSPORT=tcp for explicit TCP transport selection
     if let Ok(transport) = std::env::var("TABCTL_TRANSPORT") {
         if transport.trim().eq_ignore_ascii_case("tcp") {
+            #[cfg(target_os = "linux")]
+            if is_wsl_environment() {
+                return Err(
+                    "TCP transport is disabled in WSL; use the Windows named-pipe bridge."
+                        .to_string(),
+                );
+            }
             if let Ok(port_str) = std::env::var("TABCTL_TCP_PORT") {
                 if let Ok(port) = port_str.trim().parse::<u16>() {
                     if port > 0 {
@@ -68,12 +84,9 @@ pub(super) fn resolve_socket_endpoint(profile: Option<&str>) -> Result<SocketEnd
     }
     #[cfg(target_os = "linux")]
     if is_wsl_environment() {
-        if let Some(tcp) = discover_wsl_tcp_endpoint(profile) {
-            return Ok(tcp);
-        }
-        return Ok(SocketEndpoint::Tcp {
-            host: "127.0.0.1".to_string(),
-            port: WSL_TCP_PORT_FALLBACK,
+        return discover_wsl_pipe_endpoint(profile).ok_or_else(|| {
+            "No WSL named-pipe endpoint was found. Is the Windows host running and publishing pipe-endpoint?"
+                .to_string()
         });
     }
     let data_dir = resolve_data_dir(profile)?;
@@ -98,30 +111,37 @@ pub(super) fn is_wsl_environment() -> bool {
             .unwrap_or(false)
 }
 
-#[cfg(target_os = "linux")]
-pub(super) fn discover_wsl_tcp_endpoint(profile: Option<&str>) -> Option<SocketEndpoint> {
-    if let Ok(value) = std::env::var("TABCTL_TCP_PORT") {
-        if let Ok(port) = value.trim().parse::<u16>() {
-            if port > 0 {
-                return Some(SocketEndpoint::Tcp {
-                    host: "127.0.0.1".to_string(),
-                    port,
-                });
-            }
-        }
+pub(super) fn can_repair_host_wrapper() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        !is_wsl_environment()
     }
-    let data_dir = resolve_data_dir(profile).ok()?;
-    discover_wsl_tcp_port_from_data_dir(&data_dir).map(|port| SocketEndpoint::Tcp {
-        host: "127.0.0.1".to_string(),
-        port,
-    })
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 pub(super) fn discover_wsl_tcp_port_from_data_dir(data_dir: &str) -> Option<u16> {
     for path in wsl_tcp_port_candidates(data_dir) {
         if let Some(port) = read_tcp_port_file(&path) {
             return Some(port);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn discover_wsl_pipe_endpoint(profile: Option<&str>) -> Option<SocketEndpoint> {
+    let data_dir = resolve_data_dir(profile).ok()?;
+    for path in wsl_pipe_endpoint_candidates(&data_dir) {
+        if let Ok(content) = fs::read_to_string(path) {
+            if let Ok(endpoint) = SocketEndpoint::parse(content.trim()) {
+                if matches!(endpoint, SocketEndpoint::Pipe { .. }) {
+                    return Some(endpoint);
+                }
+            }
         }
     }
     None
@@ -146,17 +166,25 @@ pub(super) fn resolve_windows_username_from_path() -> Option<String> {
 #[cfg(any(target_os = "linux", test))]
 pub(super) fn resolve_windows_appdata_local() -> Option<PathBuf> {
     let username = resolve_windows_username_from_path()?;
-    let path = PathBuf::from(format!("/mnt/c/Users/{username}/AppData/Local"));
-    if path.is_dir() {
-        Some(path)
-    } else {
-        None
-    }
+    Some(PathBuf::from(format!(
+        "/mnt/c/Users/{username}/AppData/Local"
+    )))
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn resolve_windows_appdata_roaming() -> Option<PathBuf> {
+    let username = resolve_windows_username_from_path()?;
+    Some(PathBuf::from(format!(
+        "/mnt/c/Users/{username}/AppData/Roaming"
+    )))
 }
 
 #[cfg(any(target_os = "linux", test))]
 pub(super) fn wsl_file_candidates(data_dir: &str, filename: &str) -> Vec<PathBuf> {
     let mut candidates = vec![PathBuf::from(data_dir).join(filename)];
+    if let Some(wsl_path) = windows_path_to_wsl_path(data_dir) {
+        candidates.push(wsl_path.join(filename));
+    }
     let Some(relative_suffix) = tabctl_relative_suffix(Path::new(data_dir)) else {
         return candidates;
     };
@@ -179,9 +207,26 @@ pub(super) fn wsl_file_candidates(data_dir: &str, filename: &str) -> Vec<PathBuf
     candidates
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
+pub(super) fn windows_path_to_wsl_path(path: &str) -> Option<PathBuf> {
+    let normalized = path.replace('/', "\\");
+    let bytes = normalized.as_bytes();
+    if bytes.len() < 3 || bytes[1] != b':' || bytes[2] != b'\\' {
+        return None;
+    }
+    let drive = (bytes[0] as char).to_ascii_lowercase();
+    let suffix = normalized[3..].replace('\\', "/");
+    Some(PathBuf::from(format!("/mnt/{drive}/{suffix}")))
+}
+
+#[cfg(all(target_os = "linux", test))]
 pub(super) fn wsl_tcp_port_candidates(data_dir: &str) -> Vec<PathBuf> {
     wsl_file_candidates(data_dir, WSL_TCP_PORT_FILENAME)
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn wsl_pipe_endpoint_candidates(data_dir: &str) -> Vec<PathBuf> {
+    wsl_file_candidates(data_dir, WSL_PIPE_ENDPOINT_FILENAME)
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -220,18 +265,18 @@ pub(super) fn resolve_data_dir(profile: Option<&str>) -> Result<String, String> 
         }
     }
     let config_dir = resolve_config_dir()?;
+    let profiles_path = PathBuf::from(&config_dir).join("profiles.json");
+    let registry = fs::read_to_string(&profiles_path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<ProfileRegistry>(&contents).ok());
     if let Some(profile_name) = profile {
-        let profiles_path = PathBuf::from(&config_dir).join("profiles.json");
-        if let Ok(contents) = fs::read_to_string(profiles_path) {
-            if let Ok(registry) = serde_json::from_str::<ProfileRegistry>(&contents) {
-                if let Some(profile_entry) = registry.profiles.get(profile_name) {
-                    return Ok(normalize_path_for_current_platform(&profile_entry.data_dir));
-                }
-            }
+        if let Some(profile_entry) = registry
+            .as_ref()
+            .and_then(|registry| registry.profiles.get(profile_name))
+        {
+            return Ok(normalize_path_for_current_platform(&profile_entry.data_dir));
         }
-        return Err(format!(
-            "Profile \"{profile_name}\" not found in profiles.json"
-        ));
+        return Err(format!("Profile \"{profile_name}\" not found in profiles.json"));
     }
     if let Ok(path) = std::env::var("TABCTL_STATE_DIR") {
         if !path.trim().is_empty() {
@@ -240,6 +285,18 @@ pub(super) fn resolve_data_dir(profile: Option<&str>) -> Result<String, String> 
     }
     if let Ok(path) = std::env::var("XDG_STATE_HOME") {
         return Ok(path_to_platform_string(&PathBuf::from(path).join("tabctl")));
+    }
+    #[cfg(windows)]
+    if let Ok(path) = std::env::var("LOCALAPPDATA") {
+        if !path.trim().is_empty() {
+            return Ok(path_to_platform_string(&PathBuf::from(path).join("tabctl")));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if is_wsl_environment() {
+        if let Some(appdata_local) = resolve_windows_appdata_local() {
+            return Ok(path_to_platform_string(&appdata_local.join("tabctl")));
+        }
     }
     let home = dirs::home_dir().ok_or_else(|| "Unable to resolve home directory".to_string())?;
     Ok(path_to_platform_string(
@@ -253,6 +310,18 @@ pub(super) fn resolve_config_dir() -> Result<String, String> {
     }
     if let Ok(path) = std::env::var("XDG_CONFIG_HOME") {
         return Ok(path_to_platform_string(&PathBuf::from(path).join("tabctl")));
+    }
+    #[cfg(windows)]
+    if let Ok(path) = std::env::var("APPDATA") {
+        if !path.trim().is_empty() {
+            return Ok(path_to_platform_string(&PathBuf::from(path).join("tabctl")));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if is_wsl_environment() {
+        if let Some(appdata_roaming) = resolve_windows_appdata_roaming() {
+            return Ok(path_to_platform_string(&appdata_roaming.join("tabctl")));
+        }
     }
     let home = dirs::home_dir().ok_or_else(|| "Unable to resolve home directory".to_string())?;
     Ok(path_to_platform_string(
@@ -361,13 +430,144 @@ pub(super) fn send_request(
                     })?;
                 send_request_over_stream(stream, action, params, show_progress, None)
             }
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
+            {
+                if is_wsl_environment() {
+                    return send_request_over_wsl_named_pipe(&path, action, params, show_progress);
+                }
+                Err("Named pipe transport is unsupported on this target".to_string())
+            }
+            #[cfg(not(any(windows, target_os = "linux")))]
             {
                 let _ = path;
                 Err("Named pipe transport is unsupported on this target".to_string())
             }
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn wsl_named_pipe_name(pipe_path: &str) -> Result<String, String> {
+    let trimmed = pipe_path.trim();
+    if let Some(name) = trimmed.strip_prefix("pipe://") {
+        let name = name.trim_start_matches('/');
+        if !name.is_empty() {
+            return Ok(name.to_string());
+        }
+    }
+    if let Some(name) = trimmed.strip_prefix(r"\\.\pipe\") {
+        if !name.is_empty() {
+            return Ok(name.to_string());
+        }
+    }
+    Err(format!(
+        "Unsupported Windows pipe endpoint for WSL bridge: {pipe_path}"
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn parse_response_lines(output: &str, show_progress: bool) -> Result<ResponseEnvelope, String> {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let response: ResponseEnvelope =
+            serde_json::from_str(trimmed).map_err(|e| format!("Invalid response payload: {e}"))?;
+        if response.progress.unwrap_or(false) {
+            if show_progress {
+                let data = response.data.clone().unwrap_or(json!({}));
+                eprintln!("[tabctl] progress: {}", data);
+            }
+            continue;
+        }
+        return Ok(response);
+    }
+    Err("No response received".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn send_request_over_wsl_named_pipe(
+    pipe_path: &str,
+    action: &str,
+    params: Value,
+    show_progress: bool,
+) -> Result<ResponseEnvelope, String> {
+    let request = RequestEnvelope {
+        id: Some(request_id()),
+        action: action.to_string(),
+        params,
+        auth_token: None,
+    };
+    let request_json =
+        serde_json::to_string(&request).map_err(|e| format!("Failed to encode request: {e}"))?;
+    let escaped_request = request_json.replace('\'', "''");
+    let pipe_name = wsl_named_pipe_name(pipe_path)?;
+    let timeout_ms = response_timeout_ms();
+    let script = format!(
+        "$ErrorActionPreference='Stop';\
+         [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);\
+         $pipeName='{pipe_name}';\
+         $request='{escaped_request}';\
+         $pipe=[System.IO.Pipes.NamedPipeClientStream]::new('.',$pipeName,[System.IO.Pipes.PipeDirection]::InOut);\
+         $pipe.Connect({timeout_ms});\
+         $writer=[System.IO.StreamWriter]::new($pipe,[System.Text.UTF8Encoding]::new($false),4096,$true);\
+         $writer.AutoFlush=$true;\
+         $reader=[System.IO.StreamReader]::new($pipe,[System.Text.UTF8Encoding]::new($false),$false,4096,$true);\
+         $writer.WriteLine($request);\
+         while(($line=$reader.ReadLine()) -ne $null) {{ [Console]::WriteLine($line) }};",
+    );
+
+    let mut child = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to start WSL named-pipe bridge via powershell.exe: {e}"))?;
+
+    let start = std::time::Instant::now();
+    loop {
+        if child
+            .try_wait()
+            .map_err(|e| format!("Failed to poll WSL named-pipe bridge: {e}"))?
+            .is_some()
+        {
+            break;
+        }
+        if start.elapsed() > Duration::from_millis(timeout_ms) {
+            let _ = child.kill();
+            let output = child
+                .wait_with_output()
+                .map_err(|e| format!("Failed to capture timed-out WSL pipe bridge output: {e}"))?;
+            return Err(format!(
+                "Request timed out after {timeout_ms}ms.\nstdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&output.stdout).trim(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Failed to capture WSL named-pipe bridge output: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "WSL named-pipe bridge failed with status {}.\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    parse_response_lines(&String::from_utf8_lossy(&output.stdout), show_progress)
 }
 
 pub(super) fn send_request_over_stream<S>(
@@ -378,7 +578,7 @@ pub(super) fn send_request_over_stream<S>(
     auth_token: Option<String>,
 ) -> Result<ResponseEnvelope, String>
 where
-    S: std::io::Read + Write,
+    S: std::io::Read + Write + Send + 'static,
 {
     let request = RequestEnvelope {
         id: Some(request_id()),
@@ -395,22 +595,48 @@ where
         .flush()
         .map_err(|e| format!("Failed to flush request: {e}"))?;
 
-    let reader = BufReader::new(stream);
-    for line in reader.lines() {
-        let line = line.map_err(|e| format!("Failed to read response: {e}"))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let response: ResponseEnvelope =
-            serde_json::from_str(&line).map_err(|e| format!("Invalid response payload: {e}"))?;
-        if response.progress.unwrap_or(false) {
-            if show_progress {
-                let data = response.data.unwrap_or(json!({}));
-                eprintln!("[tabctl] progress: {}", data);
+    let timeout_ms = response_timeout_ms();
+    let (tx, rx) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let reader = BufReader::new(stream);
+        for line in reader.lines() {
+            let line = match line {
+                Ok(line) => line,
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Failed to read response: {e}")));
+                    return;
+                }
+            };
+            if line.trim().is_empty() {
+                continue;
             }
-            continue;
+            let response: ResponseEnvelope = match serde_json::from_str(&line) {
+                Ok(response) => response,
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Invalid response payload: {e}")));
+                    return;
+                }
+            };
+            if response.progress.unwrap_or(false) {
+                if show_progress {
+                    let data = response.data.unwrap_or(json!({}));
+                    eprintln!("[tabctl] progress: {}", data);
+                }
+                continue;
+            }
+            let _ = tx.send(Ok(response));
+            return;
         }
-        return Ok(response);
+        let _ = tx.send(Err("No response received".to_string()));
+    });
+
+    match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            Err(format!("Request timed out after {timeout_ms}ms"))
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err("Response reader disconnected unexpectedly".to_string())
+        }
     }
-    Err("No response received".to_string())
 }
