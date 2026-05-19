@@ -169,9 +169,8 @@ pub fn run_tabctl_json_with_timeout(
         .env("XDG_STATE_HOME", state_home)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if cfg!(windows) {
-        command.env("TABCTL_TRANSPORT", "tcp");
-    }
+    command.env_remove("TABCTL_TRANSPORT");
+    command.env_remove("TABCTL_TCP_PORT");
     let mut child = command
         .spawn()
         .map_err(|e| format!("failed to execute tabctl {:?}: {e}", args))?;

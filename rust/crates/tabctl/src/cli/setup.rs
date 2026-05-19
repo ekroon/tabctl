@@ -724,6 +724,9 @@ pub(super) fn maybe_runtime_extension_auto_sync(
 /// Check if the host wrapper's binary path is stale and repair it.
 /// Returns `true` if the wrapper was updated.
 fn maybe_auto_repair_wrapper(profile: Option<&str>) -> bool {
+    if !can_repair_host_wrapper() {
+        return false;
+    }
     let profile_name = match resolve_effective_profile(profile) {
         Some(name) => name,
         None => return false,

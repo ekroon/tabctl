@@ -1,8 +1,11 @@
+#[cfg(not(windows))]
 use sha2::{Digest, Sha256};
 use std::fs;
 #[cfg(windows)]
 use std::fs::File;
 use std::io;
+use std::io::IsTerminal;
+#[cfg(not(windows))]
 use std::net::TcpListener;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -23,7 +26,9 @@ use tabctl_shared::{
     TabctlConfig,
 };
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE,
+};
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
 #[cfg(windows)]
@@ -32,15 +37,26 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 
-use super::dispatch::{handle_client, start_native_reader, ClientWriter, Clients};
+use super::dispatch::{
+    handle_client, start_native_reader, start_request_timeout_reaper, ClientWriter, Clients,
+    NativeWriter,
+};
 use super::protocol::{log_line, next_counter};
 use super::state::HostState;
 
+#[cfg(not(windows))]
 pub(super) const TCP_PORT_FILENAME: &str = "tcp-port";
+#[cfg(not(windows))]
 pub(super) const AUTH_TOKEN_FILENAME: &str = "auth-token";
+#[cfg(windows)]
+pub(super) const PIPE_ENDPOINT_FILENAME: &str = "pipe-endpoint";
+#[cfg(not(windows))]
 pub(super) const AUTH_TOKEN_LENGTH: usize = 32; // 32 hex chars = 128 bits
+#[cfg(not(windows))]
 const TCP_PORT_BASE: u16 = 38_000;
+#[cfg(not(windows))]
 const TCP_PORT_SPAN: u16 = 1_000;
+#[cfg(not(windows))]
 const TCP_PORT_ATTEMPTS: u16 = 128;
 
 fn default_config_base() -> PathBuf {
@@ -188,15 +204,18 @@ fn run_unix() -> io::Result<()> {
     let listener = UnixListener::bind(&socket_path)?;
     let _ = fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600));
 
-    let state = Arc::new(Mutex::new(HostState::new(
+    let native_channel_available = !io::stdin().is_terminal() && !io::stdout().is_terminal();
+    let state = Arc::new(Mutex::new(HostState::new_with_native_channel(
         PathBuf::from(&config.undo_log),
         PathBuf::from(&config.base_data_dir).join("focus.db"),
         config.active_profile_name.clone(),
+        native_channel_available,
     )));
     let clients: Clients = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let native_out = Arc::new(Mutex::new(io::stdout()));
+    let native_out: NativeWriter = Arc::new(Mutex::new(Box::new(io::stdout())));
 
     start_native_reader(state.clone(), clients.clone(), native_out.clone());
+    start_request_timeout_reaper(state.clone(), clients.clone(), native_out.clone());
 
     // Optional TCP listener (opt-in via TABCTL_HOST_TCP=1)
     let tcp_enabled = std::env::var("TABCTL_HOST_TCP")
@@ -243,6 +262,7 @@ fn run_unix() -> io::Result<()> {
                         clients_clone,
                         native_out_clone,
                         None,
+                        false,
                     )
                 });
             }
@@ -259,6 +279,12 @@ fn to_wide(value: &str) -> Vec<u16> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect()
+}
+
+#[cfg(windows)]
+fn should_retry_without_first_pipe_instance(open_mode: u32, err: &io::Error) -> bool {
+    open_mode & FILE_FLAG_FIRST_PIPE_INSTANCE != 0
+        && err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32)
 }
 
 #[cfg(windows)]
@@ -279,7 +305,12 @@ fn connect_named_pipe_instance(path: &str) -> io::Result<File> {
             )
         };
         if handle == INVALID_HANDLE_VALUE {
-            return Err(io::Error::last_os_error());
+            let err = io::Error::last_os_error();
+            if should_retry_without_first_pipe_instance(open_mode, &err) {
+                open_mode = PIPE_ACCESS_DUPLEX;
+                continue;
+            }
+            return Err(err);
         }
         let connected = unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
         if connected == 0 {
@@ -288,10 +319,6 @@ fn connect_named_pipe_instance(path: &str) -> io::Result<File> {
                 unsafe {
                     CloseHandle(handle);
                 }
-                if open_mode & FILE_FLAG_FIRST_PIPE_INSTANCE != 0 {
-                    open_mode = PIPE_ACCESS_DUPLEX;
-                    continue;
-                }
                 return Err(err);
             }
         }
@@ -299,6 +326,7 @@ fn connect_named_pipe_instance(path: &str) -> io::Result<File> {
     }
 }
 
+#[cfg(not(windows))]
 fn deterministic_tcp_start_port(data_dir: &Path) -> u16 {
     let mut hasher = Sha256::new();
     hasher.update(path_to_platform_string(data_dir).as_bytes());
@@ -307,6 +335,7 @@ fn deterministic_tcp_start_port(data_dir: &Path) -> u16 {
     TCP_PORT_BASE + (seed % TCP_PORT_SPAN)
 }
 
+#[cfg(not(windows))]
 fn bind_tcp_listener(data_dir: &Path) -> io::Result<(TcpListener, u16)> {
     if let Ok(port) = std::env::var("TABCTL_TCP_PORT") {
         let parsed = port
@@ -332,12 +361,21 @@ fn bind_tcp_listener(data_dir: &Path) -> io::Result<(TcpListener, u16)> {
     ))
 }
 
+#[cfg(not(windows))]
 fn write_tcp_port_file(data_dir: &Path, port: u16) -> io::Result<PathBuf> {
     let path = data_dir.join(TCP_PORT_FILENAME);
     fs::write(&path, format!("{port}\n"))?;
     Ok(path)
 }
 
+#[cfg(windows)]
+fn write_pipe_endpoint_file(data_dir: &Path, pipe_path: &str) -> io::Result<PathBuf> {
+    let path = data_dir.join(PIPE_ENDPOINT_FILENAME);
+    fs::write(&path, format!("{pipe_path}\n"))?;
+    Ok(path)
+}
+
+#[cfg(not(windows))]
 pub(super) fn generate_and_write_auth_token(data_dir: &Path) -> io::Result<String> {
     let mut bytes = [0u8; 16]; // 16 bytes = 128 bits → 32 hex chars
     getrandom::getrandom(&mut bytes).map_err(|e| io::Error::other(e.to_string()))?;
@@ -348,6 +386,7 @@ pub(super) fn generate_and_write_auth_token(data_dir: &Path) -> io::Result<Strin
     Ok(token)
 }
 
+#[cfg(not(windows))]
 fn setup_tcp_listener(data_dir: &Path) -> io::Result<(TcpListener, u16, Arc<String>)> {
     let (listener, port) = bind_tcp_listener(data_dir)?;
     let port_file = write_tcp_port_file(data_dir, port)?;
@@ -361,11 +400,12 @@ fn setup_tcp_listener(data_dir: &Path) -> io::Result<(TcpListener, u16, Arc<Stri
     Ok((listener, port, auth_token))
 }
 
+#[cfg(not(windows))]
 fn spawn_tcp_accept_loop(
     listener: TcpListener,
     state: Arc<Mutex<HostState>>,
     clients: Clients,
-    native_out: Arc<Mutex<io::Stdout>>,
+    native_out: NativeWriter,
     auth_token: Arc<String>,
 ) {
     thread::spawn(move || {
@@ -396,6 +436,7 @@ fn spawn_tcp_accept_loop(
                             clients_clone,
                             native_out_clone,
                             token_clone,
+                            false,
                         )
                     });
                 }
@@ -428,25 +469,24 @@ fn run_windows() -> io::Result<()> {
 
     let data_dir = PathBuf::from(&config.data_dir);
     fs::create_dir_all(&data_dir)?;
-    let (tcp_listener, _tcp_port, auth_token) = setup_tcp_listener(&data_dir)?;
+    let pipe_file = write_pipe_endpoint_file(&data_dir, &pipe_path)?;
 
-    let state = Arc::new(Mutex::new(HostState::new(
+    let native_channel_available = !io::stdin().is_terminal() && !io::stdout().is_terminal();
+    let state = Arc::new(Mutex::new(HostState::new_with_native_channel(
         PathBuf::from(&config.undo_log),
         PathBuf::from(&config.base_data_dir).join("focus.db"),
         config.active_profile_name.clone(),
+        native_channel_available,
     )));
     let clients: Clients = Arc::new(Mutex::new(std::collections::HashMap::new()));
-    let native_out = Arc::new(Mutex::new(io::stdout()));
+    let native_out: NativeWriter = Arc::new(Mutex::new(Box::new(io::stdout())));
     start_native_reader(state.clone(), clients.clone(), native_out.clone());
+    start_request_timeout_reaper(state.clone(), clients.clone(), native_out.clone());
 
-    spawn_tcp_accept_loop(
-        tcp_listener,
-        state.clone(),
-        clients.clone(),
-        native_out.clone(),
-        auth_token,
-    );
-
+    log_line(&format!(
+        "published pipe endpoint file {}",
+        pipe_file.display()
+    ));
     log_line(&format!("listening on {pipe_path}"));
 
     loop {
@@ -475,6 +515,7 @@ fn run_windows() -> io::Result<()> {
                         clients_clone,
                         native_out_clone,
                         None,
+                        true,
                     )
                 });
             }
@@ -509,12 +550,107 @@ pub(super) fn run() {
 }
 
 // Compile-time invariants for the TCP port range constants shared by host and CLI.
+#[cfg(not(windows))]
 const _: () = assert!(
     TCP_PORT_BASE >= 1024,
     "port base must be an unprivileged port"
 );
+#[cfg(not(windows))]
 const _: () = assert!(TCP_PORT_SPAN > 0, "port span must be non-zero");
+#[cfg(not(windows))]
 const _: () = assert!(
     (TCP_PORT_BASE as u32) + (TCP_PORT_SPAN as u32) <= 65535,
     "port range must fit in a u16"
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    fn test_pipe_path(name: &str) -> String {
+        format!(r"\\.\pipe\tabctl-{name}-{}", next_counter())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retries_without_first_pipe_instance_on_access_denied() {
+        let err = io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32);
+        assert!(should_retry_without_first_pipe_instance(
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            &err,
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn does_not_retry_without_first_pipe_instance_for_other_errors() {
+        let err = io::Error::from_raw_os_error(ERROR_PIPE_CONNECTED as i32);
+        assert!(!should_retry_without_first_pipe_instance(
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            &err,
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn does_not_retry_when_first_pipe_instance_flag_is_not_set() {
+        let err = io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32);
+        assert!(!should_retry_without_first_pipe_instance(
+            PIPE_ACCESS_DUPLEX,
+            &err
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn named_pipe_roundtrip_survives_server_reader_drop_after_request() {
+        use std::fs::OpenOptions;
+        use std::io::{BufRead, BufReader, Write};
+        use std::thread;
+        use std::time::Duration;
+
+        let pipe_path = test_pipe_path("roundtrip");
+        let server_path = pipe_path.clone();
+        let server = thread::spawn(move || {
+            let mut writer = connect_named_pipe_instance(&server_path).expect("create server pipe");
+            let reader = writer.try_clone().expect("clone server pipe for reader");
+            let mut buf = String::new();
+            let mut reader = BufReader::new(reader);
+            reader.read_line(&mut buf).expect("read client request");
+            assert!(buf.contains("\"action\":\"snapshot\""));
+            drop(reader);
+            thread::sleep(Duration::from_millis(50));
+            writeln!(writer, "{{\"ok\":true,\"action\":\"snapshot\",\"requestId\":\"req-1\",\"data\":{{\"windows\":[]}}}}")
+                .expect("write server response");
+            writer.flush().expect("flush server response");
+        });
+
+        let mut client = loop {
+            match OpenOptions::new().read(true).write(true).open(&pipe_path) {
+                Ok(client) => break client,
+                Err(err) if err.raw_os_error() == Some(2) || err.raw_os_error() == Some(231) => {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(err) => panic!("connect client to named pipe: {err}"),
+            }
+        };
+        let mut client_reader = BufReader::new(client.try_clone().expect("clone client pipe"));
+        writeln!(
+            client,
+            "{{\"id\":\"req-1\",\"action\":\"snapshot\",\"params\":{{}}}}"
+        )
+        .expect("write client request");
+        client.flush().expect("flush client request");
+
+        let mut response = String::new();
+        client_reader
+            .read_line(&mut response)
+            .expect("read server response");
+        assert!(response.contains("\"ok\":true"));
+        assert!(response.contains("\"requestId\":\"req-1\""));
+
+        server.join().expect("join server thread");
+    }
+}

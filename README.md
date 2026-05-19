@@ -234,21 +234,24 @@ See [CLI.md](CLI.md#configuration) for full details.
 - Undo log: `<dataDir>/undo.jsonl` (default: `~/.local/state/tabctl/undo.jsonl`)
 - Browser-state history DB: `<dataDir>/state.db` (default: `~/.local/state/tabctl/state.db`)
 - Profile registry: `<configDir>/profiles.json`
-- WSL TCP port file: `<dataDir>/tcp-port` (written by the Windows host)
+- Windows pipe endpoint file: `<dataDir>/pipe-endpoint`
 
 ## Windows + WSL transport
 
-On Windows, the host exposes a dual endpoint model:
+On Windows, the host exposes a named-pipe endpoint model:
 - Windows native clients use a named pipe endpoint (`\\.\pipe\tabctl-<hash>`).
-- WSL/Linux clients use `tcp://127.0.0.1:<port>`, with the host writing `<dataDir>/tcp-port`.
+- WSL/Linux clients use a Windows named-pipe bridge; the Windows host publishes `<dataDir>/pipe-endpoint`, and the WSL CLI relays through `powershell.exe`.
 
 WSL endpoint discovery (CLI):
-1. `TABCTL_SOCKET` (explicit endpoint); if this is a pipe endpoint in WSL, CLI still prefers discovered TCP.
-2. `TABCTL_TCP_PORT` (forces `127.0.0.1:<port>`).
-3. `tcp-port` file discovery from resolved data dir (and equivalent `/mnt/c/Users/*/.../tabctl/.../tcp-port` locations).
-4. Fallback: `tcp://127.0.0.1:38000`.
+1. `TABCTL_SOCKET` (explicit endpoint).
+2. `pipe-endpoint` file discovery from resolved data dir (and equivalent `/mnt/c/Users/*/.../tabctl/.../pipe-endpoint` locations).
 
-Relevant knobs: `TABCTL_SOCKET`, `TABCTL_TCP_PORT`, `TABCTL_PROFILE`, `TABCTL_DATA_DIR`, `TABCTL_STATE_DIR`, `TABCTL_CONFIG_DIR`.
+WSL named-pipe mode:
+- This is the default WSL transport now.
+- The CLI discovers the pipe endpoint from `<dataDir>/pipe-endpoint` (including the mirrored `/mnt/c/Users/*/...` candidate paths used for other WSL bridge files).
+- TCP is disabled for the WSL transport path.
+
+Relevant knobs: `TABCTL_SOCKET`, `TABCTL_PROFILE`, `TABCTL_DATA_DIR`, `TABCTL_STATE_DIR`, `TABCTL_CONFIG_DIR`.
 
 ## Troubleshooting (setup/ping on Windows + WSL)
 
@@ -260,7 +263,7 @@ Relevant knobs: `TABCTL_SOCKET`, `TABCTL_TCP_PORT`, `TABCTL_PROFILE`, `TABCTL_DA
 - Disable runtime sync entirely with `TABCTL_AUTO_SYNC_MODE=off`.
 - `tabctl ping --json` is the canonical runtime version check (`versionsInSync`, `hostBaseVersion`, `baseVersion`).
 - Version metadata is intentionally health-only: regular GraphQL payloads do not include version fields unless you explicitly query health surfaces.
-- `tabctl ping` returns connect errors (`ENOENT`, `ECONNREFUSED`, timeout): ensure extension is loaded and active, rerun `tabctl setup`, and in WSL verify `TABCTL_TCP_PORT` or `<dataDir>/tcp-port` matches a listening localhost port.
+- `tabctl ping` returns connect errors (`ENOENT`, `ECONNREFUSED`, timeout): ensure extension is loaded and active, rerun `tabctl setup`, and in WSL verify the profile data dir contains a current `pipe-endpoint` file.
 - `tabctl doctor --fix --json` includes per-profile connectivity diagnostics in `data.profiles[].connectivity`; if ping remains unhealthy after local repairs, follow `manualSteps`.
 
 Local release-like sync test recipe:
@@ -323,8 +326,7 @@ Policy is shared across all profiles.
 ## Security
 - The native host is locked to your extension ID.
 - All data stays local; no external API keys are used.
-- TCP connections (used for WSL ↔ Windows communication) are secured with a per-session auth token. The host generates a random token on startup; the CLI reads it automatically. See [CLI.md](CLI.md) for details.
-- TCP transport is available on all platforms via `TABCTL_HOST_TCP=1` (host) and `TABCTL_TRANSPORT=tcp` (CLI). All TCP connections are authenticated. See [CLI.md](CLI.md) for details.
+- WSL ↔ Windows communication uses a local named-pipe bridge via `powershell.exe`; no TCP fallback is used on that path.
 
 ## Development
 
