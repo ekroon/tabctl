@@ -276,7 +276,9 @@ pub(super) fn resolve_data_dir(profile: Option<&str>) -> Result<String, String> 
         {
             return Ok(normalize_path_for_current_platform(&profile_entry.data_dir));
         }
-        return Err(format!("Profile \"{profile_name}\" not found in profiles.json"));
+        return Err(format!(
+            "Profile \"{profile_name}\" not found in profiles.json"
+        ));
     }
     if let Ok(path) = std::env::var("TABCTL_STATE_DIR") {
         if !path.trim().is_empty() {

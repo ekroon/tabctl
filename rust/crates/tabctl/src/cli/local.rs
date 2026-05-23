@@ -927,11 +927,7 @@ fn load_cached_graphql_snapshot(profile: Option<&str>) -> Result<Option<Value>, 
     Ok(cached_snapshot_from_browser_state(&response))
 }
 
-fn load_graphql_snapshot(profile: Option<&str>) -> Result<Value, String> {
-    if let Ok(Some(snapshot)) = load_cached_graphql_snapshot(profile) {
-        return Ok(snapshot);
-    }
-
+fn load_live_graphql_snapshot(profile: Option<&str>) -> Result<Value, String> {
     let response = send_request("snapshot", json!({}), profile, false)?;
     if !response.ok {
         let msg = response
@@ -941,6 +937,31 @@ fn load_graphql_snapshot(profile: Option<&str>) -> Result<Value, String> {
         return Err(msg);
     }
     Ok(response.data.unwrap_or(json!({})))
+}
+
+fn load_graphql_snapshot(profile: Option<&str>) -> Result<Value, String> {
+    if let Ok(Some(snapshot)) = load_cached_graphql_snapshot(profile) {
+        return Ok(snapshot);
+    }
+
+    load_live_graphql_snapshot(profile)
+}
+
+fn load_fresh_graphql_snapshot(profile: Option<&str>) -> Result<Value, String> {
+    match load_live_graphql_snapshot(profile) {
+        Ok(snapshot) => Ok(snapshot),
+        Err(snapshot_err) => match load_cached_graphql_snapshot(profile) {
+            Ok(Some(snapshot)) => Ok(snapshot),
+            Ok(None) => Err(snapshot_err),
+            Err(cache_err) => Err(format!(
+                "{snapshot_err}; cached browser state unavailable: {cache_err}"
+            )),
+        },
+    }
+}
+
+fn is_graphql_mutation(query: &str) -> bool {
+    query.trim_start().starts_with("mutation")
 }
 
 pub(super) fn run_graphql_query(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
@@ -959,6 +980,11 @@ pub(super) fn run_graphql_query(matches: &ArgMatches, sub: &ArgMatches) -> Resul
     let result = tabctl_graphql::execute(query_str, None, snapshot, sender)?;
     let rendered = render_local_command(matches, "query", result);
     if rendered.is_ok() {
+        if is_graphql_mutation(query_str) {
+            if let Err(err) = load_live_graphql_snapshot(profile) {
+                eprintln!("Warning: failed to refresh GraphQL snapshot cache: {err}");
+            }
+        }
         maybe_runtime_extension_auto_sync("query", profile, None);
     }
     rendered
@@ -983,6 +1009,6 @@ impl tabctl_graphql::CommandSender for CliCommandSender {
     }
 
     fn snapshot(&self) -> Result<serde_json::Value, String> {
-        load_graphql_snapshot(self.profile.as_deref())
+        load_fresh_graphql_snapshot(self.profile.as_deref())
     }
 }

@@ -73,6 +73,19 @@ impl HostState {
         Self::error_effect(pending, message_id, "Request timed out".to_string(), None)
     }
 
+    fn ingest_snapshot_response(&self, snapshot: &Value) {
+        let payload = serde_json::json!({
+            "reason": "snapshot",
+            "recordedAt": now_ms(),
+            "snapshot": snapshot,
+        });
+        if let Err(err) =
+            browser_state::ingest_sync(&self.state_db_path, self.profile_name.as_deref(), &payload)
+        {
+            log_line(&format!("browser-state snapshot ingest failed: {err}"));
+        }
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn new(
         undo_log: PathBuf,
@@ -634,6 +647,7 @@ impl HostState {
                     &mut response_data,
                     self.profile_name.as_deref(),
                 );
+                self.ingest_snapshot_response(&response_data);
             }
             let step = orch.step(response_data);
             return self.process_orch_step(
@@ -647,6 +661,23 @@ impl HostState {
         }
 
         // Legacy path — no orchestration
+        let legacy_response_data = if pending.action == "snapshot" {
+            let mut response_data = message
+                .data
+                .clone()
+                .unwrap_or(Value::Object(message_data.clone()));
+            if response_data.get("windows").is_some() {
+                let _ = focus_store::enrich_snapshot(
+                    &self.focus_db_path,
+                    &mut response_data,
+                    self.profile_name.as_deref(),
+                );
+                self.ingest_snapshot_response(&response_data);
+            }
+            Some(response_data)
+        } else {
+            None
+        };
 
         if pending.action == "ping" {
             let data = add_ping_metadata(message_data);
@@ -718,7 +749,10 @@ impl HostState {
 
         let mut resp = base_response(true, Some(pending.action), Some(message_id));
         // Preserve original data shape (arrays, objects, etc.)
-        resp.data = Some(message.data.unwrap_or(Value::Object(message_data)));
+        resp.data = Some(
+            legacy_response_data
+                .unwrap_or_else(|| message.data.unwrap_or(Value::Object(message_data))),
+        );
         vec![HostEffect::Respond {
             client_id: pending.client_id,
             payload: resp,

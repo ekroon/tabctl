@@ -962,13 +962,17 @@ mod tests {
                 browser: Browser::Chrome,
                 extension_id: "dkfnfgfelacbfclhenpgdckfefmfddbd".to_string(),
                 node_path: "/mnt/c/dev/ekroon/tabctl/rust/target/debug/tabctl".to_string(),
-                host_path: r"C:\Users\TestUser\AppData\Local\tabctl\profiles\chrome\tabctl-host.cmd"
-                    .to_string(),
+                host_path:
+                    r"C:\Users\TestUser\AppData\Local\tabctl\profiles\chrome\tabctl-host.cmd"
+                        .to_string(),
                 data_dir: r"C:\Users\TestUser\AppData\Local\tabctl\profiles\chrome".to_string(),
                 user_data_dir: None,
             };
             let err = attempt_profile_repair("chrome", &entry).expect_err("repair should fail");
-            assert!(err.contains("unsupported from WSL"), "unexpected error: {err}");
+            assert!(
+                err.contains("unsupported from WSL"),
+                "unexpected error: {err}"
+            );
         });
     }
 
@@ -997,8 +1001,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn translates_windows_data_dir_into_wsl_candidate() {
-        let candidates =
-            wsl_file_candidates(r"C:\Users\TestUser\AppData\Local\tabctl\profiles\chrome", "pipe-endpoint");
+        let candidates = wsl_file_candidates(
+            r"C:\Users\TestUser\AppData\Local\tabctl\profiles\chrome",
+            "pipe-endpoint",
+        );
         assert!(
             candidates.iter().any(|path| {
                 path == &PathBuf::from(
