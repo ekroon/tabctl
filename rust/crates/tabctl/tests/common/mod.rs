@@ -372,8 +372,8 @@ impl SharedBrowser {
     }
 
     pub fn run_query_result(&self, query: &str) -> Result<Value, String> {
-        let mut last_error = None;
-        for attempt in 0..6 {
+        let retry_deadline = Instant::now() + Duration::from_secs(30);
+        loop {
             match run_tabctl_json(
                 &self.tabctl_bin,
                 &self.root,
@@ -383,14 +383,12 @@ impl SharedBrowser {
                 &["query", query],
             ) {
                 Ok(value) => return Ok(value),
-                Err(err) if attempt < 5 && is_transient_host_error(&err) => {
-                    last_error = Some(err);
+                Err(err) if Instant::now() < retry_deadline && is_transient_host_error(&err) => {
                     sleep(Duration::from_millis(500));
                 }
                 Err(err) => return Err(err),
             }
         }
-        Err(last_error.unwrap_or_else(|| "tabctl query failed".to_string()))
     }
 
     pub fn wait_for_host_ready(&self, timeout: Duration) {

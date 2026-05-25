@@ -112,10 +112,7 @@ async function attachServiceWorker(extensionId, timeoutMs) {
     if (chrome.exitCode !== null) {
       throw new Error(`Chrome exited during service-worker discovery (code ${chrome.exitCode})`);
     }
-    const targets = await sendCDP("Target.getTargets");
-    const swTarget = (targets.targetInfos || []).find(
-      (target) => target.type === "service_worker" && String(target.url || "").includes(extensionId)
-    );
+    const swTarget = await findServiceWorkerTarget(extensionId);
     if (swTarget) {
       const attached = await sendCDP("Target.attachToTarget", {
         targetId: swTarget.targetId,
@@ -126,6 +123,13 @@ async function attachServiceWorker(extensionId, timeoutMs) {
     await sleep(250);
   }
   throw new Error("Extension service worker not found before timeout");
+}
+
+async function findServiceWorkerTarget(extensionId) {
+  const targets = await sendCDP("Target.getTargets");
+  return (targets.targetInfos || []).find(
+    (target) => target.type === "service_worker" && String(target.url || "").includes(extensionId)
+  );
 }
 
 async function ensureNativePortConnected(sessionId, timeoutMs) {
@@ -163,32 +167,47 @@ async function ensureNativePortConnected(sessionId, timeoutMs) {
   throw new Error("native port did not connect before timeout");
 }
 
-async function startNativeReconnectHeartbeat(sessionId) {
-  const evaluation = await sendCDP(
-    "Runtime.evaluate",
-    {
-      expression: `
-        (() => {
-          if (!self.__tabctl) return false;
-          if (!self.__tabctl.__ciNativeReconnectHeartbeat) {
-            self.__tabctl.__ciNativeReconnectHeartbeat = setInterval(() => {
-              self.__tabctl?.connectNative?.();
-            }, 1000);
-          }
-          return true;
-        })();
-      `,
-      returnByValue: true,
-    },
-    sessionId
-  );
-  if (evaluation?.exceptionDetails) {
-    const detail =
-      evaluation.exceptionDetails.exception?.description ||
-      evaluation.exceptionDetails.text ||
-      "unknown runtime exception";
-    throw new Error(`failed to start native reconnect heartbeat: ${detail}`);
-  }
+async function startNativeReconnectHeartbeat(extensionId) {
+  let sessionId = null;
+  let targetId = null;
+  let running = false;
+
+  keepAlive = setInterval(() => {
+    if (running || shuttingDown || chrome?.exitCode !== null) return;
+    running = true;
+    (async () => {
+      const swTarget = await findServiceWorkerTarget(extensionId);
+      if (!swTarget) {
+        sessionId = null;
+        targetId = null;
+        return;
+      }
+      if (!sessionId || targetId !== swTarget.targetId) {
+        const attached = await sendCDP("Target.attachToTarget", {
+          targetId: swTarget.targetId,
+          flatten: true,
+        });
+        sessionId = attached.sessionId;
+        targetId = swTarget.targetId;
+      }
+      await sendCDP(
+        "Runtime.evaluate",
+        {
+          expression: `self.__tabctl?.connectNative?.(); true;`,
+          returnByValue: true,
+        },
+        sessionId
+      );
+    })()
+      .catch((error) => {
+        sessionId = null;
+        targetId = null;
+        log(`native reconnect heartbeat failed: ${error instanceof Error ? error.message : String(error)}`);
+      })
+      .finally(() => {
+        running = false;
+      });
+  }, 1000);
 }
 
 async function shutdown(exitCode) {
@@ -299,10 +318,9 @@ async function main() {
 
   const sessionId = await attachServiceWorker(extensionId, timeoutMs);
   await ensureNativePortConnected(sessionId, timeoutMs);
-  await startNativeReconnectHeartbeat(sessionId);
+  await startNativeReconnectHeartbeat(extensionId);
 
   process.stdout.write(`${JSON.stringify({ ok: true, event: "ready", extensionId })}\n`);
-  keepAlive = setInterval(() => {}, 60_000);
 }
 
 main().catch((error) => {
