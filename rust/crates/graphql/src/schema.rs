@@ -96,10 +96,10 @@ impl Query {
                 });
             }
             TabOrderBy::TitleAsc => {
-                tabs.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+                tabs.sort_by_key(|tab| tab.title.to_lowercase());
             }
             TabOrderBy::TitleDesc => {
-                tabs.sort_by(|a, b| b.title.to_lowercase().cmp(&a.title.to_lowercase()));
+                tabs.sort_by_key(|tab| std::cmp::Reverse(tab.title.to_lowercase()));
             }
             TabOrderBy::IndexAsc => {} // default order from snapshot
         }
