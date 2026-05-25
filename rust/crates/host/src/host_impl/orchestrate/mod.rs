@@ -41,6 +41,8 @@ pub(super) trait Orchestration: Send + std::fmt::Debug {
 pub(super) enum OrchStep {
     /// Send a `p:`-prefixed primitive action to the extension.
     SendPrimitive { action: String, params: Value },
+    /// Wait before continuing the orchestration.
+    Delay { duration_ms: u64 },
     /// Orchestration succeeded — respond to CLI client.
     Complete {
         response: Value,
@@ -149,6 +151,9 @@ fn drive_to_completion(
                 idx += 1;
             }
             OrchStep::Progress { .. } => {
+                step = orch.step(Value::Null);
+            }
+            OrchStep::Delay { .. } => {
                 step = orch.step(Value::Null);
             }
         }

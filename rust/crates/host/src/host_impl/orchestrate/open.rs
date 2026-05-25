@@ -4,13 +4,16 @@ use tabctl_shared::normalize_url;
 use super::resolve::resolve_window_id;
 use super::OrchStep;
 
+const VERIFY_DELAY_MS: u64 = 100;
+const VERIFY_MAX_ATTEMPTS: usize = 30;
+
 /// Orchestration for the `open` command.
 ///
 /// Two main paths:
 /// 1. `--new-window`: p:window-create → p:tab-create×N → p:tab-remove(seed)
-///    → p:tab-group + p:group-update
+///    → p:tab-group + p:group-update → p:snapshot → verify
 /// 2. Existing window: p:snapshot → resolve window + dedup URLs →
-///    p:tab-create×N → p:tab-group + p:group-update → p:tab-query → verify
+///    p:tab-create×N → p:tab-group + p:group-update → p:snapshot → verify
 #[derive(Debug)]
 pub(crate) struct OpenOrchestration {
     params: Value,
@@ -33,6 +36,7 @@ struct OpenState {
     new_group_id: Option<i64>,
     need_group_update: bool,
     insert_index: Option<i64>,
+    verify_attempts: usize,
 }
 
 #[derive(Debug)]
@@ -43,6 +47,7 @@ enum OpenPhase {
     RemoveSeedTab,
     GroupTabs,
     UpdateGroup,
+    Verify,
 }
 
 impl OpenOrchestration {
@@ -130,6 +135,7 @@ impl super::Orchestration for OpenOrchestration {
             OpenPhase::RemoveSeedTab => self.handle_seed_removed(),
             OpenPhase::GroupTabs => self.handle_grouped(response),
             OpenPhase::UpdateGroup => self.handle_group_updated(),
+            OpenPhase::Verify => self.handle_verify(response),
         }
     }
 }
@@ -485,7 +491,108 @@ impl OpenOrchestration {
     }
 
     fn try_verify_grouping(&mut self) -> OrchStep {
-        self.complete()
+        if self.state.created.is_empty() {
+            return self.complete();
+        }
+
+        self.phase = OpenPhase::Verify;
+        self.state.verify_attempts = 0;
+        self.request_verify_snapshot()
+    }
+
+    fn request_verify_snapshot(&self) -> OrchStep {
+        OrchStep::SendPrimitive {
+            action: "p:snapshot".to_string(),
+            params: Value::Object(Map::new()),
+        }
+    }
+
+    fn handle_verify(&mut self, response: Value) -> OrchStep {
+        if response.is_null() {
+            return self.request_verify_snapshot();
+        }
+
+        if self.created_state_is_visible(&response) {
+            return self.complete();
+        }
+
+        self.state.verify_attempts += 1;
+        if self.state.verify_attempts >= VERIFY_MAX_ATTEMPTS {
+            return OrchStep::Error {
+                message: "Timed out waiting for opened tabs to appear in browser state".to_string(),
+                hint: Some(
+                    "The browser accepted the open request, but a follow-up snapshot did not reflect the created tabs before the command timeout.".to_string(),
+                ),
+            };
+        }
+
+        OrchStep::Delay {
+            duration_ms: VERIFY_DELAY_MS,
+        }
+    }
+
+    fn created_state_is_visible(&mut self, snapshot: &Value) -> bool {
+        let Some(window_id) = self.state.window_id else {
+            return false;
+        };
+        let Some(window) = snapshot
+            .get("windows")
+            .and_then(Value::as_array)
+            .and_then(|windows| {
+                windows.iter().find(|window| {
+                    window.get("windowId").and_then(Value::as_i64) == Some(window_id)
+                })
+            })
+        else {
+            return false;
+        };
+
+        let Some(tabs) = window.get("tabs").and_then(Value::as_array) else {
+            return false;
+        };
+
+        for idx in 0..self.state.created.len() {
+            let Some(tab_id) = self.state.created[idx].get("tabId").and_then(Value::as_i64) else {
+                return false;
+            };
+            let Some(tab) = tabs
+                .iter()
+                .find(|tab| tab.get("tabId").and_then(Value::as_i64) == Some(tab_id))
+            else {
+                return false;
+            };
+
+            if let Some(expected_url) = self.state.urls.get(idx) {
+                let actual_url = tab.get("url").and_then(Value::as_str).unwrap_or("");
+                if actual_url.trim().is_empty()
+                    || normalize_url(actual_url) != normalize_url(expected_url)
+                {
+                    return false;
+                }
+            }
+
+            if self.state.group_title.is_some() {
+                let group_id = self.state.new_group_id.or(self.state.existing_group_id);
+                if group_id.is_some() && tab.get("groupId").and_then(Value::as_i64) != group_id {
+                    return false;
+                }
+                if let Some(title) = &self.state.group_title {
+                    if tab.get("groupTitle").and_then(Value::as_str) != Some(title.as_str()) {
+                        return false;
+                    }
+                }
+            }
+
+            if let Some(created) = self.state.created[idx].as_object_mut() {
+                for field in ["windowId", "index", "url", "title", "groupId", "groupTitle"] {
+                    if let Some(value) = tab.get(field) {
+                        created.insert(field.to_string(), value.clone());
+                    }
+                }
+            }
+        }
+
+        true
     }
 
     fn complete(&self) -> OrchStep {
@@ -564,14 +671,27 @@ mod tests {
         assert!(matches!(&step, OrchStep::SendPrimitive { action, params }
                 if action == "p:group-update" && params["title"] == "Test"));
 
-        // updated → complete
+        // updated → verify snapshot before completing
         let step = orch.step(serde_json::json!({"id": 50}));
+        assert!(matches!(&step, OrchStep::SendPrimitive { action, .. } if action == "p:snapshot"));
+
+        let step = orch.step(serde_json::json!({
+            "windows": [{
+                "windowId": 100,
+                "tabs": [
+                    {"tabId": 1, "windowId": 100, "index": 0, "url": "https://a.com/", "title": "A", "groupId": 50, "groupTitle": "Test"},
+                    {"tabId": 2, "windowId": 100, "index": 1, "url": "https://b.com/", "title": "B", "groupId": 50, "groupTitle": "Test"}
+                ]
+            }]
+        }));
         let OrchStep::Complete { response, .. } = step else {
             panic!("expected Complete");
         };
         assert_eq!(response["windowId"], 100);
         assert_eq!(response["summary"]["createdTabs"], 2);
         assert_eq!(response["summary"]["grouped"], true);
+        assert_eq!(response["created"][0]["url"], "https://a.com/");
+        assert_eq!(response["created"][0]["groupTitle"], "Test");
     }
 
     #[test]
@@ -642,5 +762,47 @@ mod tests {
         };
         assert_eq!(response["windowId"], 100);
         assert_eq!(response["summary"]["createdTabs"], 0);
+    }
+
+    #[test]
+    fn open_waits_until_created_tabs_are_visible() {
+        let params = serde_json::json!({
+            "urls": ["https://a.com"],
+            "newWindow": true
+        });
+        let mut orch = OpenOrchestration::new(&params);
+
+        assert!(matches!(orch.start(), OrchStep::SendPrimitive { .. }));
+        assert!(matches!(
+            orch.step(serde_json::json!({"id": 100, "tabs": [{"id": 999}]})),
+            OrchStep::SendPrimitive { .. }
+        ));
+        assert!(matches!(
+            orch.step(serde_json::json!({"id": 1, "windowId": 100, "index": 0})),
+            OrchStep::SendPrimitive { action, .. } if action == "p:tab-remove"
+        ));
+        let step = orch.step(serde_json::json!({"removed": true}));
+        assert!(matches!(&step, OrchStep::SendPrimitive { action, .. } if action == "p:snapshot"));
+
+        let step = orch.step(serde_json::json!({
+            "windows": [{
+                "windowId": 100,
+                "tabs": []
+            }]
+        }));
+        assert!(matches!(step, OrchStep::Delay { duration_ms } if duration_ms == VERIFY_DELAY_MS));
+
+        let step = orch.step(Value::Null);
+        assert!(matches!(&step, OrchStep::SendPrimitive { action, .. } if action == "p:snapshot"));
+
+        let step = orch.step(serde_json::json!({
+            "windows": [{
+                "windowId": 100,
+                "tabs": [
+                    {"tabId": 1, "windowId": 100, "index": 0, "url": "https://a.com/"}
+                ]
+            }]
+        }));
+        assert!(matches!(step, OrchStep::Complete { .. }));
     }
 }

@@ -1,6 +1,7 @@
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 use tabctl_shared::{ClientInfo, NativeMessage, ProtocolError, RequestEnvelope, ResponseEnvelope};
 
 use super::browser_state;
@@ -800,6 +801,11 @@ impl HostState {
                     data: None,
                     error: None,
                 })]
+            }
+            OrchStep::Delay { duration_ms } => {
+                std::thread::sleep(Duration::from_millis(duration_ms));
+                let next_step = orch.step(Value::Null);
+                self.process_orch_step(client_id, action, request_id, txid, next_step, orch)
             }
             OrchStep::Complete { response, undo } => {
                 if let Some(ref undo_data) = undo {
