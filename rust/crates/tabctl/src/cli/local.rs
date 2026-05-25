@@ -960,8 +960,18 @@ fn load_fresh_graphql_snapshot(profile: Option<&str>) -> Result<Value, String> {
     }
 }
 
-fn is_graphql_mutation(query: &str) -> bool {
-    query.trim_start().starts_with("mutation")
+pub(super) fn should_refresh_graphql_snapshot_cache(query: &str) -> bool {
+    let trimmed = query.trim_start();
+    trimmed.starts_with("mutation")
+        && [
+            "updateGroup",
+            "assignToGroup",
+            "ungroupTabs",
+            "moveGroup",
+            "moveTab",
+        ]
+        .iter()
+        .any(|field| trimmed.contains(field))
 }
 
 pub(super) fn run_graphql_query(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
@@ -980,7 +990,7 @@ pub(super) fn run_graphql_query(matches: &ArgMatches, sub: &ArgMatches) -> Resul
     let result = tabctl_graphql::execute(query_str, None, snapshot, sender)?;
     let rendered = render_local_command(matches, "query", result);
     if rendered.is_ok() {
-        if is_graphql_mutation(query_str) {
+        if should_refresh_graphql_snapshot_cache(query_str) {
             if let Err(err) = load_live_graphql_snapshot(profile) {
                 eprintln!("Warning: failed to refresh GraphQL snapshot cache: {err}");
             }

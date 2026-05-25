@@ -347,16 +347,16 @@ npm run rust:verify
 npm run check:targets  # local cross-target cfg/type check
 ```
 
-On macOS, `npm run check:targets` and the pre-push hook can use Zig for the C
-cross-compiler needed by `libsqlite3-sys`:
+On macOS, `npm run check:targets` can use Zig for the C cross-compiler needed
+by `libsqlite3-sys`:
 
 ```bash
 brew install zig
 ```
 
 The script auto-detects Zig outside CI and wires the Linux/Windows C compiler
-environment for the check. If Windows cross-checks still report a missing
-`llvm-lib`, install or relink Homebrew `llvm@21`.
+environment for the check. The pre-push hook does not run this optional check;
+run it manually when you want local cross-target coverage.
 
 Browser-backed integration harness (requires built dist artifacts and Chrome):
 ```bash

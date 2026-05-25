@@ -17,6 +17,23 @@ pub(super) type ClientWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 pub(super) type NativeWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 pub(super) type Clients = Arc<Mutex<HashMap<u64, ClientWriter>>>;
 
+fn request_trace_summary(client_id: u64, line: &str) -> String {
+    match serde_json::from_str::<RequestEnvelope>(line) {
+        Ok(request) => {
+            let request_id = request.id.as_deref().unwrap_or("<none>");
+            format!(
+                "client request: client_id={client_id} id={request_id} action={}",
+                request.action
+            )
+        }
+        Err(_) => format!("client request: client_id={client_id} line=<invalid-json>"),
+    }
+}
+
+fn trace_request_line(client_id: u64, line: &str) {
+    trace_line(&request_trace_summary(client_id, line));
+}
+
 fn send_response(stream: &ClientWriter, payload: &ResponseEnvelope) {
     let Ok(serialized) = serde_json::to_string(payload) else {
         return;
@@ -206,9 +223,7 @@ pub(super) fn handle_client(
             continue;
         }
 
-        trace_line(&format!(
-            "client request: client_id={client_id} line={trimmed}"
-        ));
+        trace_request_line(client_id, trimmed);
         saw_request = true;
         let request = serde_json::from_str::<RequestEnvelope>(trimmed);
         let effects = match request {
@@ -320,6 +335,17 @@ mod tests {
         let sink = Arc::new(Mutex::new(Vec::new()));
         let writer: NativeWriter = Arc::new(Mutex::new(Box::new(SharedBufferWriter(sink.clone()))));
         (writer, sink)
+    }
+
+    #[test]
+    fn request_trace_summary_omits_auth_token() {
+        let line = r#"{"id":"req-1","action":"ping","params":{},"authToken":"secret"}"#;
+
+        let summary = request_trace_summary(7, line);
+
+        assert_eq!(summary, "client request: client_id=7 id=req-1 action=ping");
+        assert!(!summary.contains("secret"));
+        assert!(!summary.contains("authToken"));
     }
 
     #[test]

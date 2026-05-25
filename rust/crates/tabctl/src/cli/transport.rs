@@ -505,11 +505,12 @@ fn send_request_over_wsl_named_pipe(
         serde_json::to_string(&request).map_err(|e| format!("Failed to encode request: {e}"))?;
     let escaped_request = request_json.replace('\'', "''");
     let pipe_name = wsl_named_pipe_name(pipe_path)?;
+    let escaped_pipe_name = pipe_name.replace('\'', "''");
     let timeout_ms = response_timeout_ms();
     let script = format!(
         "$ErrorActionPreference='Stop';\
          [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);\
-         $pipeName='{pipe_name}';\
+         $pipeName='{escaped_pipe_name}';\
          $request='{escaped_request}';\
          $pipe=[System.IO.Pipes.NamedPipeClientStream]::new('.',$pipeName,[System.IO.Pipes.PipeDirection]::InOut);\
          $pipe.Connect({timeout_ms});\

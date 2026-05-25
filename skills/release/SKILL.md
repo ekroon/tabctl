@@ -25,16 +25,17 @@ The manual flow below remains the fallback/operator path when you need to releas
 
 ## Version files
 
-All version files must stay in sync. The `scripts/bump-version.js` script (exposed via `npm run bump:*`) updates all of them in one command. The release workflow (`release.yml`) validates they match:
+All version files must stay in sync. The Rust workspace manifest is the canonical Rust version source, and `scripts/bump-version.js` (exposed via `npm run bump:*`) updates the mirrored package versions in one command. The release workflow (`release.yml`) validates they match:
 
-1. `package.json` — root package version (single source of truth) and `optionalDependencies.tabctl-win32-x64`
-2. `package-lock.json` — lockfile
-3. `packages/win32-x64/package.json` — Windows platform package
-4. `rust/crates/tabctl/Cargo.toml` — main Rust binary
-5. `rust/crates/host/Cargo.toml` — host crate
-6. `rust/crates/graphql/Cargo.toml` — GraphQL crate
-7. `rust/crates/shared/Cargo.toml` — shared crate
-8. `rust/Cargo.lock` — Rust lockfile
+1. `rust/Cargo.toml` — workspace package version (Rust source of truth)
+2. `package.json` — root npm package version (mirrors the workspace version) and `optionalDependencies.tabctl-win32-x64`
+3. `package-lock.json` — lockfile
+4. `packages/win32-x64/package.json` — Windows platform package
+5. `rust/crates/tabctl/Cargo.toml` — main Rust binary (inherits workspace version)
+6. `rust/crates/host/Cargo.toml` — host crate (inherits workspace version)
+7. `rust/crates/graphql/Cargo.toml` — GraphQL crate (inherits workspace version)
+8. `rust/crates/shared/Cargo.toml` — shared crate (inherits workspace version)
+9. `rust/Cargo.lock` — Rust lockfile
 
 Never edit these version fields manually. Always use `npm run bump:<kind>`.
 

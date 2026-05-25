@@ -59,11 +59,8 @@ if ! grep -qE '(^rust/)|(^Cargo\.toml$)|(^Cargo\.lock$)|(^\.githooks/)|(^\.githu
 fi
 
 if grep -qE '\.(rs)$|(^|/)Cargo\.(toml|lock)$' "${changed_files}"; then
-  echo "pre-push: Rust source changes detected — running cross-target check…"
-  if ! bash scripts/check-targets.sh; then
-    echo "pre-push: cross-target check failed (cfg issue?). Push aborted."
-    exit 1
-  fi
+  echo "pre-push: Rust source changes detected — skipping optional local cross-target check."
+  echo "pre-push: run 'npm run check:targets' manually if you have cross-compilers installed."
 fi
 
 echo "pre-push: running rust verify…"

@@ -179,7 +179,6 @@ pub(super) fn host_ping_data(native_channel_available: bool) -> Map<String, Valu
         "nativeChannelAvailable".to_string(),
         Value::Bool(native_channel_available),
     );
-    data.insert("versionsInSync".to_string(), Value::Bool(false));
     data
 }
 

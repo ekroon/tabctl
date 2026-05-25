@@ -2443,4 +2443,20 @@ mod tests {
 
         assert!(cached_snapshot_from_browser_state(&response).is_none());
     }
+
+    #[test]
+    fn graphql_cache_refresh_is_limited_to_structural_mutations() {
+        assert!(should_refresh_graphql_snapshot_cache(
+            "mutation { updateGroup(groupId: 1, title: \"Work\") { title } }"
+        ));
+        assert!(should_refresh_graphql_snapshot_cache(
+            "mutation { moveTab(tabIds: [1], index: 0) { movedTabs } }"
+        ));
+        assert!(!should_refresh_graphql_snapshot_cache(
+            "mutation { undoAction(latest: true) { txid } }"
+        ));
+        assert!(!should_refresh_graphql_snapshot_cache(
+            "mutation { closeTabs(tabIds: [1], confirm: true) { txid } }"
+        ));
+    }
 }

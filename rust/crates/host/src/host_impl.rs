@@ -529,10 +529,7 @@ mod tests {
             data.get("nativeChannelAvailable").and_then(|v| v.as_bool()),
             Some(true)
         );
-        assert_eq!(
-            data.get("versionsInSync").and_then(|v| v.as_bool()),
-            Some(false)
-        );
+        assert!(data.get("versionsInSync").is_none());
         assert!(data.get("runtimeId").is_none());
         assert!(data.get("version").is_none());
         assert!(payload.ok);

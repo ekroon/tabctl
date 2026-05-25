@@ -4,17 +4,11 @@
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("node:child_process");
+const { readWorkspaceVersion } = require("./version-utils");
 
 const root = path.resolve(__dirname, "..");
-const pkgPath = path.join(root, "package.json");
 const manifestTemplatePath = path.join(root, "src", "extension", "manifest.template.json");
 const manifestPath = path.join(root, "dist", "extension", "manifest.json");
-
-function readPackageVersion() {
-  const raw = fs.readFileSync(pkgPath, "utf8");
-  const pkg = JSON.parse(raw);
-  return typeof pkg.version === "string" ? pkg.version : "0.0.0";
-}
 
 function readGitSha() {
   try {
@@ -52,7 +46,7 @@ function toExtensionVersion(version) {
   return parts.slice(0, 4).join(".");
 }
 
-const baseVersion = readPackageVersion();
+const baseVersion = readWorkspaceVersion(root);
 const mode = (() => {
   if (process.env.TABCTL_VERSION_MODE) {
     return process.env.TABCTL_VERSION_MODE;
