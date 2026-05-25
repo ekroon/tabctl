@@ -440,7 +440,20 @@ fn test_inspect_report_screenshot_and_reload_graphql_workflows() {
         response_data(&reload)["reloadExtension"]["reloading"].as_bool(),
         Some(true)
     );
-    b.wait_for_host_ready(Duration::from_secs(30));
+
+    // run_query retries transient host connection errors; this asserts the product
+    // reconnect path converges after reload without a test-only CDP heartbeat.
+    let after_reload = b.run_query(&format!(
+        "query {{ window(id: {window_id}) {{ windowId tabs {{ tabId }} }} }}"
+    ));
+    assert_ok("query after reloadExtension", &after_reload);
+    assert!(
+        response_data(&after_reload)
+            .pointer("/window/tabs")
+            .and_then(|tabs| tabs.as_array())
+            .is_some_and(|tabs| tabs.iter().any(|tab| tab["tabId"].as_i64() == Some(tab_id))),
+        "expected immediate post-reload query to see the test tab: {after_reload}"
+    );
 
     b.close_test_window(window_id);
 }

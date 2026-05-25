@@ -2,7 +2,6 @@
 "use strict";
 
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { execFileSync } = require("node:child_process");
@@ -15,6 +14,12 @@ function log(message) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function testScratchRoot() {
+  const root = process.env.TABCTL_BOOTSTRAP_TMP_ROOT || path.join(process.cwd(), ".tabctl", "it");
+  fs.mkdirSync(root, { recursive: true });
+  return root;
 }
 
 function findChrome() {
@@ -61,7 +66,6 @@ function launchChrome(chromePath, userDataDir) {
 
 let chrome = null;
 let tmpDir = null;
-let keepAlive = null;
 let shuttingDown = false;
 let manifestPath = null;
 let registryKey = null;
@@ -167,53 +171,9 @@ async function ensureNativePortConnected(sessionId, timeoutMs) {
   throw new Error("native port did not connect before timeout");
 }
 
-async function startNativeReconnectHeartbeat(extensionId) {
-  let sessionId = null;
-  let targetId = null;
-  let running = false;
-
-  keepAlive = setInterval(() => {
-    if (running || shuttingDown || chrome?.exitCode !== null) return;
-    running = true;
-    (async () => {
-      const swTarget = await findServiceWorkerTarget(extensionId);
-      if (!swTarget) {
-        sessionId = null;
-        targetId = null;
-        return;
-      }
-      if (!sessionId || targetId !== swTarget.targetId) {
-        const attached = await sendCDP("Target.attachToTarget", {
-          targetId: swTarget.targetId,
-          flatten: true,
-        });
-        sessionId = attached.sessionId;
-        targetId = swTarget.targetId;
-      }
-      await sendCDP(
-        "Runtime.evaluate",
-        {
-          expression: `self.__tabctl?.connectNative?.(); true;`,
-          returnByValue: true,
-        },
-        sessionId
-      );
-    })()
-      .catch((error) => {
-        sessionId = null;
-        targetId = null;
-        log(`native reconnect heartbeat failed: ${error instanceof Error ? error.message : String(error)}`);
-      })
-      .finally(() => {
-        running = false;
-      });
-  }, 1000);
-}
-
 async function shutdown(exitCode) {
   if (shuttingDown) return;
   shuttingDown = true;
-  if (keepAlive) clearInterval(keepAlive);
   if (chrome && !chrome.killed) {
     chrome.kill();
     await sleep(300);
@@ -264,7 +224,7 @@ async function main() {
   log(`Chrome: ${chromePath}`);
   log(`Extension: ${extensionDir}`);
 
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-it-bootstrap-"));
+  tmpDir = fs.mkdtempSync(path.join(testScratchRoot(), "b-"));
   const userDataDir = path.join(tmpDir, "chrome-profile");
   fs.mkdirSync(userDataDir, { recursive: true });
 
@@ -318,7 +278,6 @@ async function main() {
 
   const sessionId = await attachServiceWorker(extensionId, timeoutMs);
   await ensureNativePortConnected(sessionId, timeoutMs);
-  await startNativeReconnectHeartbeat(extensionId);
 
   process.stdout.write(`${JSON.stringify({ ok: true, event: "ready", extensionId })}\n`);
 }

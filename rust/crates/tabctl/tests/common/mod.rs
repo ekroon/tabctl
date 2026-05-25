@@ -70,8 +70,8 @@ static SANDBOX_COUNTER: AtomicU32 = AtomicU32::new(0);
 /// Create an isolated sandbox directory for tests. Caller is responsible for cleanup.
 pub fn create_sandbox() -> PathBuf {
     let seq = SANDBOX_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let sandbox = std::env::temp_dir().join(format!(
-        "tbi-local-{}-{}-{}",
+    let sandbox = repo_root().join(".tabctl").join("it").join(format!(
+        "l{}-{}-{}",
         now_ms(),
         std::process::id(),
         seq
@@ -625,11 +625,10 @@ fn init_browser() -> SharedBrowser {
         extension_dir.display()
     );
 
-    let sandbox = if cfg!(windows) {
-        std::env::temp_dir().join(format!("tbi-shared-{}", now_ms()))
-    } else {
-        PathBuf::from(format!("/tmp/tbi-shared-{}", now_ms()))
-    };
+    let sandbox = root
+        .join(".tabctl")
+        .join("it")
+        .join(format!("s{}", now_ms()));
     fs::create_dir_all(&sandbox).expect("create test sandbox");
     // NOTE: TempDirGuard is intentionally NOT used — static values never Drop.
     // The atexit handler cleans up the bootstrap process; the sandbox dir is
@@ -639,7 +638,7 @@ fn init_browser() -> SharedBrowser {
     fs::create_dir_all(&config_home).expect("create XDG config dir");
     fs::create_dir_all(&state_home).expect("create XDG state dir");
 
-    let profile_name = "itest-chrome";
+    let profile_name = "it";
 
     let setup = run_tabctl_json(
         &tabctl_bin,

@@ -1,4 +1,10 @@
 use super::*;
+use std::io::ErrorKind;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
+
+const CONNECT_RETRY_TIMEOUT_MS: u64 = 3_000;
+const CONNECT_RETRY_DELAY_MS: u64 = 100;
 
 #[cfg(windows)]
 pub(super) fn format_windows_pipe_connect_error(
@@ -389,6 +395,29 @@ pub(super) fn now_ms() -> u128 {
         .as_millis()
 }
 
+fn connect_with_retry<T>(mut connect: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let deadline = Instant::now() + Duration::from_millis(CONNECT_RETRY_TIMEOUT_MS);
+    loop {
+        match connect() {
+            Ok(stream) => return Ok(stream),
+            Err(err) if is_transient_connect_error(&err) && Instant::now() < deadline => {
+                sleep(Duration::from_millis(CONNECT_RETRY_DELAY_MS));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+fn is_transient_connect_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        ErrorKind::ConnectionRefused | ErrorKind::NotFound | ErrorKind::WouldBlock
+    ) || matches!(
+        err.raw_os_error(),
+        Some(2) | Some(3) | Some(61) | Some(111) | Some(231)
+    )
+}
+
 pub(super) fn send_request(
     action: &str,
     params: Value,
@@ -402,7 +431,7 @@ pub(super) fn send_request(
         SocketEndpoint::Unix { path } => {
             #[cfg(unix)]
             {
-                let stream = UnixStream::connect(path)
+                let stream = connect_with_retry(|| UnixStream::connect(path.as_str()))
                     .map_err(|e| format!("Failed to connect to host: {e}"))?;
                 send_request_over_stream(stream, action, params, show_progress, None)
             }
@@ -414,7 +443,7 @@ pub(super) fn send_request(
         }
         SocketEndpoint::Tcp { host, port } => {
             let auth_token = read_auth_token(resolved_profile);
-            let stream = TcpStream::connect((host.as_str(), port))
+            let stream = connect_with_retry(|| TcpStream::connect((host.as_str(), port)))
                 .map_err(|e| format!("Failed to connect to host: {e}"))?;
             send_request_over_stream(stream, action, params, show_progress, auth_token)
         }
@@ -423,13 +452,12 @@ pub(super) fn send_request(
             {
                 let data_dir =
                     resolve_data_dir(resolved_profile).unwrap_or_else(|_| "<unknown>".to_string());
-                let stream = fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(&path)
-                    .map_err(|e| {
-                        format_windows_pipe_connect_error(resolved_profile, &data_dir, &path, &e)
-                    })?;
+                let stream = connect_with_retry(|| {
+                    fs::OpenOptions::new().read(true).write(true).open(&path)
+                })
+                .map_err(|e| {
+                    format_windows_pipe_connect_error(resolved_profile, &data_dir, &path, &e)
+                })?;
                 send_request_over_stream(stream, action, params, show_progress, None)
             }
             #[cfg(target_os = "linux")]
