@@ -2452,11 +2452,14 @@ mod tests {
         assert!(should_refresh_graphql_snapshot_cache(
             "mutation { moveTab(tabIds: [1], index: 0) { movedTabs } }"
         ));
-        assert!(!should_refresh_graphql_snapshot_cache(
+        assert!(should_refresh_graphql_snapshot_cache(
             "mutation { undoAction(latest: true) { txid } }"
         ));
-        assert!(!should_refresh_graphql_snapshot_cache(
+        assert!(should_refresh_graphql_snapshot_cache(
             "mutation { closeTabs(tabIds: [1], confirm: true) { txid } }"
+        ));
+        assert!(!should_refresh_graphql_snapshot_cache(
+            "mutation { focusTab(tabId: 1) { success } }"
         ));
     }
 }

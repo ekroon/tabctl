@@ -393,6 +393,41 @@ impl SharedBrowser {
         Err(last_error.unwrap_or_else(|| "tabctl query failed".to_string()))
     }
 
+    pub fn wait_for_host_ready(&self, timeout: Duration) {
+        let start = Instant::now();
+        let mut last_error = String::new();
+
+        while start.elapsed() < timeout {
+            match run_tabctl_json_with_timeout(
+                &self.tabctl_bin,
+                &self.root,
+                &self.profile_name,
+                &self.config_home,
+                &self.state_home,
+                &["ping"],
+                Duration::from_secs(10),
+            ) {
+                Ok(ping) => {
+                    if ping.get("ok").and_then(Value::as_bool) == Some(true)
+                        || (ping.get("ok").is_none() && ping.get("error").is_none())
+                    {
+                        return;
+                    }
+                    last_error = format!("non-ok ping payload: {ping}");
+                }
+                Err(err) => {
+                    last_error = err;
+                }
+            }
+            sleep(Duration::from_millis(500));
+        }
+
+        panic!(
+            "host did not become ready within {}s; last error: {last_error}",
+            timeout.as_secs()
+        );
+    }
+
     /// Create an isolated test window with the given URLs and optional group.
     /// Returns `(window_id, created_tab_ids)`.
     pub fn create_test_window(&self, urls: &[&str], group: Option<&str>) -> (i64, Vec<i64>) {

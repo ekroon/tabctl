@@ -219,7 +219,7 @@ function registerBrowserStateListeners() {
       windowId: tab.windowId,
       groupId: tab.groupId,
       incognito: tab.incognito,
-      url: tab.url,
+      url: tab.url || tab.pendingUrl,
       title: tab.title,
       index: tab.index,
     });
@@ -517,7 +517,7 @@ async function getTabSnapshot() {
         windowId: win.id,
         index: tab.index,
         incognito: win.incognito || false,
-        url: tab.url,
+        url: tab.url || tab.pendingUrl,
         title: tab.title,
         active: tab.active,
         pinned: tab.pinned,

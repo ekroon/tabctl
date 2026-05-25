@@ -440,6 +440,7 @@ fn test_inspect_report_screenshot_and_reload_graphql_workflows() {
         response_data(&reload)["reloadExtension"]["reloading"].as_bool(),
         Some(true)
     );
+    b.wait_for_host_ready(Duration::from_secs(30));
 
     b.close_test_window(window_id);
 }

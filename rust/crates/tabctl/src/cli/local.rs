@@ -964,11 +964,18 @@ pub(super) fn should_refresh_graphql_snapshot_cache(query: &str) -> bool {
     let trimmed = query.trim_start();
     trimmed.starts_with("mutation")
         && [
+            "openTabs",
+            "closeTabs",
+            "undoAction",
             "updateGroup",
             "assignToGroup",
             "ungroupTabs",
             "moveGroup",
             "moveTab",
+            "mergeWindows",
+            "gatherGroups",
+            "archiveTabs",
+            "deduplicateTabs",
         ]
         .iter()
         .any(|field| trimmed.contains(field))
@@ -1020,5 +1027,49 @@ impl tabctl_graphql::CommandSender for CliCommandSender {
 
     fn snapshot(&self) -> Result<serde_json::Value, String> {
         load_fresh_graphql_snapshot(self.profile.as_deref())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_refresh_graphql_snapshot_cache;
+
+    #[test]
+    fn graphql_structural_mutations_refresh_snapshot_cache() {
+        for mutation in [
+            "openTabs",
+            "closeTabs",
+            "undoAction",
+            "updateGroup",
+            "assignToGroup",
+            "ungroupTabs",
+            "moveGroup",
+            "moveTab",
+            "mergeWindows",
+            "gatherGroups",
+            "archiveTabs",
+            "deduplicateTabs",
+        ] {
+            let query = format!("mutation {{ {mutation} {{ __typename }} }}");
+            assert!(
+                should_refresh_graphql_snapshot_cache(&query),
+                "{mutation} should refresh the cached snapshot"
+            );
+        }
+    }
+
+    #[test]
+    fn graphql_non_structural_operations_do_not_refresh_snapshot_cache() {
+        for query in [
+            "query { windows { windowId } }",
+            "mutation { focusTab(tabId: 1) { success } }",
+            "mutation { refreshTabs(tabIds: [1]) { refreshedTabs } }",
+            "mutation { reloadExtension { reloading } }",
+        ] {
+            assert!(
+                !should_refresh_graphql_snapshot_cache(query),
+                "{query} should not refresh the cached snapshot"
+            );
+        }
     }
 }
