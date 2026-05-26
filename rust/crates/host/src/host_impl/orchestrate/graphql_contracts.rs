@@ -161,8 +161,16 @@ fn contract_open_tabs() {
         json!({"groupId": 30}),
         // p:group-update
         json!({"id": 30}),
-        // p:tab-query (verification)
-        json!([{"id": 50, "groupId": 30}, {"id": 51, "groupId": 30}]),
+        // p:snapshot (verification)
+        json!({
+            "windows": [{
+                "windowId": 100,
+                "tabs": [
+                    {"tabId": 50, "windowId": 100, "index": 0, "url": "https://x.com", "title": "X", "groupId": 30, "groupTitle": "Test"},
+                    {"tabId": 51, "windowId": 100, "index": 1, "url": "https://y.com", "title": "Y", "groupId": 30, "groupTitle": "Test"}
+                ]
+            }]
+        }),
     ];
 
     let (mut response, undo) = drive_to_completion(&mut orch, &mock_responses);

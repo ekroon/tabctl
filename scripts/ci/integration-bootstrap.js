@@ -2,7 +2,6 @@
 "use strict";
 
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { execFileSync } = require("node:child_process");
@@ -15,6 +14,12 @@ function log(message) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function testScratchRoot() {
+  const root = process.env.TABCTL_BOOTSTRAP_TMP_ROOT || path.join(process.cwd(), ".tabctl", "it");
+  fs.mkdirSync(root, { recursive: true });
+  return root;
 }
 
 function findChrome() {
@@ -61,7 +66,6 @@ function launchChrome(chromePath, userDataDir) {
 
 let chrome = null;
 let tmpDir = null;
-let keepAlive = null;
 let shuttingDown = false;
 let manifestPath = null;
 let registryKey = null;
@@ -112,10 +116,7 @@ async function attachServiceWorker(extensionId, timeoutMs) {
     if (chrome.exitCode !== null) {
       throw new Error(`Chrome exited during service-worker discovery (code ${chrome.exitCode})`);
     }
-    const targets = await sendCDP("Target.getTargets");
-    const swTarget = (targets.targetInfos || []).find(
-      (target) => target.type === "service_worker" && String(target.url || "").includes(extensionId)
-    );
+    const swTarget = await findServiceWorkerTarget(extensionId);
     if (swTarget) {
       const attached = await sendCDP("Target.attachToTarget", {
         targetId: swTarget.targetId,
@@ -126,6 +127,13 @@ async function attachServiceWorker(extensionId, timeoutMs) {
     await sleep(250);
   }
   throw new Error("Extension service worker not found before timeout");
+}
+
+async function findServiceWorkerTarget(extensionId) {
+  const targets = await sendCDP("Target.getTargets");
+  return (targets.targetInfos || []).find(
+    (target) => target.type === "service_worker" && String(target.url || "").includes(extensionId)
+  );
 }
 
 async function ensureNativePortConnected(sessionId, timeoutMs) {
@@ -163,38 +171,9 @@ async function ensureNativePortConnected(sessionId, timeoutMs) {
   throw new Error("native port did not connect before timeout");
 }
 
-async function startNativeReconnectHeartbeat(sessionId) {
-  const evaluation = await sendCDP(
-    "Runtime.evaluate",
-    {
-      expression: `
-        (() => {
-          if (!self.__tabctl) return false;
-          if (!self.__tabctl.__ciNativeReconnectHeartbeat) {
-            self.__tabctl.__ciNativeReconnectHeartbeat = setInterval(() => {
-              self.__tabctl?.connectNative?.();
-            }, 1000);
-          }
-          return true;
-        })();
-      `,
-      returnByValue: true,
-    },
-    sessionId
-  );
-  if (evaluation?.exceptionDetails) {
-    const detail =
-      evaluation.exceptionDetails.exception?.description ||
-      evaluation.exceptionDetails.text ||
-      "unknown runtime exception";
-    throw new Error(`failed to start native reconnect heartbeat: ${detail}`);
-  }
-}
-
 async function shutdown(exitCode) {
   if (shuttingDown) return;
   shuttingDown = true;
-  if (keepAlive) clearInterval(keepAlive);
   if (chrome && !chrome.killed) {
     chrome.kill();
     await sleep(300);
@@ -245,7 +224,7 @@ async function main() {
   log(`Chrome: ${chromePath}`);
   log(`Extension: ${extensionDir}`);
 
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-it-bootstrap-"));
+  tmpDir = fs.mkdtempSync(path.join(testScratchRoot(), "b-"));
   const userDataDir = path.join(tmpDir, "chrome-profile");
   fs.mkdirSync(userDataDir, { recursive: true });
 
@@ -299,10 +278,8 @@ async function main() {
 
   const sessionId = await attachServiceWorker(extensionId, timeoutMs);
   await ensureNativePortConnected(sessionId, timeoutMs);
-  await startNativeReconnectHeartbeat(sessionId);
 
   process.stdout.write(`${JSON.stringify({ ok: true, event: "ready", extensionId })}\n`);
-  keepAlive = setInterval(() => {}, 60_000);
 }
 
 main().catch((error) => {

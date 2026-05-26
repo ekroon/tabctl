@@ -1,14 +1,16 @@
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 use tabctl_shared::{ClientInfo, NativeMessage, ProtocolError, RequestEnvelope, ResponseEnvelope};
 
 use super::browser_state;
 use super::focus_store;
 use super::orchestrate::{orchestration_for, OrchStep, Orchestration};
 use super::protocol::{
-    add_host_metadata, add_ping_metadata, base_response, create_id, host_version, local_actions,
-    log_line, now_ms, undo_actions, value_object, version_info_value, REQUEST_TIMEOUT_MS,
+    add_host_metadata, add_ping_metadata, base_response, create_id, host_ping_data, host_version,
+    local_actions, log_line, now_ms, trace_line, undo_actions, value_object, version_info_value,
+    REQUEST_TIMEOUT_MS,
 };
 use super::undo::{
     append_undo_record, filter_by_retention, find_latest_undo_record, find_undo_record,
@@ -40,6 +42,7 @@ pub(super) struct HostState {
     state_db_path: PathBuf,
     focus_db_path: PathBuf,
     profile_name: Option<String>,
+    native_channel_available: bool,
 }
 
 #[derive(Debug)]
@@ -52,10 +55,52 @@ pub(super) enum HostEffect {
 }
 
 impl HostState {
+    fn error_effect(
+        pending: PendingRequest,
+        message_id: String,
+        message: String,
+        hint: Option<String>,
+    ) -> HostEffect {
+        let resp_id = pending.request_id.clone().unwrap_or(message_id);
+        let mut resp = base_response(false, Some(pending.action), Some(resp_id));
+        resp.error = Some(ProtocolError { message, hint });
+        HostEffect::Respond {
+            client_id: pending.client_id,
+            payload: resp,
+        }
+    }
+
+    fn timeout_effect(pending: PendingRequest, message_id: String) -> HostEffect {
+        Self::error_effect(pending, message_id, "Request timed out".to_string(), None)
+    }
+
+    fn ingest_snapshot_response(&self, snapshot: &Value) {
+        let payload = serde_json::json!({
+            "reason": "snapshot",
+            "recordedAt": now_ms(),
+            "snapshot": snapshot,
+        });
+        if let Err(err) =
+            browser_state::ingest_sync(&self.state_db_path, self.profile_name.as_deref(), &payload)
+        {
+            log_line(&format!("browser-state snapshot ingest failed: {err}"));
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn new(
         undo_log: PathBuf,
         focus_db_path: PathBuf,
         profile_name: Option<String>,
+    ) -> Self {
+        Self::new_with_native_channel(undo_log, focus_db_path, profile_name, true)
+    }
+
+    pub(super) fn new_with_native_channel(
+        undo_log: PathBuf,
+        focus_db_path: PathBuf,
+        profile_name: Option<String>,
+        native_channel_available: bool,
     ) -> Self {
         let state_db_path = undo_log
             .parent()
@@ -68,6 +113,7 @@ impl HostState {
             state_db_path,
             focus_db_path,
             profile_name,
+            native_channel_available,
         }
     }
 
@@ -78,6 +124,35 @@ impl HostState {
         txid: Option<String>,
     ) -> Vec<HostEffect> {
         self.forward_to_extension_with_orch(client_id, request, txid, None)
+    }
+
+    pub(super) fn collect_timed_out_requests(&mut self) -> Vec<HostEffect> {
+        let expired: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|(_, pending)| now_ms().saturating_sub(pending.created_at) > REQUEST_TIMEOUT_MS)
+            .map(|(message_id, _)| message_id.clone())
+            .collect();
+
+        expired
+            .into_iter()
+            .filter_map(|message_id| {
+                self.pending
+                    .remove(&message_id)
+                    .map(|pending| Self::timeout_effect(pending, message_id))
+            })
+            .collect()
+    }
+
+    pub(super) fn fail_pending_request(
+        &mut self,
+        message_id: &str,
+        message: String,
+        hint: Option<String>,
+    ) -> Option<HostEffect> {
+        self.pending
+            .remove(message_id)
+            .map(|pending| Self::error_effect(pending, message_id.to_string(), message, hint))
     }
 
     fn forward_to_extension_with_orch(
@@ -116,6 +191,10 @@ impl HostState {
                 orchestration,
             },
         );
+        trace_line(&format!(
+            "pending insert: client_id={} request_id={} action={}",
+            client_id, request_id, request.action
+        ));
 
         vec![HostEffect::SendNative(NativeMessage {
             id: request_id,
@@ -146,6 +225,30 @@ impl HostState {
         }
 
         let action = request.action.clone();
+
+        if action == "ping" {
+            let mut resp = base_response(true, Some(action), request.id);
+            add_host_metadata(&mut resp);
+            resp.data = Some(Value::Object(host_ping_data(self.native_channel_available)));
+            return vec![HostEffect::Respond {
+                client_id,
+                payload: resp,
+            }];
+        }
+
+        if !self.native_channel_available && !local_actions().contains(action.as_str()) {
+            let mut resp = base_response(false, Some(action), request.id);
+            resp.error = Some(ProtocolError {
+                message: "Native browser channel unavailable".to_string(),
+                hint: Some(
+                    "The host is running without an attached browser native messaging channel, so browser-backed actions cannot complete.".to_string(),
+                ),
+            });
+            return vec![HostEffect::Respond {
+                client_id,
+                payload: resp,
+            }];
+        }
 
         if action == "version" {
             let mut resp = base_response(true, Some(action), request.id);
@@ -487,17 +590,12 @@ impl HostState {
         // Timeout check
         if let Some(pending) = self.pending.get(&message_id) {
             if now_ms().saturating_sub(pending.created_at) > REQUEST_TIMEOUT_MS {
+                trace_line(&format!(
+                    "pending timeout: request_id={} action={}",
+                    message_id, pending.action
+                ));
                 let timed_out = self.pending.remove(&message_id).expect("pending exists");
-                let resp_id = timed_out.request_id.clone().unwrap_or(message_id);
-                let mut resp = base_response(false, Some(timed_out.action), Some(resp_id));
-                resp.error = Some(ProtocolError {
-                    message: "Request timed out".to_string(),
-                    hint: None,
-                });
-                return vec![HostEffect::Respond {
-                    client_id: timed_out.client_id,
-                    payload: resp,
-                }];
+                return vec![Self::timeout_effect(timed_out, message_id)];
             }
         }
 
@@ -550,6 +648,7 @@ impl HostState {
                     &mut response_data,
                     self.profile_name.as_deref(),
                 );
+                self.ingest_snapshot_response(&response_data);
             }
             let step = orch.step(response_data);
             return self.process_orch_step(
@@ -563,6 +662,23 @@ impl HostState {
         }
 
         // Legacy path — no orchestration
+        let legacy_response_data = if pending.action == "snapshot" {
+            let mut response_data = message
+                .data
+                .clone()
+                .unwrap_or(Value::Object(message_data.clone()));
+            if response_data.get("windows").is_some() {
+                let _ = focus_store::enrich_snapshot(
+                    &self.focus_db_path,
+                    &mut response_data,
+                    self.profile_name.as_deref(),
+                );
+                self.ingest_snapshot_response(&response_data);
+            }
+            Some(response_data)
+        } else {
+            None
+        };
 
         if pending.action == "ping" {
             let data = add_ping_metadata(message_data);
@@ -634,7 +750,10 @@ impl HostState {
 
         let mut resp = base_response(true, Some(pending.action), Some(message_id));
         // Preserve original data shape (arrays, objects, etc.)
-        resp.data = Some(message.data.unwrap_or(Value::Object(message_data)));
+        resp.data = Some(
+            legacy_response_data
+                .unwrap_or_else(|| message.data.unwrap_or(Value::Object(message_data))),
+        );
         vec![HostEffect::Respond {
             client_id: pending.client_id,
             payload: resp,
@@ -669,6 +788,10 @@ impl HostState {
                         orchestration: Some(orch),
                     },
                 );
+                trace_line(&format!(
+                    "pending orch step: client_id={} request_id={} action={} native_action={}",
+                    client_id, new_id, action, prim_action
+                ));
                 vec![HostEffect::SendNative(NativeMessage {
                     id: new_id,
                     action: Some(prim_action),
@@ -678,6 +801,11 @@ impl HostState {
                     data: None,
                     error: None,
                 })]
+            }
+            OrchStep::Delay { duration_ms } => {
+                std::thread::sleep(Duration::from_millis(duration_ms));
+                let next_step = orch.step(Value::Null);
+                self.process_orch_step(client_id, action, request_id, txid, next_step, orch)
             }
             OrchStep::Complete { response, undo } => {
                 if let Some(ref undo_data) = undo {
@@ -739,5 +867,84 @@ impl HostState {
                 effects
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Map, Value};
+
+    fn test_state() -> HostState {
+        HostState::new(
+            std::env::temp_dir().join("tabctl-host-state-test-undo.jsonl"),
+            std::env::temp_dir().join("tabctl-host-state-test-focus.db"),
+            None,
+        )
+    }
+
+    #[test]
+    fn non_ping_browser_actions_fail_fast_without_native_channel() {
+        let mut state = HostState::new_with_native_channel(
+            std::env::temp_dir().join("tabctl-host-state-test-undo.jsonl"),
+            std::env::temp_dir().join("tabctl-host-state-test-focus.db"),
+            None,
+            false,
+        );
+        let effects = state.handle_cli_request(
+            7,
+            RequestEnvelope {
+                id: Some("req-list".to_string()),
+                action: "list".to_string(),
+                params: Value::Object(Map::new()),
+                auth_token: None,
+            },
+        );
+        let HostEffect::Respond { client_id, payload } = &effects[0] else {
+            panic!("expected immediate error response");
+        };
+        assert_eq!(*client_id, 7);
+        assert!(!payload.ok);
+        assert_eq!(payload.action.as_deref(), Some("list"));
+        assert_eq!(payload.request_id.as_deref(), Some("req-list"));
+        assert_eq!(
+            payload.error.as_ref().map(|err| err.message.as_str()),
+            Some("Native browser channel unavailable")
+        );
+    }
+
+    #[test]
+    fn collect_timed_out_requests_returns_error_without_native_message() {
+        let mut state = test_state();
+        let request = RequestEnvelope {
+            id: Some("req-1".to_string()),
+            action: "analyze".to_string(),
+            params: Value::Object(Map::new()),
+            auth_token: None,
+        };
+
+        let effects = state.handle_cli_request(7, request);
+        let HostEffect::SendNative(native) = &effects[0] else {
+            panic!("expected native forward");
+        };
+        let pending = state
+            .pending
+            .get_mut(&native.id)
+            .expect("pending request should exist");
+        pending.created_at = now_ms().saturating_sub(REQUEST_TIMEOUT_MS + 1);
+
+        let effects = state.collect_timed_out_requests();
+        assert_eq!(effects.len(), 1);
+        let HostEffect::Respond { client_id, payload } = &effects[0] else {
+            panic!("expected timeout response");
+        };
+        assert_eq!(*client_id, 7);
+        assert!(!payload.ok);
+        assert_eq!(payload.action.as_deref(), Some("analyze"));
+        assert_eq!(payload.request_id.as_deref(), Some("req-1"));
+        assert_eq!(
+            payload.error.as_ref().map(|err| err.message.as_str()),
+            Some("Request timed out")
+        );
     }
 }

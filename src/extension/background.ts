@@ -20,8 +20,13 @@ const VERSION_INFO = {
 };
 
 const KEEPALIVE_ALARM = "tabctl-keepalive";
+const RECONNECT_ALARM = "tabctl-reconnect";
 const KEEPALIVE_INTERVAL_MINUTES = 1;
 const BROWSER_STATE_SYNC_DEBOUNCE_MS = 750;
+const RECONNECT_INITIAL_DELAY_MS = 250;
+const RECONNECT_MAX_DELAY_MS = 30_000;
+const RECONNECT_ALARM_MIN_DELAY_MS = 30_000;
+const RECONNECT_STABLE_RESET_MS = 5_000;
 const screenshot = require("./lib/screenshot") as typeof import("./lib/screenshot");
 const content = require("./lib/content") as typeof import("./lib/content");
 const { delay, executeWithTimeout } = content;
@@ -34,7 +39,10 @@ function requireFiniteId(value: unknown, name: string): number {
 }
 
 const state = {
-  port: null,
+  port: null as chrome.runtime.Port | null,
+  reconnectTimer: null as ReturnType<typeof setTimeout> | null,
+  reconnectStableTimer: null as ReturnType<typeof setTimeout> | null,
+  reconnectAttempt: 0,
 };
 
 const browserState = {
@@ -50,23 +58,85 @@ function log(...args: Array<unknown>) {
   console.log("[tabctl]", ...args);
 }
 
-function sendResponse(id: string, ok: boolean, payload: unknown) {
-  if (!state.port) {
+function reconnectDelayMs(attempt: number) {
+  return Math.min(RECONNECT_INITIAL_DELAY_MS * (2 ** attempt), RECONNECT_MAX_DELAY_MS);
+}
+
+function clearReconnectTimer() {
+  if (!state.reconnectTimer) {
+    return;
+  }
+  clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = null;
+}
+
+function clearReconnectAlarm() {
+  chrome.alarms.clear(RECONNECT_ALARM);
+}
+
+function clearReconnectStableTimer() {
+  if (!state.reconnectStableTimer) {
+    return;
+  }
+  clearTimeout(state.reconnectStableTimer);
+  state.reconnectStableTimer = null;
+}
+
+function scheduleReconnect(reason: string) {
+  if (state.port || state.reconnectTimer) {
     return;
   }
 
-  if (ok) {
-    const data = typeof payload === "object" && payload !== null
-      ? payload
-      : { payload };
-    state.port.postMessage({ id, ok: true, data });
+  const attempt = state.reconnectAttempt;
+  const delayMs = reconnectDelayMs(attempt);
+  state.reconnectAttempt += 1;
+  log("Scheduling native host reconnect", { reason, delayMs, attempt });
+  chrome.alarms.create(RECONNECT_ALARM, {
+    delayInMinutes: Math.max(delayMs, RECONNECT_ALARM_MIN_DELAY_MS) / 60_000,
+  });
+  state.reconnectTimer = setTimeout(() => {
+    state.reconnectTimer = null;
+    clearReconnectAlarm();
+    connectNative();
+  }, delayMs);
+}
+
+function resetReconnectBackoffAfterStablePort(port: chrome.runtime.Port) {
+  clearReconnectStableTimer();
+  state.reconnectStableTimer = setTimeout(() => {
+    state.reconnectStableTimer = null;
+    if (state.port === port) {
+      state.reconnectAttempt = 0;
+    }
+  }, RECONNECT_STABLE_RESET_MS);
+}
+
+function ensureKeepaliveAlarm() {
+  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: KEEPALIVE_INTERVAL_MINUTES });
+}
+
+function sendResponse(port: chrome.runtime.Port | null, id: string, ok: boolean, payload: unknown) {
+  if (!port) {
+    log("dropping response because native port is unavailable", { id, ok });
     return;
   }
 
-  const error = payload instanceof Error
-    ? { message: payload.message, stack: payload.stack }
-    : payload;
-  state.port.postMessage({ id, ok: false, error });
+  try {
+    if (ok) {
+      const data = typeof payload === "object" && payload !== null
+        ? payload
+        : { payload };
+      port.postMessage({ id, ok: true, data });
+      return;
+    }
+
+    const error = payload instanceof Error
+      ? { message: payload.message, stack: payload.stack }
+      : payload;
+    port.postMessage({ id, ok: false, error });
+  } catch (error) {
+    log("failed to send native response", { id, ok, error });
+  }
 }
 
 function connectNative() {
@@ -76,8 +146,13 @@ function connectNative() {
 
   try {
     const port = chrome.runtime.connectNative(HOST_NAME);
+    clearReconnectTimer();
+    clearReconnectAlarm();
     state.port = port;
-    port.onMessage.addListener(handleNativeMessage);
+    resetReconnectBackoffAfterStablePort(port);
+    port.onMessage.addListener((message) => {
+      void handleNativeMessage(port, message);
+    });
     port.onDisconnect.addListener(() => {
       const lastError = chrome.runtime.lastError;
       if (lastError) {
@@ -85,12 +160,17 @@ function connectNative() {
       } else {
         log("Native host disconnected");
       }
-      state.port = null;
+      if (state.port === port) {
+        state.port = null;
+      }
+      clearReconnectStableTimer();
+      scheduleReconnect("disconnect");
     });
     log("Native host connected");
     queueBrowserStateSync("startup");
   } catch (error) {
     log("Native host connection failed", error);
+    scheduleReconnect("connect-failed");
   }
 }
 
@@ -212,7 +292,7 @@ function registerBrowserStateListeners() {
       windowId: tab.windowId,
       groupId: tab.groupId,
       incognito: tab.incognito,
-      url: tab.url,
+      url: tab.url || tab.pendingUrl,
       title: tab.title,
       index: tab.index,
     });
@@ -332,24 +412,31 @@ function registerBrowserStateListeners() {
 
 connectNative();
 registerBrowserStateListeners();
+ensureKeepaliveAlarm();
 
 chrome.runtime.onInstalled.addListener(() => {
   connectNative();
-  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: KEEPALIVE_INTERVAL_MINUTES });
+  ensureKeepaliveAlarm();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   connectNative();
-  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: KEEPALIVE_INTERVAL_MINUTES });
+  ensureKeepaliveAlarm();
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === KEEPALIVE_ALARM) {
     connectNative();
+  } else if (alarm.name === RECONNECT_ALARM) {
+    clearReconnectTimer();
+    connectNative();
   }
 });
 
-async function handleNativeMessage(message: { id?: string; action?: string; params?: Record<string, unknown> }) {
+async function handleNativeMessage(
+  requestPort: chrome.runtime.Port,
+  message: { id?: string; action?: string; params?: Record<string, unknown> },
+) {
   if (!message || typeof message !== "object") {
     return;
   }
@@ -361,9 +448,9 @@ async function handleNativeMessage(message: { id?: string; action?: string; para
 
   try {
     const data = await handleAction(action, params || {}, id);
-    sendResponse(id, true, data);
+    sendResponse(requestPort, id, true, data);
   } catch (error) {
-    sendResponse(id, false, error);
+    sendResponse(requestPort, id, false, error);
   }
 }
 
@@ -393,7 +480,11 @@ async function handleAction(action: string, params: Record<string, unknown>, req
         component: "extension",
       };
     case "reload":
-      // Defer reload to allow the response to be sent first
+      chrome.alarms.create(RECONNECT_ALARM, {
+        delayInMinutes: RECONNECT_ALARM_MIN_DELAY_MS / 60_000,
+      });
+      // Defer reload to allow the response to be sent first. The reconnect alarm
+      // gives the reloaded worker a product-owned wakeup if no other event fires.
       setTimeout(() => chrome.runtime.reload(), 100);
       return { reloading: true };
 
@@ -507,7 +598,7 @@ async function getTabSnapshot() {
         windowId: win.id,
         index: tab.index,
         incognito: win.incognito || false,
-        url: tab.url,
+        url: tab.url || tab.pendingUrl,
         title: tab.title,
         active: tab.active,
         pinned: tab.pinned,

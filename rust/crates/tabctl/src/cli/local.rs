@@ -543,15 +543,22 @@ pub(super) fn profile_connectivity_report(profile_name: &str, entry: &ProfileEnt
 }
 
 pub(super) fn connectivity_manual_steps(profile_name: &str, entry: &ProfileEntry) -> Vec<String> {
-    vec![
+    let mut steps = vec![
         format!("Verify connection: tabctl --profile {profile_name} ping"),
+        "Inspect the active profile and resolved paths: tabctl profile-show --json".to_string(),
         "Ensure the browser extension is loaded and active for this profile.".to_string(),
         format!(
             "Rerun setup for this profile: tabctl setup --browser {} --name {profile_name} --extension-id {}",
             browser_name(&entry.browser),
             entry.extension_id
         ),
-    ]
+    ];
+    if cfg!(windows) {
+        steps.push(
+            "If ping reports a named-pipe error, compare TABCTL_PROFILE, TABCTL_CONFIG_DIR, and TABCTL_DATA_DIR between the generated wrapper and the CLI shell.".to_string(),
+        );
+    }
+    steps
 }
 
 pub(super) fn profile_health_report(
@@ -633,8 +640,23 @@ pub(super) fn attempt_profile_repair(
     profile_name: &str,
     entry: &ProfileEntry,
 ) -> Result<Value, String> {
-    let data_dir = resolve_data_dir(None)?;
-    let wrapper_dir = PathBuf::from(&data_dir).join("profiles").join(profile_name);
+    if !can_repair_host_wrapper() {
+        return Err(
+            "Host wrapper repair is unsupported from WSL. Run the command from Windows to repair the native host wrapper."
+                .to_string(),
+        );
+    }
+    let wrapper_dir = PathBuf::from(normalize_path_for_current_platform(&entry.data_dir));
+    let data_dir = wrapper_dir
+        .parent()
+        .and_then(|parent| parent.parent())
+        .map(path_to_platform_string)
+        .ok_or_else(|| {
+            format!(
+                "Profile \"{profile_name}\" has an invalid dataDir for wrapper repair: {}",
+                entry.data_dir
+            )
+        })?;
     let tabctl_binary_path = resolve_tabctl_binary_path();
     let wrapper_path = write_host_wrapper(&tabctl_binary_path, profile_name, &wrapper_dir)?;
     let manifest_path = write_native_manifest(
@@ -747,7 +769,7 @@ pub(super) fn run_upgrade(matches: &ArgMatches, _sub: &ArgMatches) -> Result<(),
         let mut needs_reload = false;
 
         // Step 1: Repair wrapper if binary path changed
-        let wrapper_stale = entry.node_path != current_binary;
+        let wrapper_stale = can_repair_host_wrapper() && entry.node_path != current_binary;
         if wrapper_stale {
             match attempt_profile_repair(profile_name, entry) {
                 Ok(details) => {
@@ -775,6 +797,16 @@ pub(super) fn run_upgrade(matches: &ArgMatches, _sub: &ArgMatches) -> Result<(),
                     }
                     any_failed = true;
                 }
+            }
+        } else if !can_repair_host_wrapper() && entry.node_path != current_binary {
+            result["wrapperRepair"] = json!({
+                "updated": false,
+                "reason": "unsupported-from-wsl"
+            });
+            if !json_mode {
+                eprintln!(
+                    "  {profile_name}:\n    · Host wrapper repair skipped in WSL (run upgrade from Windows if needed)"
+                );
             }
         } else {
             result["wrapperRepair"] = json!({ "updated": false, "reason": "already current" });
@@ -874,14 +906,88 @@ pub(super) fn run_upgrade(matches: &ArgMatches, _sub: &ArgMatches) -> Result<(),
     Ok(())
 }
 
+pub(super) fn cached_snapshot_from_browser_state(response: &ResponseEnvelope) -> Option<Value> {
+    response
+        .data
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|data| data.get("snapshot"))
+        .cloned()
+}
+
+fn load_cached_graphql_snapshot(profile: Option<&str>) -> Result<Option<Value>, String> {
+    let response = send_request("browser-state-latest", json!({}), profile, false)?;
+    if !response.ok {
+        let msg = response
+            .error
+            .map(|e| e.message)
+            .unwrap_or_else(|| "browser-state-latest request failed".to_string());
+        return Err(msg);
+    }
+    Ok(cached_snapshot_from_browser_state(&response))
+}
+
+fn load_live_graphql_snapshot(profile: Option<&str>) -> Result<Value, String> {
+    let response = send_request("snapshot", json!({}), profile, false)?;
+    if !response.ok {
+        let msg = response
+            .error
+            .map(|e| e.message)
+            .unwrap_or_else(|| "Snapshot request failed".to_string());
+        return Err(msg);
+    }
+    Ok(response.data.unwrap_or(json!({})))
+}
+
+fn load_graphql_snapshot(profile: Option<&str>) -> Result<Value, String> {
+    if let Ok(Some(snapshot)) = load_cached_graphql_snapshot(profile) {
+        return Ok(snapshot);
+    }
+
+    load_live_graphql_snapshot(profile)
+}
+
+fn load_fresh_graphql_snapshot(profile: Option<&str>) -> Result<Value, String> {
+    match load_live_graphql_snapshot(profile) {
+        Ok(snapshot) => Ok(snapshot),
+        Err(snapshot_err) => match load_cached_graphql_snapshot(profile) {
+            Ok(Some(snapshot)) => Ok(snapshot),
+            Ok(None) => Err(snapshot_err),
+            Err(cache_err) => Err(format!(
+                "{snapshot_err}; cached browser state unavailable: {cache_err}"
+            )),
+        },
+    }
+}
+
+pub(super) fn should_refresh_graphql_snapshot_cache(query: &str) -> bool {
+    let trimmed = query.trim_start();
+    trimmed.starts_with("mutation")
+        && [
+            "openTabs",
+            "closeTabs",
+            "undoAction",
+            "updateGroup",
+            "assignToGroup",
+            "ungroupTabs",
+            "moveGroup",
+            "moveTab",
+            "mergeWindows",
+            "gatherGroups",
+            "archiveTabs",
+            "deduplicateTabs",
+        ]
+        .iter()
+        .any(|field| trimmed.contains(field))
+}
+
 pub(super) fn run_graphql_query(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
     let query_str = sub
         .get_one::<String>("graphql")
         .ok_or("Missing GraphQL query")?;
     let profile = matches.get_one::<String>("profile").map(|s| s.as_str());
 
-    let snapshot_response = send_request("snapshot", json!({}), profile, false)?;
-    let snapshot = snapshot_response.data.unwrap_or(json!({}));
+    let snapshot = load_graphql_snapshot(profile)?;
 
     let sender = std::sync::Arc::new(CliCommandSender {
         profile: profile.map(String::from),
@@ -891,6 +997,11 @@ pub(super) fn run_graphql_query(matches: &ArgMatches, sub: &ArgMatches) -> Resul
     let result = tabctl_graphql::execute(query_str, None, snapshot, sender)?;
     let rendered = render_local_command(matches, "query", result);
     if rendered.is_ok() {
+        if should_refresh_graphql_snapshot_cache(query_str) {
+            if let Err(err) = load_live_graphql_snapshot(profile) {
+                eprintln!("Warning: failed to refresh GraphQL snapshot cache: {err}");
+            }
+        }
         maybe_runtime_extension_auto_sync("query", profile, None);
     }
     rendered
@@ -915,14 +1026,50 @@ impl tabctl_graphql::CommandSender for CliCommandSender {
     }
 
     fn snapshot(&self) -> Result<serde_json::Value, String> {
-        let response = send_request("snapshot", json!({}), self.profile.as_deref(), false)?;
-        if !response.ok {
-            let msg = response
-                .error
-                .map(|e| e.message)
-                .unwrap_or_else(|| "Snapshot request failed".to_string());
-            return Err(msg);
+        load_fresh_graphql_snapshot(self.profile.as_deref())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_refresh_graphql_snapshot_cache;
+
+    #[test]
+    fn graphql_structural_mutations_refresh_snapshot_cache() {
+        for mutation in [
+            "openTabs",
+            "closeTabs",
+            "undoAction",
+            "updateGroup",
+            "assignToGroup",
+            "ungroupTabs",
+            "moveGroup",
+            "moveTab",
+            "mergeWindows",
+            "gatherGroups",
+            "archiveTabs",
+            "deduplicateTabs",
+        ] {
+            let query = format!("mutation {{ {mutation} {{ __typename }} }}");
+            assert!(
+                should_refresh_graphql_snapshot_cache(&query),
+                "{mutation} should refresh the cached snapshot"
+            );
         }
-        Ok(response.data.unwrap_or(json!({})))
+    }
+
+    #[test]
+    fn graphql_non_structural_operations_do_not_refresh_snapshot_cache() {
+        for query in [
+            "query { windows { windowId } }",
+            "mutation { focusTab(tabId: 1) { success } }",
+            "mutation { refreshTabs(tabIds: [1]) { refreshedTabs } }",
+            "mutation { reloadExtension { reloading } }",
+        ] {
+            assert!(
+                !should_refresh_graphql_snapshot_cache(query),
+                "{query} should not refresh the cached snapshot"
+            );
+        }
     }
 }

@@ -724,6 +724,9 @@ pub(super) fn maybe_runtime_extension_auto_sync(
 /// Check if the host wrapper's binary path is stale and repair it.
 /// Returns `true` if the wrapper was updated.
 fn maybe_auto_repair_wrapper(profile: Option<&str>) -> bool {
+    if !can_repair_host_wrapper() {
+        return false;
+    }
     let profile_name = match resolve_effective_profile(profile) {
         Some(name) => name,
         None => return false,
@@ -1154,8 +1157,8 @@ pub(super) fn register_profile(
         browser: browser_enum,
         extension_id: extension_id.to_string(),
         node_path: resolve_tabctl_binary_path(),
-        host_path: wrapper_path.display().to_string(),
-        data_dir: profile_data_dir.display().to_string(),
+        host_path: path_to_platform_string(wrapper_path),
+        data_dir: path_to_platform_string(&profile_data_dir),
         user_data_dir: None,
     };
 
@@ -1276,7 +1279,7 @@ pub(super) fn write_registry_key(browser: &str, manifest_path: &Path) -> Result<
         .create_subkey(&subkey)
         .map_err(|e| format!("Failed to create registry key: {e}"))?;
 
-    key.set_value("", &manifest_path.display().to_string())
+    key.set_value("", &path_to_platform_string(manifest_path))
         .map_err(|e| format!("Failed to set registry value: {e}"))?;
 
     Ok(format!("HKCU\\{subkey}"))
@@ -1301,7 +1304,7 @@ pub(super) fn write_native_manifest(
     let manifest = json!({
         "name": HOST_NAME,
         "description": "tabctl native host",
-        "path": abs_wrapper.display().to_string(),
+        "path": path_to_platform_string(&abs_wrapper),
         "type": "stdio",
         "allowed_origins": [format!("chrome-extension://{extension_id}/")]
     });

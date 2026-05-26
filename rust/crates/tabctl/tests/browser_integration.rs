@@ -132,3 +132,33 @@ fn real_browser_integration_harness_passes() {
 
     b.close_test_window(window_id);
 }
+
+#[cfg(windows)]
+#[test]
+#[ignore = "requires built dist artifacts and Chrome"]
+fn named_pipe_graphql_open_tabs_existing_window_returns_on_windows() {
+    let b = shared_browser();
+    let (window_id, _) = b.create_test_window(&["https://example.com"], None);
+
+    let result = run_tabctl_json_with_timeout(
+        &b.tabctl_bin,
+        &b.root,
+        &b.profile_name,
+        &b.config_home,
+        &b.state_home,
+        &["query", &format!(
+            "mutation {{ openTabs(windowId: {window_id}, urls: [\"https://example.org\"]) {{ windowId tabs {{ tabId url }} }} }}"
+        )],
+        Duration::from_secs(20),
+    )
+    .unwrap_or_else(|e| panic!("named-pipe GraphQL openTabs failed: {e}"));
+
+    assert_ok("named-pipe openTabs", &result);
+    let open = &response_data(&result)["openTabs"];
+    let tabs = open["tabs"].as_array().expect("openTabs tabs array");
+    assert_eq!(tabs.len(), 1, "expected one opened tab: {result}");
+    assert_eq!(tabs[0]["url"], "https://example.org/");
+    assert_eq!(open["windowId"].as_i64(), Some(window_id));
+
+    b.close_test_window(window_id);
+}

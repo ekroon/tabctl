@@ -70,8 +70,8 @@ static SANDBOX_COUNTER: AtomicU32 = AtomicU32::new(0);
 /// Create an isolated sandbox directory for tests. Caller is responsible for cleanup.
 pub fn create_sandbox() -> PathBuf {
     let seq = SANDBOX_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let sandbox = std::env::temp_dir().join(format!(
-        "tbi-local-{}-{}-{}",
+    let sandbox = repo_root().join(".tabctl").join("it").join(format!(
+        "l{}-{}-{}",
         now_ms(),
         std::process::id(),
         seq
@@ -169,9 +169,8 @@ pub fn run_tabctl_json_with_timeout(
         .env("XDG_STATE_HOME", state_home)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if cfg!(windows) {
-        command.env("TABCTL_TRANSPORT", "tcp");
-    }
+    command.env_remove("TABCTL_TRANSPORT");
+    command.env_remove("TABCTL_TCP_PORT");
     let mut child = command
         .spawn()
         .map_err(|e| format!("failed to execute tabctl {:?}: {e}", args))?;
@@ -373,8 +372,8 @@ impl SharedBrowser {
     }
 
     pub fn run_query_result(&self, query: &str) -> Result<Value, String> {
-        let mut last_error = None;
-        for attempt in 0..6 {
+        let retry_deadline = Instant::now() + Duration::from_secs(30);
+        loop {
             match run_tabctl_json(
                 &self.tabctl_bin,
                 &self.root,
@@ -384,14 +383,47 @@ impl SharedBrowser {
                 &["query", query],
             ) {
                 Ok(value) => return Ok(value),
-                Err(err) if attempt < 5 && is_transient_host_error(&err) => {
-                    last_error = Some(err);
+                Err(err) if Instant::now() < retry_deadline && is_transient_host_error(&err) => {
                     sleep(Duration::from_millis(500));
                 }
                 Err(err) => return Err(err),
             }
         }
-        Err(last_error.unwrap_or_else(|| "tabctl query failed".to_string()))
+    }
+
+    pub fn wait_for_host_ready(&self, timeout: Duration) {
+        let start = Instant::now();
+        let mut last_error = String::new();
+
+        while start.elapsed() < timeout {
+            match run_tabctl_json_with_timeout(
+                &self.tabctl_bin,
+                &self.root,
+                &self.profile_name,
+                &self.config_home,
+                &self.state_home,
+                &["ping"],
+                Duration::from_secs(10),
+            ) {
+                Ok(ping) => {
+                    if ping.get("ok").and_then(Value::as_bool) == Some(true)
+                        || (ping.get("ok").is_none() && ping.get("error").is_none())
+                    {
+                        return;
+                    }
+                    last_error = format!("non-ok ping payload: {ping}");
+                }
+                Err(err) => {
+                    last_error = err;
+                }
+            }
+            sleep(Duration::from_millis(500));
+        }
+
+        panic!(
+            "host did not become ready within {}s; last error: {last_error}",
+            timeout.as_secs()
+        );
     }
 
     /// Create an isolated test window with the given URLs and optional group.
@@ -593,11 +625,10 @@ fn init_browser() -> SharedBrowser {
         extension_dir.display()
     );
 
-    let sandbox = if cfg!(windows) {
-        std::env::temp_dir().join(format!("tbi-shared-{}", now_ms()))
-    } else {
-        PathBuf::from(format!("/tmp/tbi-shared-{}", now_ms()))
-    };
+    let sandbox = root
+        .join(".tabctl")
+        .join("it")
+        .join(format!("s{}", now_ms()));
     fs::create_dir_all(&sandbox).expect("create test sandbox");
     // NOTE: TempDirGuard is intentionally NOT used — static values never Drop.
     // The atexit handler cleans up the bootstrap process; the sandbox dir is
@@ -607,7 +638,7 @@ fn init_browser() -> SharedBrowser {
     fs::create_dir_all(&config_home).expect("create XDG config dir");
     fs::create_dir_all(&state_home).expect("create XDG state dir");
 
-    let profile_name = "itest-chrome";
+    let profile_name = "it";
 
     let setup = run_tabctl_json(
         &tabctl_bin,

@@ -107,6 +107,18 @@ pub(super) fn log_line(message: &str) {
     eprintln!("[tabctl-host-rust] {message}");
 }
 
+pub(super) fn trace_enabled() -> bool {
+    std::env::var("TABCTL_TRACE_IO")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+pub(super) fn trace_line(message: &str) {
+    if trace_enabled() {
+        log_line(message);
+    }
+}
+
 pub(super) fn version_info_value() -> Value {
     let info = VersionInfo {
         version: host_version().to_string(),
@@ -144,6 +156,30 @@ pub(super) fn value_object(input: Option<Value>) -> Map<String, Value> {
     input
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default()
+}
+
+pub(super) fn host_ping_data(native_channel_available: bool) -> Map<String, Value> {
+    let mut data = Map::new();
+    data.insert("now".to_string(), Value::Number(now_ms().into()));
+    data.insert("component".to_string(), Value::String("host".to_string()));
+    data.insert(
+        "hostVersion".to_string(),
+        Value::String(host_version().to_string()),
+    );
+    data.insert(
+        "hostBaseVersion".to_string(),
+        Value::String(base_version().to_string()),
+    );
+    data.insert(
+        "hostGitSha".to_string(),
+        Value::String(git_sha().to_string()),
+    );
+    data.insert("hostDirty".to_string(), Value::Bool(is_dirty()));
+    data.insert(
+        "nativeChannelAvailable".to_string(),
+        Value::Bool(native_channel_available),
+    );
+    data
 }
 
 pub(super) fn add_ping_metadata(mut data: Map<String, Value>) -> Map<String, Value> {

@@ -9,17 +9,23 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(windows)]
+use tabctl_shared::windows_pipe_path;
 use tabctl_shared::{
-    Browser, ProfileEntry, ProfileRegistry, RequestEnvelope, ResponseEnvelope, SocketEndpoint,
+    normalize_path_for_current_platform, path_to_platform_string, Browser, ProfileEntry,
+    ProfileRegistry, RequestEnvelope, ResponseEnvelope, SocketEndpoint,
 };
 
 use sha2::{Digest, Sha256};
 
 const WSL_TCP_PORT_FILENAME: &str = "tcp-port";
 #[cfg(target_os = "linux")]
-const WSL_TCP_PORT_FALLBACK: u16 = 39_001;
+const WSL_PIPE_ENDPOINT_FILENAME: &str = "pipe-endpoint";
 const AUTH_TOKEN_FILENAME: &str = "auth-token";
+const CLI_RESPONSE_TIMEOUT_MS: u64 = 35_000;
 const EXTENSION_ACTIVE_DIR_NAME: &str = "extension";
 const EXTENSION_RELEASES_DIR_NAME: &str = "extension-releases";
 const EXTENSION_VERSIONS_DIR_NAME: &str = "extension-versions";
@@ -70,6 +76,7 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
     use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -893,6 +900,83 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolve_config_dir_uses_windows_roaming_appdata_in_wsl() {
+        with_env_vars(
+            &[
+                ("WSL_INTEROP", Some("1")),
+                ("TABCTL_CONFIG_DIR", None),
+                ("XDG_CONFIG_HOME", None),
+                (
+                    "PATH",
+                    Some("/usr/bin:/mnt/c/Users/TestUser/AppData/Local/Microsoft/WindowsApps"),
+                ),
+            ],
+            || {
+                let config_dir = resolve_config_dir().expect("resolve config dir");
+                assert_eq!(
+                    config_dir,
+                    "/mnt/c/Users/TestUser/AppData/Roaming/tabctl".to_string()
+                );
+            },
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolve_data_dir_uses_windows_local_appdata_in_wsl() {
+        with_env_vars(
+            &[
+                ("WSL_INTEROP", Some("1")),
+                ("TABCTL_DATA_DIR", None),
+                ("TABCTL_STATE_DIR", None),
+                ("XDG_STATE_HOME", None),
+                (
+                    "PATH",
+                    Some("/usr/bin:/mnt/c/Users/TestUser/AppData/Local/Microsoft/WindowsApps"),
+                ),
+            ],
+            || {
+                let data_dir = resolve_data_dir(None).expect("resolve data dir");
+                assert_eq!(
+                    data_dir,
+                    "/mnt/c/Users/TestUser/AppData/Local/tabctl".to_string()
+                );
+            },
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn host_wrapper_repair_is_disabled_in_wsl() {
+        with_env_vars(&[("WSL_INTEROP", Some("1"))], || {
+            assert!(!can_repair_host_wrapper());
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn attempt_profile_repair_fails_fast_in_wsl() {
+        with_env_vars(&[("WSL_INTEROP", Some("1"))], || {
+            let entry = ProfileEntry {
+                browser: Browser::Chrome,
+                extension_id: "dkfnfgfelacbfclhenpgdckfefmfddbd".to_string(),
+                node_path: "/mnt/c/dev/ekroon/tabctl/rust/target/debug/tabctl".to_string(),
+                host_path:
+                    r"C:\Users\TestUser\AppData\Local\tabctl\profiles\chrome\tabctl-host.cmd"
+                        .to_string(),
+                data_dir: r"C:\Users\TestUser\AppData\Local\tabctl\profiles\chrome".to_string(),
+                user_data_dir: None,
+            };
+            let err = attempt_profile_repair("chrome", &entry).expect_err("repair should fail");
+            assert!(
+                err.contains("unsupported from WSL"),
+                "unexpected error: {err}"
+            );
+        });
+    }
+
     #[test]
     fn returns_none_when_path_has_no_windows_entry() {
         with_env_vars(&[("PATH", Some("/usr/bin:/usr/local/bin"))], || {
@@ -917,20 +1001,35 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn resolves_pipe_socket_to_wsl_tcp_endpoint() {
+    fn translates_windows_data_dir_into_wsl_candidate() {
+        let candidates = wsl_file_candidates(
+            r"C:\Users\TestUser\AppData\Local\tabctl\profiles\chrome",
+            "pipe-endpoint",
+        );
+        assert!(
+            candidates.iter().any(|path| {
+                path == &PathBuf::from(
+                    "/mnt/c/Users/TestUser/AppData/Local/tabctl/profiles/chrome/pipe-endpoint",
+                )
+            }),
+            "expected translated WSL candidate, got: {candidates:?}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn keeps_explicit_pipe_socket_in_wsl() {
         with_env_vars(
             &[
                 ("WSL_INTEROP", Some("1")),
                 ("TABCTL_SOCKET", Some("pipe://tabctl-test")),
-                ("TABCTL_TCP_PORT", Some("39005")),
             ],
             || {
                 let endpoint = resolve_socket_endpoint(None).expect("resolve endpoint");
                 assert_eq!(
                     endpoint,
-                    SocketEndpoint::Tcp {
-                        host: "127.0.0.1".to_string(),
-                        port: 39005,
+                    SocketEndpoint::Pipe {
+                        path: r"\\.\pipe\tabctl-test".to_string(),
                     }
                 );
             },
@@ -939,7 +1038,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn keeps_explicit_tcp_socket_in_wsl() {
+    fn rejects_explicit_tcp_socket_in_wsl() {
         with_env_vars(
             &[
                 ("WSL_INTEROP", Some("1")),
@@ -947,14 +1046,8 @@ mod tests {
                 ("TABCTL_TCP_PORT", Some("39007")),
             ],
             || {
-                let endpoint = resolve_socket_endpoint(None).expect("resolve endpoint");
-                assert_eq!(
-                    endpoint,
-                    SocketEndpoint::Tcp {
-                        host: "127.0.0.1".to_string(),
-                        port: 39006,
-                    }
-                );
+                let err = resolve_socket_endpoint(None).expect_err("resolve endpoint should fail");
+                assert!(err.contains("disabled in WSL"), "unexpected error: {err}");
             },
         );
     }
@@ -977,7 +1070,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn falls_back_to_default_wsl_tcp_port_when_not_discovered() {
+    fn wsl_named_pipe_endpoint_is_required_when_not_discovered() {
         let temp_root = std::env::temp_dir().join(format!("tabctl-cli-test-{}", request_id()));
         std::fs::create_dir_all(&temp_root).expect("create temp directory");
         with_env_vars(
@@ -991,14 +1084,8 @@ mod tests {
                 ),
             ],
             || {
-                let endpoint = resolve_socket_endpoint(None).expect("resolve endpoint");
-                assert_eq!(
-                    endpoint,
-                    SocketEndpoint::Tcp {
-                        host: "127.0.0.1".to_string(),
-                        port: WSL_TCP_PORT_FALLBACK,
-                    }
-                );
+                let err = resolve_socket_endpoint(None).expect_err("resolve endpoint should fail");
+                assert!(err.contains("pipe-endpoint"), "unexpected error: {err}");
             },
         );
         if let Err(err) = std::fs::remove_dir_all(&temp_root) {
@@ -1006,6 +1093,71 @@ mod tests {
                 panic!("remove temp directory: {err}");
             }
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolves_wsl_pipe_endpoint_from_pipe_endpoint_file() {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp_root = std::env::temp_dir().join(format!(
+            "tabctl-wsl-pipe-endpoint-test-{}-{}",
+            std::process::id(),
+            id
+        ));
+        let _ = std::fs::remove_dir_all(&temp_root);
+        std::fs::create_dir_all(&temp_root).expect("create temp directory");
+        std::fs::write(
+            temp_root.join(WSL_PIPE_ENDPOINT_FILENAME),
+            "\\\\.\\pipe\\tabctl-test-bridge\n",
+        )
+        .expect("write pipe endpoint file");
+
+        with_env_vars(
+            &[
+                ("WSL_INTEROP", Some("1")),
+                ("TABCTL_SOCKET", None),
+                (
+                    "TABCTL_DATA_DIR",
+                    Some(temp_root.to_str().expect("temp path should be valid utf-8")),
+                ),
+            ],
+            || {
+                let endpoint = resolve_socket_endpoint(None).expect("resolve endpoint");
+                assert_eq!(
+                    endpoint,
+                    SocketEndpoint::Pipe {
+                        path: r"\\.\pipe\tabctl-test-bridge".to_string(),
+                    }
+                );
+            },
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pipe_transport_returns_error_without_pipe_endpoint_file() {
+        let temp_root =
+            std::env::temp_dir().join(format!("tabctl-wsl-pipe-missing-{}", request_id()));
+        std::fs::create_dir_all(&temp_root).expect("create temp directory");
+        with_env_vars(
+            &[
+                ("WSL_INTEROP", Some("1")),
+                ("TABCTL_SOCKET", None),
+                (
+                    "TABCTL_DATA_DIR",
+                    Some(temp_root.to_str().expect("temp path should be valid utf-8")),
+                ),
+            ],
+            || {
+                let err =
+                    resolve_socket_endpoint(None).expect_err("missing pipe endpoint should fail");
+                assert!(err.contains("pipe-endpoint"), "unexpected error: {err}");
+            },
+        );
+        let _ = std::fs::remove_dir_all(&temp_root);
     }
 
     #[cfg(windows)]
@@ -1018,6 +1170,30 @@ mod tests {
                 path: r"\\.\pipe\tabctl-f9bd75adcc15".to_string()
             }
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolves_windows_pipe_endpoint_for_mixed_separator_variants() {
+        let canonical = resolve_windows_pipe_endpoint(r"C:\Users\tester\AppData\Local\tabctl");
+        let mixed = resolve_windows_pipe_endpoint(r"C:/Users/tester/AppData/Local/tabctl");
+        assert_eq!(canonical, mixed);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_pipe_connect_error_includes_profile_data_dir_and_hint() {
+        let err = std::io::Error::from_raw_os_error(5);
+        let rendered = format_windows_pipe_connect_error(
+            Some("edge"),
+            r"C:\Users\tester\AppData\Local\tabctl\profiles\edge",
+            r"\\.\pipe\tabctl-test",
+            &err,
+        );
+        assert!(rendered.contains(r"\\.\pipe\tabctl-test"));
+        assert!(rendered.contains("profile: edge"));
+        assert!(rendered.contains(r"data dir: C:\Users\tester\AppData\Local\tabctl\profiles\edge"));
+        assert!(rendered.contains("named-pipe ACLs") || rendered.contains("Windows denied access"));
     }
 
     #[test]
@@ -1877,6 +2053,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_root);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn test_transport_windows_falls_back_to_named_pipe_without_auth_token() {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp_root = std::env::temp_dir().join(format!(
+            "tabctl-windows-pipe-fallback-test-{}-{}",
+            std::process::id(),
+            id
+        ));
+        let _ = std::fs::remove_dir_all(&temp_root);
+        std::fs::create_dir_all(&temp_root).expect("create temp directory");
+        std::fs::write(temp_root.join(WSL_TCP_PORT_FILENAME), "39023\n").expect("write port file");
+
+        with_env_vars(
+            &[
+                ("TABCTL_TRANSPORT", None),
+                ("TABCTL_TCP_PORT", None),
+                ("TABCTL_SOCKET", None),
+                ("TABCTL_AUTH_TOKEN", None),
+                (
+                    "TABCTL_DATA_DIR",
+                    Some(temp_root.to_str().expect("temp path should be valid utf-8")),
+                ),
+            ],
+            || {
+                let endpoint = resolve_socket_endpoint(None).expect("resolve endpoint");
+                assert_eq!(
+                    endpoint,
+                    resolve_windows_pipe_endpoint(temp_root.to_str().unwrap())
+                );
+            },
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn test_transport_non_tcp_ignored() {
@@ -1929,6 +2142,12 @@ mod tests {
                     step.as_str() == Some("Verify connection: tabctl --profile edge ping")
                 }),
                 "manual steps should include profile-scoped ping verification"
+            );
+            assert!(
+                steps.iter().any(|step| {
+                    step.as_str() == Some("Inspect the active profile and resolved paths: tabctl profile-show --json")
+                }),
+                "manual steps should include profile inspection guidance"
             );
             assert!(
                 steps.iter().any(|step| {
@@ -2027,6 +2246,12 @@ mod tests {
                         step.as_str() == Some("Verify connection: tabctl --profile edge ping")
                     }),
                     "manual steps should include ping verification"
+                );
+                assert!(
+                    steps.iter().any(|step| {
+                        step.as_str() == Some("Inspect the active profile and resolved paths: tabctl profile-show --json")
+                    }),
+                    "manual steps should include profile inspection guidance"
                 );
             },
         );
@@ -2138,5 +2363,104 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    struct HangingStream {
+        delay: Duration,
+        writes: Vec<u8>,
+    }
+
+    impl Read for HangingStream {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            thread::sleep(self.delay);
+            Ok(0)
+        }
+    }
+
+    impl Write for HangingStream {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.writes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn send_request_over_stream_times_out_when_no_response_arrives() {
+        with_env_vars(&[("TABCTL_RESPONSE_TIMEOUT_MS", Some("10"))], || {
+            let stream = HangingStream {
+                delay: Duration::from_millis(50),
+                writes: Vec::new(),
+            };
+            let err =
+                send_request_over_stream(stream, "ping", Value::Object(Map::new()), false, None)
+                    .expect_err("request should time out");
+            assert!(
+                err.contains("Request timed out after 10ms"),
+                "unexpected timeout error: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn cached_snapshot_from_browser_state_extracts_snapshot_payload() {
+        let response = ResponseEnvelope {
+            ok: true,
+            action: Some("browser-state-latest".to_string()),
+            request_id: Some("req-1".to_string()),
+            component: Some("host".to_string()),
+            version: Some("0.6.0".to_string()),
+            progress: None,
+            data: Some(json!({
+                "snapshotId": 1,
+                "snapshot": {
+                    "generatedAt": 123,
+                    "windows": []
+                }
+            })),
+            error: None,
+        };
+
+        let snapshot = cached_snapshot_from_browser_state(&response).expect("snapshot");
+        assert_eq!(snapshot["generatedAt"], json!(123));
+        assert_eq!(snapshot["windows"], json!([]));
+    }
+
+    #[test]
+    fn cached_snapshot_from_browser_state_returns_none_without_snapshot_field() {
+        let response = ResponseEnvelope {
+            ok: true,
+            action: Some("browser-state-latest".to_string()),
+            request_id: Some("req-1".to_string()),
+            component: Some("host".to_string()),
+            version: Some("0.6.0".to_string()),
+            progress: None,
+            data: Some(json!({ "snapshotId": 1 })),
+            error: None,
+        };
+
+        assert!(cached_snapshot_from_browser_state(&response).is_none());
+    }
+
+    #[test]
+    fn graphql_cache_refresh_is_limited_to_structural_mutations() {
+        assert!(should_refresh_graphql_snapshot_cache(
+            "mutation { updateGroup(groupId: 1, title: \"Work\") { title } }"
+        ));
+        assert!(should_refresh_graphql_snapshot_cache(
+            "mutation { moveTab(tabIds: [1], index: 0) { movedTabs } }"
+        ));
+        assert!(should_refresh_graphql_snapshot_cache(
+            "mutation { undoAction(latest: true) { txid } }"
+        ));
+        assert!(should_refresh_graphql_snapshot_cache(
+            "mutation { closeTabs(tabIds: [1], confirm: true) { txid } }"
+        ));
+        assert!(!should_refresh_graphql_snapshot_cache(
+            "mutation { focusTab(tabId: 1) { success } }"
+        ));
     }
 }
