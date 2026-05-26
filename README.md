@@ -261,8 +261,8 @@ Relevant knobs: `TABCTL_SOCKET`, `TABCTL_PROFILE`, `TABCTL_DATA_DIR`, `TABCTL_ST
 - Runtime command runs can auto-sync extension files when host/extension versions drift; rerun `tabctl query 'mutation { reloadExtension { reloading } }'` if the browser does not pick up changes immediately.
 - For local release-like testing while developing, force runtime sync behavior with `TABCTL_AUTO_SYNC_MODE=release-like`.
 - Disable runtime sync entirely with `TABCTL_AUTO_SYNC_MODE=off`.
-- `tabctl ping --json` is the canonical runtime version check (`versionsInSync`, `hostBaseVersion`, `baseVersion`).
-- Version metadata is intentionally health-only: regular GraphQL payloads do not include version fields unless you explicitly query health surfaces.
+- `tabctl ping --json` is a host connectivity/health check; use it to confirm the native host is reachable and healthy.
+- Version metadata is intentionally health-only: regular GraphQL payloads do not include version fields unless you explicitly query health surfaces, which may expose fields such as `versionsInSync`, `hostBaseVersion`, and `baseVersion`.
 - `tabctl ping` returns connect errors (`ENOENT`, `ECONNREFUSED`, timeout): ensure extension is loaded and active, rerun `tabctl setup`, and in WSL verify the profile data dir contains a current `pipe-endpoint` file.
 - `tabctl doctor --fix --json` includes per-profile connectivity diagnostics in `data.profiles[].connectivity`; if ping remains unhealthy after local repairs, follow `manualSteps`.
 
@@ -274,7 +274,7 @@ tabctl setup --browser edge --extension-id <extension-id> --release-tag v0.5.2
 # 2) Run the current binary with forced release-like auto-sync
 TABCTL_AUTO_SYNC_MODE=release-like cargo run --manifest-path rust/Cargo.toml -p tabctl -- query '{ tabs { total } }'
 
-# 3) Verify host/extension base versions are back in sync
+# 3) Verify host connectivity/health after auto-sync
 tabctl ping --json
 ```
 

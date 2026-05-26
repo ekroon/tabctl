@@ -262,7 +262,7 @@ fn run_unix() -> io::Result<()> {
                         clients_clone,
                         native_out_clone,
                         None,
-                        false,
+                        true,
                     )
                 });
             }
@@ -436,7 +436,7 @@ fn spawn_tcp_accept_loop(
                             clients_clone,
                             native_out_clone,
                             token_clone,
-                            false,
+                            true,
                         )
                     });
                 }

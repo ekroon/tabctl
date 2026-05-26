@@ -87,9 +87,10 @@ function scheduleReconnect(reason: string) {
     return;
   }
 
-  const delayMs = reconnectDelayMs(state.reconnectAttempt);
+  const attempt = state.reconnectAttempt;
+  const delayMs = reconnectDelayMs(attempt);
   state.reconnectAttempt += 1;
-  log("Scheduling native host reconnect", { reason, delayMs, attempt: state.reconnectAttempt });
+  log("Scheduling native host reconnect", { reason, delayMs, attempt });
   chrome.alarms.create(RECONNECT_ALARM, {
     delayInMinutes: Math.max(delayMs, RECONNECT_ALARM_MIN_DELAY_MS) / 60_000,
   });
