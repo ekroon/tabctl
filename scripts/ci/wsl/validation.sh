@@ -205,10 +205,32 @@ POWERSHELL
 run_setup_validation() {
   local setup_output="/tmp/tabctl-wsl-setup.json"
   cd "$WSL_WORKSPACE"
-  local win_workspace win_launcher_version
+  local win_workspace win_launcher_version win_package_dir win_package_binary package_backup install_status
   win_workspace="$(wslpath -m "$WSL_WORKSPACE")"
   win_launcher_version="$(node -e 'const pkg = require("./package.json"); process.stdout.write((pkg.optionalDependencies && pkg.optionalDependencies["tabctl-win32-x64"]) || "")')"
-  if [ -n "$win_launcher_version" ]; then
+  win_package_dir="$WSL_WORKSPACE/packages/win32-x64"
+  win_package_binary="$win_package_dir/tabctl-host.exe"
+  if [ -f "$win_package_dir/package.json" ] && [ -f "$WSL_WORKSPACE/rust/target/debug/tabctl.exe" ]; then
+    cp "$WSL_WORKSPACE/rust/target/debug/tabctl.exe" "$win_package_binary"
+    package_backup="$(mktemp)"
+    cp package.json "$package_backup"
+    node <<'NODE'
+const fs = require("node:fs");
+const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+pkg.optionalDependencies = pkg.optionalDependencies || {};
+pkg.optionalDependencies["tabctl-win32-x64"] = "file:packages/win32-x64";
+fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+NODE
+    set +e
+    cmd.exe /d /c npm install -g "$win_workspace" --no-fund --no-audit
+    install_status="$?"
+    set -e
+    cp "$package_backup" package.json
+    rm -f "$package_backup" "$win_package_binary"
+    if [ "$install_status" -ne 0 ]; then
+      return "$install_status"
+    fi
+  elif [ -n "$win_launcher_version" ]; then
     cmd.exe /d /c npm install -g "$win_workspace" "tabctl-win32-x64@$win_launcher_version" --no-fund --no-audit
   else
     cmd.exe /d /c npm install -g "$win_workspace" --no-fund --no-audit
