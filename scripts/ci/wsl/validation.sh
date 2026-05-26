@@ -211,6 +211,7 @@ run_setup_validation() {
   win_package_dir="$WSL_WORKSPACE/packages/win32-x64"
   win_package_binary="$win_package_dir/tabctl-host.exe"
   if [ -f "$win_package_dir/package.json" ] && [ -f "$WSL_WORKSPACE/rust/target/debug/tabctl.exe" ]; then
+    # PR builds validate unpublished versions, so install the local platform package.
     cp "$WSL_WORKSPACE/rust/target/debug/tabctl.exe" "$win_package_binary"
     package_backup="$(mktemp)"
     cp package.json "$package_backup"
