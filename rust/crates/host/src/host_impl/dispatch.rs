@@ -300,10 +300,10 @@ pub(super) fn handle_client(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host_impl::protocol::read_native_message;
+    use crate::host_impl::protocol::{create_id, now_ms, read_native_message};
+    use std::fs;
     use std::io::{Cursor, Result as IoResult};
     use std::net::{TcpListener, TcpStream};
-    use std::path::PathBuf;
     use std::time::{Duration, Instant};
     use tabctl_shared::{NativeMessage, ResponseEnvelope};
 
@@ -323,9 +323,19 @@ mod tests {
     }
 
     fn test_state(native_channel_available: bool) -> Arc<Mutex<HostState>> {
+        // Each call gets its own temp subdirectory so the undo log, focus DB,
+        // and HostState's derived `state.db` (derived from the undo log's
+        // parent) never collide between tests and never land in the crate
+        // working directory.
+        let base = std::env::temp_dir().join(format!(
+            "tabctl-host-dispatch-{}-{}",
+            now_ms(),
+            create_id("test")
+        ));
+        fs::create_dir_all(&base).expect("create dispatch test temp dir");
         Arc::new(Mutex::new(HostState::new_with_native_channel(
-            PathBuf::from("dispatch-test-undo.jsonl"),
-            PathBuf::from("dispatch-test-focus.json"),
+            base.join("dispatch-test-undo.jsonl"),
+            base.join("dispatch-test-focus.json"),
             None,
             native_channel_available,
         )))
