@@ -1357,6 +1357,7 @@ mod tests {
             &wrapper,
             "abcdefghijklmnopqrstuvwxyz012345",
             Some(dir.to_str().unwrap()),
+            false,
         );
         assert!(
             result.is_ok(),
@@ -1626,8 +1627,13 @@ mod tests {
         // udd and its NativeMessagingHosts child should not exist yet
         assert!(!udd.exists());
 
-        let result =
-            write_native_manifest("edge", &wrapper, "extid123", Some(udd.to_str().unwrap()));
+        let result = write_native_manifest(
+            "edge",
+            &wrapper,
+            "extid123",
+            Some(udd.to_str().unwrap()),
+            false,
+        );
         assert!(
             result.is_ok(),
             "should create NMH subdir: {:?}",
@@ -1653,9 +1659,14 @@ mod tests {
         let wrapper = dir.join("tabctl-host.sh");
         fs::write(&wrapper, "#!/bin/bash\n").unwrap();
 
-        let manifest_path =
-            write_native_manifest("chrome", &wrapper, "testextid", Some(dir.to_str().unwrap()))
-                .unwrap();
+        let manifest_path = write_native_manifest(
+            "chrome",
+            &wrapper,
+            "testextid",
+            Some(dir.to_str().unwrap()),
+            false,
+        )
+        .unwrap();
 
         let content: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
@@ -1887,6 +1898,257 @@ mod tests {
                     manifest_json["allowed_origins"][0],
                     json!(format!("chrome-extension://{extension_id}/"))
                 );
+            },
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_setup_without_extension_id_fails_when_no_active_extension() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-e2e-noextid-{}", request_id()));
+        let _ = fs::remove_dir_all(&dir);
+        let config_dir = dir.join("config");
+        let data_dir = dir.join("data");
+        let udd = dir.join("user-data");
+
+        with_env_vars(
+            &[
+                ("TABCTL_CONFIG_DIR", Some(config_dir.to_str().unwrap())),
+                ("TABCTL_DATA_DIR", Some(data_dir.to_str().unwrap())),
+                ("TABCTL_SETUP_FETCH_EXTENSION", Some("0")),
+            ],
+            || {
+                let matches = build_cli()
+                    .try_get_matches_from([
+                        "tabctl",
+                        "--json",
+                        "setup",
+                        "--browser",
+                        "edge",
+                        "--skip-extension-download",
+                        "--user-data-dir",
+                        udd.to_str().unwrap(),
+                    ])
+                    .expect("parse args");
+
+                let (_, sub) = matches.subcommand().expect("subcommand");
+                let result = run_setup(&matches, sub);
+                assert!(
+                    result.is_err(),
+                    "run_setup should fail when no extension id is resolvable, got: {:?}",
+                    result.ok()
+                );
+                let err = result.unwrap_err();
+                assert!(
+                    err.contains("--extension-id"),
+                    "error should suggest passing --extension-id: {err}"
+                );
+
+                let wrapper = data_dir
+                    .join("profiles")
+                    .join("edge")
+                    .join(if cfg!(windows) {
+                        "tabctl-host.cmd"
+                    } else {
+                        "tabctl-host.sh"
+                    });
+                assert!(
+                    !wrapper.exists(),
+                    "wrapper script should not be written when setup fails early"
+                );
+
+                let manifest_path = udd
+                    .join("NativeMessagingHosts")
+                    .join(format!("{HOST_NAME}.json"));
+                assert!(
+                    !manifest_path.exists(),
+                    "native manifest should not be written when setup fails early"
+                );
+
+                let profiles = config_dir.join("profiles.json");
+                assert!(
+                    !profiles.exists(),
+                    "profiles.json should not be written when setup fails early"
+                );
+            },
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_setup_refuses_to_overwrite_existing_manifest_for_different_profile() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-noforce-{}", request_id()));
+        let _ = fs::remove_dir_all(&dir);
+        let config_dir = dir.join("config");
+        let data_dir = dir.join("data");
+        let udd = dir.join("user-data");
+        let local_extension_dir = dir.join("local-extension");
+        fs::create_dir_all(&local_extension_dir).expect("create local extension dir");
+        fs::write(
+            local_extension_dir.join("manifest.json"),
+            r#"{"manifest_version":3,"name":"Tab Control","version":"0.6.0"}"#,
+        )
+        .expect("write local extension manifest");
+        fs::write(
+            local_extension_dir.join("background.js"),
+            "self.addEventListener('install', () => {});",
+        )
+        .expect("write local extension background");
+
+        with_env_vars(
+            &[
+                ("TABCTL_CONFIG_DIR", Some(config_dir.to_str().unwrap())),
+                ("TABCTL_DATA_DIR", Some(data_dir.to_str().unwrap())),
+                ("TABCTL_SETUP_FETCH_EXTENSION", Some("0")),
+            ],
+            || {
+                // First setup with --name edge-smoke writes the native manifest.
+                let matches_smoke = build_cli()
+                    .try_get_matches_from([
+                        "tabctl",
+                        "--json",
+                        "setup",
+                        "--browser",
+                        "edge",
+                        "--name",
+                        "edge-smoke",
+                        "--extension-dir",
+                        local_extension_dir.to_str().unwrap(),
+                        "--user-data-dir",
+                        udd.to_str().unwrap(),
+                    ])
+                    .expect("parse smoke args");
+                let (_, sub_smoke) = matches_smoke.subcommand().expect("subcommand");
+                run_setup(&matches_smoke, sub_smoke).expect("smoke setup should succeed");
+
+                let manifest_path = udd
+                    .join("NativeMessagingHosts")
+                    .join(format!("{HOST_NAME}.json"));
+                let smoke_manifest =
+                    fs::read_to_string(&manifest_path).expect("smoke manifest should exist");
+
+                // Second setup with default --name=edge should refuse to overwrite.
+                let matches_edge = build_cli()
+                    .try_get_matches_from([
+                        "tabctl",
+                        "--json",
+                        "setup",
+                        "--browser",
+                        "edge",
+                        "--extension-dir",
+                        local_extension_dir.to_str().unwrap(),
+                        "--user-data-dir",
+                        udd.to_str().unwrap(),
+                    ])
+                    .expect("parse edge args");
+                let (_, sub_edge) = matches_edge.subcommand().expect("subcommand");
+                let result = run_setup(&matches_edge, sub_edge);
+                assert!(
+                    result.is_err(),
+                    "edge setup should refuse to overwrite smoke manifest, got: {:?}",
+                    result.ok()
+                );
+                let err = result.unwrap_err();
+                assert!(
+                    err.contains("--force"),
+                    "error should mention --force: {err}"
+                );
+                assert!(
+                    err.contains("Refusing to overwrite"),
+                    "error should explain refusal: {err}"
+                );
+
+                // Manifest on disk must be unchanged.
+                let still =
+                    fs::read_to_string(&manifest_path).expect("manifest should still exist");
+                assert_eq!(still, smoke_manifest, "manifest should not be modified");
+
+                // Third setup with --force succeeds and rewrites the manifest.
+                let matches_force = build_cli()
+                    .try_get_matches_from([
+                        "tabctl",
+                        "--json",
+                        "setup",
+                        "--browser",
+                        "edge",
+                        "--force",
+                        "--extension-dir",
+                        local_extension_dir.to_str().unwrap(),
+                        "--user-data-dir",
+                        udd.to_str().unwrap(),
+                    ])
+                    .expect("parse force args");
+                let (_, sub_force) = matches_force.subcommand().expect("subcommand");
+                run_setup(&matches_force, sub_force).expect("--force setup should succeed");
+
+                let after_force =
+                    fs::read_to_string(&manifest_path).expect("manifest should exist after force");
+                let parsed: Value = serde_json::from_str(&after_force).expect("valid JSON");
+                let path_in_manifest = parsed["path"].as_str().expect("path field");
+                assert!(
+                    path_in_manifest.contains(&format!("profiles{sep}edge{sep}", sep = std::path::MAIN_SEPARATOR)),
+                    "after --force, manifest path should target the default edge profile, got: {path_in_manifest}"
+                );
+            },
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_setup_is_idempotent_when_manifest_content_matches() {
+        let dir = std::env::temp_dir().join(format!("tabctl-test-idempotent-{}", request_id()));
+        let _ = fs::remove_dir_all(&dir);
+        let config_dir = dir.join("config");
+        let data_dir = dir.join("data");
+        let udd = dir.join("user-data");
+        let local_extension_dir = dir.join("local-extension");
+        fs::create_dir_all(&local_extension_dir).expect("create local extension dir");
+        fs::write(
+            local_extension_dir.join("manifest.json"),
+            r#"{"manifest_version":3,"name":"Tab Control","version":"0.6.0"}"#,
+        )
+        .expect("write local extension manifest");
+        fs::write(
+            local_extension_dir.join("background.js"),
+            "self.addEventListener('install', () => {});",
+        )
+        .expect("write local extension background");
+
+        with_env_vars(
+            &[
+                ("TABCTL_CONFIG_DIR", Some(config_dir.to_str().unwrap())),
+                ("TABCTL_DATA_DIR", Some(data_dir.to_str().unwrap())),
+                ("TABCTL_SETUP_FETCH_EXTENSION", Some("0")),
+            ],
+            || {
+                let args = [
+                    "tabctl",
+                    "--json",
+                    "setup",
+                    "--browser",
+                    "edge",
+                    "--extension-dir",
+                    local_extension_dir.to_str().unwrap(),
+                    "--user-data-dir",
+                    udd.to_str().unwrap(),
+                ];
+
+                let matches1 = build_cli()
+                    .try_get_matches_from(args)
+                    .expect("parse args 1");
+                let (_, sub1) = matches1.subcommand().expect("subcommand");
+                run_setup(&matches1, sub1).expect("first setup should succeed");
+
+                // Second invocation with identical args should succeed (no --force needed).
+                let matches2 = build_cli()
+                    .try_get_matches_from(args)
+                    .expect("parse args 2");
+                let (_, sub2) = matches2.subcommand().expect("subcommand");
+                run_setup(&matches2, sub2)
+                    .expect("second setup with identical args should succeed without --force");
             },
         );
 

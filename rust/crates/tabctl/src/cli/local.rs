@@ -664,6 +664,7 @@ pub(super) fn attempt_profile_repair(
         &wrapper_path,
         &entry.extension_id,
         entry.user_data_dir.as_deref(),
+        true,
     )?;
     register_profile(
         &data_dir,

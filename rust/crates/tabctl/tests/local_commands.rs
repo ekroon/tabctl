@@ -67,6 +67,7 @@ fn test_profile_lifecycle() {
             profile_a,
             "--extension-dir",
             ext_str,
+            "--force",
         ],
     )
     .expect("setup profile-a should succeed");
@@ -86,6 +87,7 @@ fn test_profile_lifecycle() {
             profile_b,
             "--extension-dir",
             ext_str,
+            "--force",
         ],
     )
     .expect("setup profile-b should succeed");
@@ -196,6 +198,7 @@ fn test_doctor_command() {
             profile,
             "--extension-dir",
             ext_str,
+            "--force",
         ],
     );
 
@@ -240,6 +243,7 @@ fn test_policy_command() {
             profile,
             "--extension-dir",
             ext_str,
+            "--force",
         ],
     );
 

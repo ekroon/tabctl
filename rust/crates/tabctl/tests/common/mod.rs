@@ -654,6 +654,7 @@ fn init_browser() -> SharedBrowser {
             profile_name,
             "--extension-dir",
             extension_dir.to_str().expect("extension path to utf8"),
+            "--force",
         ],
     )
     .expect("setup command should succeed");
