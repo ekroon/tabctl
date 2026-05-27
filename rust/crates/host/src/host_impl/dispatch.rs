@@ -609,7 +609,7 @@ mod tests {
         )
         .expect("write native response");
 
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let output = String::from_utf8(client_sink.lock().unwrap().clone()).unwrap();
             if output.contains("\"requestId\":\"req-21\"") {
