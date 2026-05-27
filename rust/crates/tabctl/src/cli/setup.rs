@@ -913,6 +913,21 @@ pub(super) fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), St
         }
     };
 
+    if effective_extension_id.is_none() {
+        // Without a known extension id we cannot write the native messaging
+        // manifest (allowed_origins) or register a usable profile, so setup
+        // would silently produce a broken installation. Fail loudly instead.
+        let warnings_summary =
+            serde_json::to_string(&setup_warnings).unwrap_or_else(|_| "[]".to_string());
+        return Err(format!(
+            "Could not resolve extension id for browser '{browser}'. \
+             No --extension-id was provided and tabctl could not derive one \
+             from the active extension directory. Pass --extension-id <id> \
+             explicitly, or rerun setup after the extension sync succeeds. \
+             Setup warnings: {warnings_summary}"
+        ));
+    }
+
     let mut actual_wrapper_path = wrapper_path.clone();
     let mut actual_manifest_path = data_dir.clone();
     let mut is_default_profile = false;
@@ -932,7 +947,9 @@ pub(super) fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), St
         let wrapper_file = write_host_wrapper(&wrapper_path, profile_name, &profile_data_dir)?;
 
         let user_data_dir = sub.get_one::<String>("user-data-dir").map(|s| s.as_str());
-        let manifest_path = write_native_manifest(browser, &wrapper_file, ext_id, user_data_dir)?;
+        let force = sub.get_flag("force");
+        let manifest_path =
+            write_native_manifest(browser, &wrapper_file, ext_id, user_data_dir, force)?;
 
         #[cfg(windows)]
         {
@@ -1290,6 +1307,7 @@ pub(super) fn write_native_manifest(
     wrapper_path: &Path,
     extension_id: &str,
     user_data_dir: Option<&str>,
+    force: bool,
 ) -> Result<PathBuf, String> {
     let manifest_dir = if let Some(udd) = user_data_dir {
         PathBuf::from(udd).join("NativeMessagingHosts")
@@ -1310,6 +1328,41 @@ pub(super) fn write_native_manifest(
     });
 
     let manifest_path = manifest_dir.join(format!("{HOST_NAME}.json"));
+
+    if !force && manifest_path.exists() {
+        if let Ok(existing_raw) = fs::read_to_string(&manifest_path) {
+            if let Ok(existing) = serde_json::from_str::<Value>(&existing_raw) {
+                if existing != manifest {
+                    let existing_path = existing
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .unwrap_or("<unknown>");
+                    let existing_origins = existing
+                        .get("allowed_origins")
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "<unknown>".to_string());
+                    let new_path = manifest
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .unwrap_or("<unknown>");
+                    let new_origins = manifest
+                        .get("allowed_origins")
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "<unknown>".to_string());
+                    return Err(format!(
+                        "Refusing to overwrite existing native messaging manifest at {manifest_display}.\n  \
+                         existing path: {existing_path}\n  \
+                         existing allowed_origins: {existing_origins}\n  \
+                         new path: {new_path}\n  \
+                         new allowed_origins: {new_origins}\n\
+                         Pass --force to overwrite, or pick a different --browser/--name combination.",
+                        manifest_display = manifest_path.display()
+                    ));
+                }
+            }
+        }
+    }
+
     let content = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
     fs::write(&manifest_path, content)
         .map_err(|e| format!("failed to write native manifest: {e}"))?;

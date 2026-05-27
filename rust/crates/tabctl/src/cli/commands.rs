@@ -165,6 +165,15 @@ pub(super) fn command_setup() -> Command {
                 .long("user-data-dir")
                 .value_name("path"),
         )
+        .arg(
+            Arg::new("force")
+                .long("force")
+                .short('f')
+                .action(ArgAction::SetTrue)
+                .help(
+                    "Overwrite an existing native messaging manifest even if it points at a different profile or extension id",
+                ),
+        )
 }
 
 pub(super) fn command_extension_fetch() -> Command {
