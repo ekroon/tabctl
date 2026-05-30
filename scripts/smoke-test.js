@@ -3,9 +3,12 @@
 
 const { spawn } = require("node:child_process");
 const path = require("node:path");
+const os = require("node:os");
 
 const tabctl = process.env.TABCTL_BIN || "./rust/target/debug/tabctl";
-const shortTmpRoot = process.env.TABCTL_TEST_TMP_ROOT || path.join("/tmp", "tctl-it");
+const defaultTmpRoot =
+  process.platform === "win32" ? path.join(os.tmpdir(), "tctl-it") : path.join("/tmp", "tctl-it");
+const shortTmpRoot = process.env.TABCTL_TEST_TMP_ROOT || defaultTmpRoot;
 let smokeBrowser = null;
 let smokeProfile = null;
 let readTab = null;

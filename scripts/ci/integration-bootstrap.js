@@ -3,6 +3,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const os = require("node:os");
 const { spawn } = require("node:child_process");
 const { execFileSync } = require("node:child_process");
 
@@ -44,7 +45,8 @@ function sleep(ms) {
 }
 
 function testScratchRoot() {
-  const root = process.env.TABCTL_BOOTSTRAP_TMP_ROOT || path.join("/tmp", "tctl-it");
+  const root = process.env.TABCTL_BOOTSTRAP_TMP_ROOT ||
+    (process.platform === "win32" ? path.join(os.tmpdir(), "tctl-it") : path.join("/tmp", "tctl-it"));
   fs.mkdirSync(root, { recursive: true });
   return root;
 }
