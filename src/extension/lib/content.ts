@@ -71,6 +71,15 @@ export async function extractPageMeta(tabId: number, timeoutMs: number, descript
   };
 }
 
+export async function extractPageMarkdown(tabId: number, timeoutMs: number, maxHtmlChars: number) {
+  const result = await executeWithTimeout(tabId, timeoutMs, (cap: number) => {
+    const raw = document.documentElement?.outerHTML || "";
+    return raw.length > cap ? raw.slice(0, cap) : raw;
+  }, [maxHtmlChars]);
+
+  return typeof result === "string" ? result : "";
+}
+
 export async function extractSelectorSignal(tabId: number, specs: Array<Record<string, unknown>>, timeoutMs: number, selectorValueMaxLength: number) {
   if (!specs.length) {
     return null;
@@ -81,6 +90,9 @@ export async function extractSelectorSignal(tabId: number, specs: Array<Record<s
     const missing: string[] = [];
     const errors: Record<string, string> = {};
     const hints: Record<string, string> = {};
+    const stringCap = typeof maxLen === "number" && maxLen > 0 ? maxLen : 500;
+    const htmlCap = typeof maxLen === "number" && maxLen > 0 ? maxLen : 4096;
+    const normalizeStringValue = (value: string, cap: number) => value.replace(/\s+/g, " ").trim().slice(0, cap);
 
     for (const raw of rawSpecs) {
       const selector = typeof raw.selector === "string" ? raw.selector : "";
@@ -94,6 +106,9 @@ export async function extractSelectorSignal(tabId: number, specs: Array<Record<s
       const textMode = typeof raw.textMode === "string" ? raw.textMode.trim().toLowerCase() : "";
       const normalizedTextMode = textMode === "includes" ? "contains" : textMode;
       const textModes = new Set(["", "contains", "exact", "starts-with"]);
+      const styleProps = Array.isArray(raw.styleProps)
+        ? raw.styleProps.filter((prop): prop is string => typeof prop === "string").map((prop) => prop.trim()).filter(Boolean)
+        : [];
       if (!textModes.has(normalizedTextMode)) {
         errors[name] = `Unsupported textMode: ${textMode || "unknown"}`;
         hints[name] = "Use textMode: contains | exact | starts-with";
@@ -102,16 +117,6 @@ export async function extractSelectorSignal(tabId: number, specs: Array<Record<s
 
       try {
         const elements = Array.from(document.querySelectorAll(selector));
-        if (!elements.length) {
-          missing.push(name);
-          if (selector.includes(":contains(")) {
-            hints[name] = "CSS :contains() is not supported; use selector text filters or a different selector.";
-          } else {
-            hints[name] = "No matches found; capture a screenshot for context or adjust the selector.";
-          }
-          continue;
-        }
-
         const matchesText = (el: Element) => {
           if (!text) {
             return true;
@@ -127,40 +132,106 @@ export async function extractSelectorSignal(tabId: number, specs: Array<Record<s
         };
 
         const filtered = text ? elements.filter(matchesText) : elements;
+        if (attr === "count") {
+          values[name] = filtered.length;
+          continue;
+        }
+
+        if (!elements.length) {
+          missing.push(name);
+          if (selector.includes(":contains(")) {
+            hints[name] = "CSS :contains() is not supported; use selector text filters or a different selector.";
+          } else {
+            hints[name] = "No matches found; capture a screenshot for context or adjust the selector.";
+          }
+          continue;
+        }
+
         if (!filtered.length) {
           missing.push(name);
           hints[name] = "Selector matched elements, but none matched the text filter; capture a screenshot for context or adjust text/textMode.";
           continue;
         }
 
-        const getValue = (el: Element) => {
-          let value = "";
+        const getValue = (el: Element): string | number | boolean | Record<string, unknown> | null => {
           if (attr === "text") {
-            value = el.textContent || "";
-          } else if (attr === "href-url" || attr === "src-url") {
+            return normalizeStringValue(el.textContent || "", stringCap);
+          }
+          if (attr === "html") {
+            return normalizeStringValue(el.outerHTML || "", htmlCap);
+          }
+          if (attr === "href-url" || attr === "src-url") {
             const rawValue = el.getAttribute(attr === "href-url" ? "href" : "src") || "";
             if (!rawValue) {
-              value = "";
-            } else {
-              try {
-                const resolved = new URL(rawValue, document.baseURI);
-                if (resolved.protocol === "http:" || resolved.protocol === "https:") {
-                  value = resolved.toString();
-                } else {
-                  value = "";
-                }
-              } catch {
-                value = "";
-              }
+              return "";
             }
-          } else {
-            value = el.getAttribute(attr) || "";
+            try {
+              const resolved = new URL(rawValue, document.baseURI);
+              if (resolved.protocol === "http:" || resolved.protocol === "https:") {
+                return normalizeStringValue(resolved.toString(), stringCap);
+              }
+              return "";
+            } catch {
+              return "";
+            }
           }
-          return value.replace(/\s+/g, " ").trim().slice(0, maxLen);
+          if (attr === "value") {
+            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
+              return el.value;
+            }
+            return null;
+          }
+          if (attr === "box") {
+            const rect = el.getBoundingClientRect();
+            return {
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height,
+              top: rect.top,
+              right: rect.right,
+              bottom: rect.bottom,
+              left: rect.left,
+            };
+          }
+          if (attr === "styles") {
+            if (!styleProps.length) {
+              return {};
+            }
+            const computed = window.getComputedStyle(el);
+            const selected: Record<string, unknown> = {};
+            for (const prop of styleProps) {
+              selected[prop] = computed.getPropertyValue(prop);
+            }
+            return selected;
+          }
+          if (attr === "visible") {
+            const computed = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            const styleVisible = computed.display !== "none" && computed.visibility !== "hidden" && computed.opacity !== "0";
+            const hasRenderedBox = rect.width > 0 || rect.height > 0;
+            return styleVisible && hasRenderedBox;
+          }
+          if (attr === "enabled") {
+            const candidate = el as Element & { disabled?: boolean };
+            return candidate.disabled !== true && el.getAttribute("aria-disabled") !== "true";
+          }
+          if (attr === "checked") {
+            if (el instanceof HTMLInputElement) {
+              return el.checked;
+            }
+            return el.getAttribute("aria-checked") === "true";
+          }
+          return normalizeStringValue(el.getAttribute(attr) || "", stringCap);
         };
 
+        if (attr === "box") {
+          values[name] = getValue(filtered[0]);
+          continue;
+        }
+
         if (all) {
-          values[name] = filtered.map(getValue).filter((val) => val.length > 0);
+          values[name] = filtered.map(getValue).filter((val) => typeof val !== "string" || val.length > 0);
         } else {
           values[name] = getValue(filtered[0]);
         }

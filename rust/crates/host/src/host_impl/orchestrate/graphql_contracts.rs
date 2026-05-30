@@ -14,6 +14,7 @@ use super::*;
 /// A CommandSender that returns pre-recorded responses for specific actions.
 struct ContractSender {
     responses: Mutex<Vec<(String, Value)>>,
+    requests: Mutex<Vec<(String, Value)>>,
     snapshot: Value,
 }
 
@@ -21,6 +22,7 @@ impl ContractSender {
     fn new(snapshot: Value) -> Self {
         Self {
             responses: Mutex::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
             snapshot,
         }
     }
@@ -31,10 +33,22 @@ impl ContractSender {
             .unwrap()
             .push((action.to_string(), response));
     }
+
+    fn request_params(&self, action: &str) -> Option<Value> {
+        self.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|(a, params)| (a == action).then(|| params.clone()))
+    }
 }
 
 impl tabctl_graphql::CommandSender for ContractSender {
-    fn send(&self, action: &str, _params: Value) -> Result<Value, String> {
+    fn send(&self, action: &str, params: Value) -> Result<Value, String> {
+        self.requests
+            .lock()
+            .unwrap()
+            .push((action.to_string(), params));
         let responses = self.responses.lock().unwrap();
         for (a, r) in responses.iter() {
             if a == action {
@@ -558,6 +572,94 @@ fn contract_inspect_tabs() {
         .as_array()
         .expect("signals should be an array");
     assert!(first_signals.iter().any(|s| s["name"] == "page-meta"));
+}
+
+#[test]
+fn contract_inspect_tabs_extended_selector() {
+    let snapshot = sample_snapshot();
+    let sender = Arc::new(ContractSender::new(snapshot.clone()));
+    sender.add_response(
+        "inspect",
+        serde_json::json!({
+            "totals": {"tabs": 1, "signals": 1, "tasks": 1},
+            "entries": [{
+                "tabId": 1, "windowId": 100, "url": "https://a.com", "title": "A",
+                "signals": {"btn": {"values": [], "missing": [], "errors": {}, "hints": {}}}
+            }]
+        }),
+    );
+
+    let result = tabctl_graphql::execute(
+        r#"{ inspectTabs(windowId: 100, selectors: [
+            { name: "btn", selector: ".btn", attr: "styles", styleProps: ["color", "font-size"], all: true, text: "Click", textMode: "contains" }
+        ]) { totals { tasks } entries { tabId signals { name valueJson } } } }"#,
+        None,
+        snapshot,
+        sender.clone(),
+    )
+    .unwrap();
+
+    assert!(
+        result.get("errors").is_none(),
+        "errors: {:?}",
+        result.get("errors")
+    );
+    assert_eq!(result["data"]["inspectTabs"]["totals"]["tasks"], 1);
+
+    let params = sender
+        .request_params("inspect")
+        .expect("inspect params should be recorded");
+    assert_eq!(params["windowId"], 100);
+    assert_eq!(params["signals"], serde_json::json!(["selector"]));
+    assert_eq!(params["selectorSpecs"][0]["name"], "btn");
+    assert_eq!(params["selectorSpecs"][0]["selector"], ".btn");
+    assert_eq!(params["selectorSpecs"][0]["attr"], "styles");
+    assert_eq!(params["selectorSpecs"][0]["all"], true);
+    assert_eq!(params["selectorSpecs"][0]["text"], "Click");
+    assert_eq!(params["selectorSpecs"][0]["textMode"], "contains");
+    assert_eq!(
+        params["selectorSpecs"][0]["styleProps"],
+        serde_json::json!(["color", "font-size"])
+    );
+}
+
+#[test]
+fn contract_read_markdown_inspect() {
+    // Uses the real ReadMarkdownOrchestration wired through the GraphQL layer
+    let snapshot = sample_snapshot();
+    let sender = ContractSender::new(snapshot.clone());
+    sender.add_response(
+        "read-markdown",
+        serde_json::json!({
+            "totals": { "tabs": 1, "tasks": 1 },
+            "entries": [{
+                "tabId": 1, "windowId": 100, "url": "https://a.com", "title": "A",
+                "markdown": "# A\n\nContent.", "chars": 13,
+                "truncated": false, "extracted": true, "error": null
+            }]
+        }),
+    );
+
+    let result = tabctl_graphql::execute(
+        r#"{ readTabs(windowId: 100) { totals { tabs tasks } entries { tabId url markdown chars truncated extracted error } } }"#,
+        None,
+        snapshot,
+        std::sync::Arc::new(sender),
+    )
+    .unwrap();
+
+    assert!(
+        result.get("errors").is_none(),
+        "errors: {:?}",
+        result.get("errors")
+    );
+    let totals = &result["data"]["readTabs"]["totals"];
+    assert_eq!(totals["tabs"], 1);
+    assert_eq!(totals["tasks"], 1);
+    let entries = result["data"]["readTabs"]["entries"].as_array().unwrap();
+    assert_eq!(entries[0]["tabId"], 1);
+    assert_eq!(entries[0]["markdown"], "# A\n\nContent.");
+    assert!(entries[0]["error"].is_null());
 }
 
 // ── report ───────────────────────────────────────────────────────────────

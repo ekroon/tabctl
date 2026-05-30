@@ -147,6 +147,11 @@ tabctl schema
 | `tabctl history` | Show recent undo history entries |
 | `tabctl setup`, `doctor`, `policy`, `profile-*` | Local/admin profile management |
 
+Read-only browser features include:
+- `inspectTabs` for page metadata and selector-based reads
+- `readTabs` for page HTML → Markdown conversion with best-effort extraction
+- `reportTabs`, `captureScreenshots`, and browser-state history queries for summaries and context
+
 See [CLI.md](CLI.md) for the full command reference, options, and examples.
 
 ## GraphQL examples
@@ -160,6 +165,12 @@ tabctl query '{ analyze(windowId: 123, staleDays: 30) { totalTabs duplicateTabs 
 
 # Inspect page metadata
 tabctl query 'query { inspectTabs(tabIds: [456], signals: ["page-meta"]) { entries { tabId signals { name valueJson } } } }'
+
+# Inspect selectors with typed attrs and filters
+tabctl query 'query { inspectTabs(windowId: 123, selectors: [{ name: "prices", selector: ".price", attr: "text", all: true }, { name: "buy_now_visible", selector: "button.buy-now", attr: "visible" }, { name: "buy_now_style", selector: "button.buy-now", attr: "styles", styleProps: ["color", "background-color"] }, { name: "review_count", selector: ".review", attr: "count" }, { name: "email_value", selector: "input[type=email]", attr: "value" }]) { entries { tabId url signals { name valueJson } } } }'
+
+# Read tab content as Markdown (best-effort extraction by default)
+tabctl query 'query { readTabs(windowId: 123, extract: true, maxChars: 30000) { entries { tabId title url markdown chars truncated extracted error } } }'
 
 # Generate reports
 tabctl query '{ reportTabs(windowId: 123) { entries { tabId title url description } } }'
@@ -415,7 +426,8 @@ TABCTL_VERSION_MODE=release npm run build
 Notes:
 - Browser reads and mutations now go through GraphQL via `tabctl query`.
 - Reports include short descriptions from page metadata and a fallback snippet.
-- `inspectTabs` supports `page-meta` and `selector` signals.
+- `inspectTabs` supports `page-meta` plus selector reads with `all`, `text`, `textMode`, `styleProps`, and attrs such as `html`, `value`, `count`, `box`, `styles`, `visible`, `enabled`, and `checked`.
+- `readTabs` converts main-frame page HTML to Markdown, with best-effort content extraction enabled by default and status surfaced through `extracted`/`error` fields.
 - `captureScreenshots` returns tile metadata and image data from GraphQL.
 - `undoAction` accepts either an explicit `txid` or `latest: true`.
 - `tabctl history --json` returns a top-level JSON array.

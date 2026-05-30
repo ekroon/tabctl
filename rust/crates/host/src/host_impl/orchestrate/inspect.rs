@@ -41,6 +41,10 @@ struct Signal {
     name: String,
     selector: Option<String>,
     attr: Option<String>,
+    all: bool,
+    text: Option<String>,
+    text_mode: Option<String>,
+    style_props: Option<Vec<String>>,
     timeout_ms: Option<i64>,
 }
 
@@ -61,6 +65,16 @@ impl Signal {
             name,
             selector: v.get("selector").and_then(Value::as_str).map(String::from),
             attr: v.get("attr").and_then(Value::as_str).map(String::from),
+            all: v.get("all").and_then(Value::as_bool).unwrap_or(false),
+            text: v.get("text").and_then(Value::as_str).map(String::from),
+            text_mode: v.get("textMode").and_then(Value::as_str).map(String::from),
+            style_props: v.get("styleProps").and_then(Value::as_array).map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect()
+            }),
             timeout_ms: None,
         })
     }
@@ -78,6 +92,22 @@ impl Signal {
                 .and_then(Value::as_str)
                 .map(String::from),
             attr: spec.get("attr").and_then(Value::as_str).map(String::from),
+            all: spec.get("all").and_then(Value::as_bool).unwrap_or(false),
+            text: spec.get("text").and_then(Value::as_str).map(String::from),
+            text_mode: spec
+                .get("textMode")
+                .and_then(Value::as_str)
+                .map(String::from),
+            style_props: spec
+                .get("styleProps")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                }),
             timeout_ms: None,
         })
     }
@@ -88,6 +118,10 @@ impl Signal {
             name: "page-meta".to_string(),
             selector: None,
             attr: None,
+            all: false,
+            text: None,
+            text_mode: None,
+            style_props: None,
             timeout_ms: None,
         }
     }
@@ -95,11 +129,25 @@ impl Signal {
     fn to_execute_params(&self, tab_id: i64) -> Value {
         match self.signal_type.as_str() {
             "selector" => {
-                let selectors = vec![serde_json::json!({
+                let mut selector = serde_json::json!({
                     "name": self.name,
                     "selector": self.selector,
                     "attr": self.attr.as_deref().unwrap_or("text"),
-                })];
+                });
+                if self.all {
+                    selector["all"] = Value::Bool(true);
+                }
+                if let Some(text) = &self.text {
+                    selector["text"] = Value::String(text.clone());
+                }
+                if let Some(text_mode) = &self.text_mode {
+                    selector["textMode"] = Value::String(text_mode.clone());
+                }
+                if let Some(style_props) = &self.style_props {
+                    selector["styleProps"] =
+                        Value::Array(style_props.iter().cloned().map(Value::String).collect());
+                }
+                let selectors = vec![selector];
                 let mut params = serde_json::json!({
                     "tabId": tab_id,
                     "func": "extractSelectorSignal",
@@ -199,6 +247,10 @@ impl InspectOrchestration {
                                     name: id.clone(),
                                     selector: None,
                                     attr: None,
+                                    all: false,
+                                    text: None,
+                                    text_mode: None,
+                                    style_props: None,
                                     timeout_ms: None,
                                 });
                             }
@@ -525,5 +577,74 @@ mod tests {
         assert_eq!(action, "p:execute-script");
         // First task should be page-meta
         assert_eq!(params["func"], "extractPageMeta");
+    }
+
+    #[test]
+    fn inspect_selector_specs_pass_through_style_props() {
+        let params = serde_json::json!({
+            "signals": ["selector"],
+            "selectorSpecs": [
+                {
+                    "name": "ctaStyles",
+                    "selector": ".cta",
+                    "attr": "styles",
+                    "styleProps": ["display", "color"]
+                }
+            ],
+        });
+        let mut orch = InspectOrchestration::new(&params);
+        let _ = orch.start();
+        let snap = snapshot_with(vec![
+            serde_json::json!({"tabId": 1, "windowId": 100, "url": "https://example.com", "title": "Ex", "groupId": -1}),
+        ]);
+
+        let step = orch.step(snap);
+        let OrchStep::SendPrimitive { action, params } = &step else {
+            panic!("expected SendPrimitive, got {step:?}");
+        };
+        assert_eq!(action, "p:execute-script");
+        assert_eq!(params["func"], "extractSelectorSignal");
+        assert_eq!(
+            params["args"][0][0]["styleProps"],
+            serde_json::json!(["display", "color"])
+        );
+    }
+
+    #[test]
+    fn inspect_selector_specs_pass_through_filter_fields() {
+        let params = serde_json::json!({
+            "signals": ["selector"],
+            "selectorSpecs": [
+                {
+                    "name": "matches",
+                    "selector": ".item",
+                    "attr": "text",
+                    "all": true,
+                    "text": "Active",
+                    "textMode": "starts-with"
+                }
+            ],
+        });
+        let mut orch = InspectOrchestration::new(&params);
+        let _ = orch.start();
+        let snap = snapshot_with(vec![
+            serde_json::json!({"tabId": 1, "windowId": 100, "url": "https://example.com", "title": "Ex", "groupId": -1}),
+        ]);
+
+        let step = orch.step(snap);
+        let OrchStep::SendPrimitive { action, params } = &step else {
+            panic!("expected SendPrimitive, got {step:?}");
+        };
+        assert_eq!(action, "p:execute-script");
+        assert_eq!(params["func"], "extractSelectorSignal");
+        assert_eq!(params["args"][0][0]["all"], Value::Bool(true));
+        assert_eq!(
+            params["args"][0][0]["text"],
+            Value::String("Active".to_string())
+        );
+        assert_eq!(
+            params["args"][0][0]["textMode"],
+            Value::String("starts-with".to_string())
+        );
     }
 }

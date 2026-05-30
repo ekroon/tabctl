@@ -250,8 +250,17 @@ pub(crate) struct SelectorSpecInput {
     pub name: String,
     /// CSS selector to execute in the page.
     pub selector: String,
-    /// Attribute or extraction mode (e.g. text, href-url).
+    /// Extraction kind: text (default), attr name, href-url, src-url,
+    /// html, value, count, box, styles, visible, enabled, checked.
     pub attr: Option<String>,
+    /// When true, return all matching elements (as array). Ignored for count/box/styles/visible/enabled/checked.
+    pub all: Option<bool>,
+    /// Text filter: only include elements whose textContent contains/matches this string.
+    pub text: Option<String>,
+    /// Text filter mode: contains (default), exact, starts-with.
+    pub text_mode: Option<String>,
+    /// CSS property names to read for the 'styles' attr. Required when attr is 'styles'.
+    pub style_props: Option<Vec<String>>,
 }
 
 /// A named signal payload returned by inspectTabs.
@@ -408,6 +417,47 @@ pub(crate) struct ScreenshotResult {
     pub totals: ScreenshotTotals,
     /// Per-tab capture entries.
     pub entries: Vec<ScreenshotEntry>,
+}
+
+/// Markdown content read from a single tab.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct ReadTabEntry {
+    /// Tab identifier.
+    pub tab_id: i32,
+    /// Window identifier.
+    pub window_id: i32,
+    /// Tab URL.
+    pub url: String,
+    /// Tab title.
+    pub title: Option<String>,
+    /// Markdown rendering of the page content.
+    pub markdown: String,
+    /// Length of the markdown string in characters.
+    pub chars: i32,
+    /// Whether the markdown was truncated at maxChars.
+    pub truncated: bool,
+    /// Whether content extraction (strip nav/ads) was applied.
+    pub extracted: bool,
+    /// Error message if the tab could not be read, otherwise null.
+    pub error: Option<String>,
+}
+
+/// Summary counts for readTabs.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct ReadTabTotals {
+    /// Number of tabs attempted.
+    pub tabs: i32,
+    /// Number of page-markdown tasks executed.
+    pub tasks: i32,
+}
+
+/// Result of a readTabs query.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct ReadTabResult {
+    /// Summary counts.
+    pub totals: ReadTabTotals,
+    /// Per-tab markdown entries.
+    pub entries: Vec<ReadTabEntry>,
 }
 
 /// Result of a ping query.

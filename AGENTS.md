@@ -130,6 +130,7 @@ The `skills/` directory contains agent skills installable via the Skills CLI (`n
 - `skills/tabctl/` — CLI usage guide for agents
 - `skills/release/` — Release automation (version bump → PR → merge → tag → release)
 - `skills/git-commit/` — Conventional commit message generation
+- `.github/skills/smoke-test/` — End-of-task smoke test: unit tests, integration tests, and live browser mutation + undo verification in a disposable `TEST-Smoke-*` window
 
 ## Principles (read first)
 - Only mutate tabs that the test itself created.
@@ -177,105 +178,22 @@ Notes:
 - Extension tests (e.g., `extension.tabs.test.ts`) use a lightweight chrome stub on `globalThis.chrome` that records API calls and returns predictable results.
 
 ## Required end-of-task checks
-Always finish with:
-1. `npm test` — all unit tests must pass
-2. `npm run test:integration` — all integration tests must pass (if Chrome is available)
-3. A minimal smoke test in a new window you create (safe URLs + unique `TEST-` prefix). Verify via `tabctl group-list` or `tabctl list`.
-4. A screenshot-first smoke step: capture a screenshot before running selector-based extraction.
-5. If multiple profiles are configured, verify the active profile with `tabctl profile-show` before running smoke tests.
 
-> **Note:** Hooks provide split enforcement (fast on commit, heavy on push). If you bypass with `--no-verify` or `--no-verify` on push, run required checks manually.
+Always finish by running the `/smoke-test` skill (`.github/skills/smoke-test/SKILL.md`). It covers:
+1. `npm test` — unit tests
+2. `npm run test:integration` — integration tests (if Chrome is available)
+3. Profile verification
+4. Read-only live browser checks (`ping`, `list`, `analyze`, `report`)
+5. Mutation round-trips (close + undo, archive + undo) in a disposable `TEST-Smoke-<timestamp>` window
+6. Clean up of the test window
 
-Example (recommended for development):
-```bash
-ts=$(date +%s)
-tabctl open --new-window --url https://example.com --url https://example.org --url https://example.net --group "TEST-Smoke-${ts}"
-tabctl group-list --window last-focused
-```
+> **Note:** Hooks provide split enforcement (fast on commit, heavy on push). If you bypass with `--no-verify` on push, run `npm test` and `npm run test:integration` manually.
 
+## Smoke tests and integration tests
 
-Screenshot-first example:
-```bash
-tabctl screenshot --tab <tabId> --mode viewport
-tabctl inspect --tab <tabId> --signal selector --selector "link=a[href]" --selector-attr href-url
-```
+See `.github/skills/smoke-test/SKILL.md` for the full procedure — safe read-only checks, controlled mutation tests (close + undo, archive + undo) in a disposable `TEST-Smoke-*` window, and synthetic undo sanity checks.
 
-## Safe smoke tests (no mutations)
-Run these anytime:
-- `tabctl ping`
-- `tabctl list`
-- `tabctl analyze --stale-days 30`
-- `tabctl inspect --tab <tabId> --signal page-meta --progress`
-- `tabctl inspect --tab <tabId> --signal selector --selector "price=.price" --progress`
-- `tabctl report --format json` (no `--out`)
-
-## Controlled mutation tests (real Edge, minimal risk)
-Only use a dedicated test window and clearly labeled groups.
-
-### Setup a test window
-1. Create a new Edge window.
-2. Open three safe URLs: `https://example.com`, `https://example.org`, `https://example.net`.
-3. Group the first two tabs and name the group `TEST-Tabctl-<timestamp>`.
-4. Leave the third tab ungrouped.
-
-### Archive test
-1. Run `tabctl list` to find the test window id.
-2. Archive only that window:
-   `tabctl archive --window <windowId>`
-3. Confirm in Edge:
-   - A single Archive window exists.
-   - A group named `W# - TEST-Tabctl-<timestamp>` exists.
-   - An `W# - Ungrouped` group exists for the ungrouped tab.
-4. Undo:
-   `tabctl undo <txid>`
-
-### Close test
-1. Open a new tab in the test window (e.g. `https://example.com`).
-2. Find its `tabId` via `tabctl list`.
-3. Close that tab only:
-   `tabctl close --tab <tabId> --confirm`
-4. Undo:
-   `tabctl undo <txid>`
-
-### Report test
-1. Run `tabctl report --window <windowId> --format md --out /tmp/tab-report.md`.
-2. Verify the report includes descriptions for the example pages.
-
-## Safe usage of analyze/close
-`tabctl close` only works with explicit targets and is blocked for protected tabs by policy.
-
-Recommended safe pattern:
-1. Use `npm run test:integration` for automated close/undo testing in an isolated browser.
-2. For manual testing, use a dedicated test profile or a brand-new Edge window with only test tabs.
-3. Run `tabctl analyze`.
-4. Use `tabctl close --tab <tabId> --confirm` for a single test tab.
-5. Run `tabctl undo <txid>` to restore.
-
-## Undo history sanity checks (synthetic)
-You can validate undo with a single safe tab by inserting a synthetic record.
-
-1. Append a single JSON line to `$XDG_STATE_HOME/tabctl/undo.jsonl` (or `~/.local/state/tabctl/undo.jsonl`) (manual or via a tiny script).
-2. Use a unique `txid` and a safe URL (`https://example.com`).
-
-Example line (single tab, forces a new window):
-
-```
-{"txid":"tx-test-undo-1","createdAt":1700000000000,"action":"close","summary":{"closedTabs":1},"undo":{"action":"close","tabs":[{"url":"https://example.com","title":"Example","pinned":false,"active":false,"from":{"windowId":0,"index":0,"groupId":-1,"groupTitle":null,"groupColor":null,"groupCollapsed":null}}]}}
-```
-
-Then run:
-- `tabctl undo tx-test-undo-1`
-
-This should open a single tab in a new window.
-
-## Integration tests (isolated headless Chrome)
-The integration test launches a headless Chrome with its own `--user-data-dir`, loads the extension via CDP, and runs real CLI commands against it. No real tabs are touched.
-
-Run:
-- `npm run test:integration`
-
-This covers destructive paths (close, undo) safely. To test additional destructive commands (archive, dedupe), add Rust-side scenarios in `rust/crates/tabctl/tests/browser_integration.rs` (keep `scripts/ci/integration-bootstrap.js` as thin browser bootstrap only).
-On Windows, the Rust browser integration test uses TCP transport (`TABCTL_TRANSPORT=tcp`) for CLI requests because named-pipe transport can intermittently stall in CI.
+Integration tests run against an isolated headless Chrome (`npm run test:integration`) and cover destructive paths safely. To test additional destructive commands (archive, dedupe), add Rust-side scenarios in `rust/crates/tabctl/tests/browser_integration.rs` (keep `scripts/ci/integration-bootstrap.js` as thin browser bootstrap only). On Windows, use `TABCTL_TRANSPORT=tcp`.
 
 ## Code architecture style
 

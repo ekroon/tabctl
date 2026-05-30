@@ -40,12 +40,27 @@ tabctl help query
 # Inspect page metadata
  tabctl query 'query { inspectTabs(tabIds: [456], signals: ["page-meta"]) { entries { tabId signals { name valueJson } } } }'
 
+# Inspect selectors with typed attrs and filters
+ tabctl query 'query { inspectTabs(windowId: 123, selectors: [{ name: "prices", selector: ".price", attr: "text", all: true, text: "$", textMode: "contains" }, { name: "submit_visible", selector: "#submit", attr: "visible" }, { name: "submit_style", selector: "#submit", attr: "styles", styleProps: ["color", "background-color"] }, { name: "item_count", selector: ".item", attr: "count" }, { name: "email_value", selector: "input[type=email]", attr: "value" }, { name: "tos_checked", selector: "input[name=terms]", attr: "checked" }]) { entries { tabId url signals { name valueJson } } } }'
+
+# Read page content as Markdown
+ tabctl query 'query { readTabs(windowId: 123, extract: true, maxChars: 30000) { entries { tabId title url markdown chars truncated extracted error } } }'
+
 # Build reports
  tabctl query '{ reportTabs(windowId: 123) { entries { tabId title url description } } }'
 
 # Capture screenshots
  tabctl query 'query { captureScreenshots(tabIds: [456], mode: "viewport") { entries { tabId tiles { index width height } } } }'
 ```
+
+## Read-only extraction notes
+
+- `readTabs` converts main-frame HTML to Markdown. `extract: true` is a heuristic, best-effort readability pass; check `extracted` and `error` per tab.
+- `readTabs` v1 does not traverse cross-origin iframes or shadow DOM, and skips non-scriptable URLs automatically.
+- `inspectTabs` selector attrs now include `html`, `value`, `count`, `box`, `styles`, `visible`, `enabled`, and `checked`.
+- `visible` means rendered and not `display:none`, `visibility:hidden`, or `opacity:0`.
+- `enabled` means the element is not disabled and `aria-disabled != "true"`.
+- `checked` uses `input.checked` for form controls, otherwise `aria-checked == "true"`.
 
 ## Mutation examples
 
