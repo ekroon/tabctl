@@ -9,6 +9,14 @@ allowed-tools: Bash
 
 Run the full end-of-task verification sequence for tabctl: unit tests, integration tests, and a live browser smoke test using an isolated browser profile. Always run this after code changes.
 
+Prefer the progress-reporting smoke runner:
+
+```bash
+npm run test:smoke
+```
+
+It prints each step before it starts, streams long-running test output, starts and stops the isolated smoke browser, validates GraphQL responses, and cleans up smoke-created tabs/windows. Use the manual commands below only when debugging an individual step.
+
 The live browser steps use a **dedicated, agent-controlled Edge/Chrome instance** started by `scripts/smoke-browser.js`. This instance is isolated: it uses a temp profile dir, loads the local `dist/extension` build, and is torn down at the end. The user's real browser is never touched.
 
 ## Current CLI model

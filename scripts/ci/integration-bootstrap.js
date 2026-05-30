@@ -12,12 +12,39 @@ function log(message) {
   process.stderr.write(`[integration-bootstrap] ${message}\n`);
 }
 
+function isNoisyChromeLine(line) {
+  return (
+    line.includes("chrome/updater/") ||
+    line.includes("EdgeUpdater") ||
+    line.includes("crash_reporter") ||
+    line.includes("crash_client") ||
+    line.includes("Crashpad") ||
+    line.includes("crashpad/") ||
+    line.includes("component_update_utils") ||
+    line.includes("registration_request.cc") ||
+    line.includes("event_history.cc") ||
+    line.includes("UPDATER_PROCESS") ||
+    line.includes("UpdaterMain") ||
+    line.includes("TensorFlow Lite XNNPACK delegate") ||
+    line.includes("Trying to load the allocator multiple times") ||
+    line.includes("Requested load of chrome://newtab/ for incorrect profile type") ||
+    line.includes("task_policy_set TASK_CATEGORY_POLICY") ||
+    line.includes("task_policy_set TASK_SUPPRESSION_POLICY") ||
+    line.includes("Device is MDM enrolled") ||
+    line.includes("No tenant ID in PSSO device cert") ||
+    line.includes("Microsoft Corp tenant not confirmed") ||
+    line.includes("IsInternalAadJoinedMac") ||
+    line.includes("Failed to write history event: logging not initialized") ||
+    line.includes("Shutdown: 0")
+  );
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function testScratchRoot() {
-  const root = process.env.TABCTL_BOOTSTRAP_TMP_ROOT || path.join(process.cwd(), ".tabctl", "it");
+  const root = process.env.TABCTL_BOOTSTRAP_TMP_ROOT || path.join("/tmp", "tctl-it");
   fs.mkdirSync(root, { recursive: true });
   return root;
 }
@@ -230,9 +257,17 @@ async function main() {
 
   chrome = launchChrome(chromePath, userDataDir);
   chrome.stdout?.resume();
+  let chromeStderrBuffer = "";
   chrome.stderr?.on("data", (chunk) => {
-    const text = chunk.toString("utf8").trim();
-    if (text) log(`chrome-stderr: ${text.slice(-300)}`);
+    chromeStderrBuffer += chunk.toString("utf8");
+    const lines = chromeStderrBuffer.split(/\r?\n/);
+    chromeStderrBuffer = lines.pop() || "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed && !isNoisyChromeLine(trimmed)) {
+        log(`chrome-stderr: ${trimmed}`);
+      }
+    }
   });
   chrome.on("exit", (code) => {
     if (!shuttingDown) {

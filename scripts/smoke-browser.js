@@ -35,6 +35,30 @@ function log(msg) {
   process.stderr.write(`[smoke-browser] ${msg}\n`);
 }
 
+function isNoisyBrowserLine(line) {
+  return (
+    line.includes("chrome/updater/") ||
+    line.includes("EdgeUpdater") ||
+    line.includes("crash_reporter") ||
+    line.includes("crash_client") ||
+    line.includes("Crashpad") ||
+    line.includes("crashpad/") ||
+    line.includes("component_update_utils") ||
+    line.includes("registration_request.cc") ||
+    line.includes("IsInternalAadJoinedMac") ||
+    line.includes("UPDATER_PROCESS") ||
+    line.includes("TensorFlow Lite XNNPACK delegate") ||
+    line.includes("Trying to load the allocator multiple times") ||
+    line.includes("Requested load of chrome://newtab/ for incorrect profile type") ||
+    line.includes("task_policy_set TASK_CATEGORY_POLICY") ||
+    line.includes("task_policy_set TASK_SUPPRESSION_POLICY") ||
+    line.includes("Device is MDM enrolled") ||
+    line.includes("No tenant ID in PSSO device cert") ||
+    line.includes("Microsoft Corp tenant not confirmed") ||
+    line.includes("returned 0")
+  );
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -241,9 +265,17 @@ async function main() {
     detached: false,
   });
 
+  let browserStderrBuffer = "";
   browserProc.stderr.on("data", (chunk) => {
-    const text = chunk.toString("utf8").trim();
-    if (text) log(`browser: ${text.slice(-200)}`);
+    browserStderrBuffer += chunk.toString("utf8");
+    const lines = browserStderrBuffer.split(/\r?\n/);
+    browserStderrBuffer = lines.pop() || "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed && !isNoisyBrowserLine(trimmed)) {
+        log(`browser: ${trimmed}`);
+      }
+    }
   });
 
   browserProc.on("exit", (code) => {

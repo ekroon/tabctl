@@ -70,12 +70,10 @@ static SANDBOX_COUNTER: AtomicU32 = AtomicU32::new(0);
 /// Create an isolated sandbox directory for tests. Caller is responsible for cleanup.
 pub fn create_sandbox() -> PathBuf {
     let seq = SANDBOX_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let sandbox = repo_root().join(".tabctl").join("it").join(format!(
-        "l{}-{}-{}",
-        now_ms(),
-        std::process::id(),
-        seq
-    ));
+    let root = std::env::var("TABCTL_TEST_TMP_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/tmp/tctl-it"));
+    let sandbox = root.join(format!("l{}-{}-{}", now_ms(), std::process::id(), seq));
     fs::create_dir_all(&sandbox).expect("create test sandbox");
     sandbox
 }
@@ -625,10 +623,10 @@ fn init_browser() -> SharedBrowser {
         extension_dir.display()
     );
 
-    let sandbox = root
-        .join(".tabctl")
-        .join("it")
-        .join(format!("s{}", now_ms()));
+    let sandbox_root = std::env::var("TABCTL_TEST_TMP_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/tmp/tctl-it"));
+    let sandbox = sandbox_root.join(format!("s{}", now_ms()));
     fs::create_dir_all(&sandbox).expect("create test sandbox");
     // NOTE: TempDirGuard is intentionally NOT used — static values never Drop.
     // The atexit handler cleans up the bootstrap process; the sandbox dir is
