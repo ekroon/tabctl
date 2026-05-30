@@ -382,23 +382,40 @@ impl Query {
         #[graphql(description = "Wait timeout in ms.")] wait_timeout_ms: Option<i32>,
     ) -> FieldResult<InspectResult> {
         let mut params = scoped_params(window_id, group_id, group_title, ungrouped, tab_ids);
+        let has_selector_specs = selectors.as_ref().is_some_and(|s| !s.is_empty());
         if let Some(mut requested_signals) = signals {
-            if selectors.as_ref().is_some_and(|s| !s.is_empty())
-                && !requested_signals.iter().any(|s| s == "selector")
-            {
+            if has_selector_specs && !requested_signals.iter().any(|s| s == "selector") {
                 requested_signals.push("selector".to_string());
             }
             params.insert("signals".to_string(), serde_json::json!(requested_signals));
+        } else if has_selector_specs {
+            params.insert("signals".to_string(), serde_json::json!(["selector"]));
         }
         if let Some(selector_specs) = selectors {
             let values: Vec<serde_json::Value> = selector_specs
                 .into_iter()
                 .map(|selector| {
-                    serde_json::json!({
-                        "name": selector.name,
-                        "selector": selector.selector,
-                        "attr": selector.attr,
-                    })
+                    let mut obj = serde_json::Map::new();
+                    obj.insert("name".to_string(), serde_json::json!(selector.name));
+                    obj.insert("selector".to_string(), serde_json::json!(selector.selector));
+                    if let Some(attr) = &selector.attr {
+                        obj.insert("attr".to_string(), serde_json::json!(attr));
+                    }
+                    if let Some(all) = selector.all {
+                        if all {
+                            obj.insert("all".to_string(), serde_json::json!(true));
+                        }
+                    }
+                    if let Some(text) = &selector.text {
+                        obj.insert("text".to_string(), serde_json::json!(text));
+                    }
+                    if let Some(text_mode) = &selector.text_mode {
+                        obj.insert("textMode".to_string(), serde_json::json!(text_mode));
+                    }
+                    if let Some(style_props) = &selector.style_props {
+                        obj.insert("styleProps".to_string(), serde_json::json!(style_props));
+                    }
+                    serde_json::Value::Object(obj)
                 })
                 .collect();
             if !values.is_empty() {
@@ -424,6 +441,47 @@ impl Query {
             .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
 
         Ok(parse_inspect_result(&response))
+    }
+
+    /// Read tabs as Markdown — convert each tab's page HTML to clean Markdown for agent consumption.
+    #[allow(clippy::too_many_arguments)]
+    fn read_tabs(
+        ctx: &GqlContext,
+        #[graphql(description = "Restrict to this window.")] window_id: Option<i32>,
+        #[graphql(description = "Restrict to this group (by group ID).")] group_id: Option<i32>,
+        #[graphql(description = "Restrict to tabs whose group has this title.")]
+        group_title: Option<String>,
+        #[graphql(description = "When true, read only ungrouped tabs.")] ungrouped: Option<bool>,
+        #[graphql(description = "Restrict to these specific tab IDs.")] tab_ids: Option<Vec<i32>>,
+        #[graphql(description = "Enable content extraction (strip nav/ads). Default: true.")]
+        extract: Option<bool>,
+        #[graphql(description = "Maximum raw HTML characters to read per tab. Default: 500000.")]
+        max_html_chars: Option<i32>,
+        #[graphql(description = "Maximum Markdown characters per tab. Default: 50000.")]
+        max_chars: Option<i32>,
+        #[graphql(description = "Timeout in ms for each tab read. Default: 15000.")]
+        timeout_ms: Option<i32>,
+    ) -> FieldResult<ReadTabResult> {
+        let mut params = scoped_params(window_id, group_id, group_title, ungrouped, tab_ids);
+        if let Some(v) = extract {
+            params.insert("extract".to_string(), serde_json::json!(v));
+        }
+        if let Some(v) = max_html_chars {
+            params.insert("maxHtmlChars".to_string(), serde_json::json!(v));
+        }
+        if let Some(v) = max_chars {
+            params.insert("maxChars".to_string(), serde_json::json!(v));
+        }
+        if let Some(v) = timeout_ms {
+            params.insert("timeoutMs".to_string(), serde_json::json!(v));
+        }
+
+        let response = ctx
+            .sender
+            .send("read-markdown", serde_json::Value::Object(params))
+            .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
+
+        Ok(parse_read_result(&response))
     }
 
     /// Build a report of tab metadata and extracted descriptions.
@@ -812,6 +870,56 @@ fn parse_inspect_result(response: &serde_json::Value) -> InspectResult {
         .unwrap_or_default();
 
     InspectResult { totals, entries }
+}
+
+fn parse_read_result(response: &serde_json::Value) -> ReadTabResult {
+    let totals = ReadTabTotals {
+        tabs: response
+            .get("totals")
+            .and_then(|t| t.get("tabs"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32,
+        tasks: response
+            .get("totals")
+            .and_then(|t| t.get("tasks"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32,
+    };
+
+    let entries = response
+        .get("entries")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| {
+                    Some(ReadTabEntry {
+                        tab_id: e.get("tabId")?.as_i64()? as i32,
+                        window_id: e.get("windowId")?.as_i64()? as i32,
+                        url: e
+                            .get("url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        title: e.get("title").and_then(|v| v.as_str()).map(String::from),
+                        markdown: e
+                            .get("markdown")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        chars: e.get("chars").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                        truncated: e
+                            .get("truncated")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                        extracted: e.get("extracted").and_then(|v| v.as_bool()).unwrap_or(true),
+                        error: e.get("error").and_then(|v| v.as_str()).map(String::from),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    ReadTabResult { totals, entries }
 }
 
 fn parse_report_result(response: &serde_json::Value) -> ReportResult {
@@ -1867,6 +1975,14 @@ mod tests {
                         }
                     }]
                 })),
+                "read-markdown" => Ok(serde_json::json!({
+                    "totals": { "tabs": 1, "tasks": 1 },
+                    "entries": [{
+                        "tabId": 1, "windowId": 100, "url": "https://a.com", "title": "A",
+                        "markdown": "# Hello\n\nWorld.", "chars": 16,
+                        "truncated": false, "extracted": true, "error": null
+                    }]
+                })),
                 "report" => Ok(serde_json::json!({
                     "generatedAt": 1700000001234.0,
                     "entries": [{
@@ -2173,6 +2289,63 @@ mod tests {
     }
 
     #[test]
+    fn query_inspect_tabs_selector_spec_extended() {
+        let result = exec(
+            r#"{
+                inspectTabs(windowId: 100, selectors: [
+                    { name: "price", selector: ".price", attr: "text", all: true, text: "USD", textMode: "contains" },
+                    { name: "style", selector: ".btn", attr: "styles", styleProps: ["color", "font-size"] }
+                ]) {
+                    totals { tabs }
+                    entries { tabId signals { name valueJson } }
+                }
+            }"#,
+        );
+        assert!(
+            result.get("errors").is_none(),
+            "errors: {:?}",
+            result.get("errors")
+        );
+        let inspect = &result["data"]["inspectTabs"];
+        assert_eq!(inspect["totals"]["tabs"], 1);
+        let entries = inspect["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        let signals = entries[0]["signals"].as_array().unwrap();
+        assert!(signals.iter().any(|s| s["name"] == "price"));
+    }
+
+    #[test]
+    fn query_read_tabs_basic() {
+        let result = exec(
+            r#"{ readTabs(windowId: 100) { totals { tabs tasks } entries { tabId markdown chars truncated extracted error } } }"#,
+        );
+        assert!(
+            result.get("errors").is_none(),
+            "errors: {:?}",
+            result.get("errors")
+        );
+        assert_eq!(result["data"]["readTabs"]["totals"]["tabs"], 1);
+        let entries = result["data"]["readTabs"]["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["tabId"], 1);
+        assert_eq!(entries[0]["markdown"], "# Hello\n\nWorld.");
+        assert_eq!(entries[0]["chars"], 16);
+        assert!(entries[0]["error"].is_null());
+    }
+
+    #[test]
+    fn query_read_tabs_with_options() {
+        let result = exec(
+            r#"{ readTabs(windowId: 100, extract: false, maxChars: 5000, maxHtmlChars: 200000) { totals { tabs } entries { tabId extracted } } }"#,
+        );
+        assert!(
+            result.get("errors").is_none(),
+            "errors: {:?}",
+            result.get("errors")
+        );
+    }
+
+    #[test]
     fn query_report_tabs() {
         let result = exec(
             "{ reportTabs(windowId: 100) { generatedAt totals { tabs } entries { tabId description groupColor } } }",
@@ -2318,12 +2491,16 @@ mod tests {
         assert!(sdl.contains("type InspectResult"));
         assert!(sdl.contains("type ReportResult"));
         assert!(sdl.contains("type ScreenshotResult"));
+        assert!(sdl.contains("type ReadTabResult"));
+        assert!(sdl.contains("type ReadTabEntry"));
+        assert!(sdl.contains("readTabs"));
         assert!(sdl.contains("type PingResult"));
         assert!(sdl.contains("type HistoryEntry"));
         assert!(sdl.contains("type ReloadResult"));
         assert!(sdl.contains("type SkippedUrl"));
         assert!(sdl.contains("type OpenResult"));
         assert!(sdl.contains("input SelectorSpecInput"));
+        assert!(sdl.contains("styleProps"));
     }
 
     #[test]

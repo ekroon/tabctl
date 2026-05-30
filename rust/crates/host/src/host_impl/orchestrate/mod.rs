@@ -14,13 +14,13 @@ mod merge_window;
 mod move_group;
 mod move_tab;
 mod open;
+mod read_markdown;
 mod refresh;
 pub(super) mod report;
 pub(crate) mod resolve;
 pub(crate) mod scope;
 mod screenshot;
 mod undo;
-
 /// Multi-step orchestration of extension primitives for a single CLI request.
 ///
 /// Each implementation encodes a state machine: `start()` produces the first
@@ -100,6 +100,9 @@ pub(super) fn orchestration_for(action: &str, params: &Value) -> Option<Box<dyn 
         "undo" => Some(Box::new(undo::UndoOrchestration::new(params))),
         "analyze" => Some(Box::new(analyze::AnalyzeOrchestration::new(params))),
         "inspect" => Some(Box::new(inspect::InspectOrchestration::new(params))),
+        "read-markdown" => Some(Box::new(read_markdown::ReadMarkdownOrchestration::new(
+            params,
+        ))),
         "report" => Some(Box::new(report::ReportOrchestration::new(params))),
         "screenshot" => Some(Box::new(screenshot::ScreenshotOrchestration::new(params))),
         "snapshot" => Some(Box::new(list::SnapshotOrchestration)),

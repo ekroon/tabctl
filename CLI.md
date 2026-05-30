@@ -64,8 +64,14 @@ Use `tabctl schema` when you need field discovery, then use `tabctl query` for b
 # Analyze duplicates and stale tabs
  tabctl query '{ analyze(windowId: 123, staleDays: 30) { totalTabs duplicateTabs staleTabs raw } }'
 
-# Inspect page metadata or selectors
+# Inspect page metadata
  tabctl query 'query { inspectTabs(tabIds: [456], signals: ["page-meta"]) { totals { tabs tasks } entries { tabId signals { name valueJson } } } }'
+
+# Inspect selectors with typed attrs and filters
+ tabctl query 'query { inspectTabs(windowId: 123, selectors: [{ name: "prices", selector: ".price", attr: "text", all: true }, { name: "checkout_visible", selector: "#checkout", attr: "visible" }, { name: "checkout_style", selector: "#checkout", attr: "styles", styleProps: ["color", "background-color"] }, { name: "item_count", selector: ".line-item", attr: "count" }, { name: "email_value", selector: "input[type=email]", attr: "value" }]) { totals { tabs tasks } entries { tabId url signals { name valueJson } } } }'
+
+# Read page content as Markdown
+ tabctl query 'query { readTabs(windowId: 123, extract: true, maxChars: 50000) { totals { tabs tasks } entries { tabId title url markdown chars truncated extracted error } } }'
 
 # Generate a report with descriptions
  tabctl query '{ reportTabs(windowId: 123) { totals { tabs } entries { tabId title url description } } }'
@@ -77,6 +83,60 @@ Use `tabctl schema` when you need field discovery, then use `tabctl query` for b
  tabctl query 'query { latestBrowserState { snapshotId reason groups { logicalGroupId title browserGroupId tabUrls } } }'
  tabctl query 'query { browserStateHistory(limit: 10) { snapshotId recordedAt reason eventCount eventKinds } }'
  tabctl query 'query { browserStateGroupHistory(title: "Inbox", limit: 10) { snapshotId logicalGroupId title browserGroupId tabUrls } }'
+```
+
+### inspectTabs
+
+`inspectTabs` can return built-in signals like `page-meta` and selector-derived signals from `SelectorSpecInput`.
+
+`SelectorSpecInput` fields:
+- `name` — result key for the selector
+- `selector` — CSS selector to run in the page
+- `attr` — extraction kind or attribute name
+- `all` — return all matching values as an array; ignored for `count`, `box`, `styles`, `visible`, `enabled`, and `checked`
+- `text` — filter matches by text content before returning values
+- `textMode` — `contains` (default), `exact`, or `starts-with`
+- `styleProps` — CSS property allowlist for `attr: "styles"`
+
+Supported `attr` values:
+- `text` — text content (default)
+- any DOM attribute name such as `aria-label` or `data-testid`
+- `href-url` / `src-url` — resolved HTTP(S) URLs
+- `html` — `outerHTML` for the matched element, truncated at the per-signal cap
+- `value` — `.value` for `input`, `textarea`, and `select`; otherwise `null`
+- `count` — number of matching elements after the text filter; always numeric
+- `box` — first match bounding box: `{x, y, width, height, top, right, bottom, left}`
+- `styles` — computed-style map for the requested `styleProps`
+- `visible` — `true` when the first match is rendered and not `display:none`, `visibility:hidden`, or `opacity:0`
+- `enabled` — `true` when the first match is not disabled and `aria-disabled != "true"`
+- `checked` — `true` for checked inputs, otherwise `aria-checked == "true"`
+
+Example:
+
+```bash
+tabctl query 'query { inspectTabs(windowId: 123, selectors: [{ name: "prices", selector: ".price", attr: "text", all: true, text: "$", textMode: "contains" }, { name: "buy_now_visible", selector: "button.buy-now", attr: "visible" }, { name: "buy_now_style", selector: "button.buy-now", attr: "styles", styleProps: ["color", "background-color"] }, { name: "review_count", selector: ".review", attr: "count" }, { name: "email_value", selector: "input[type=email]", attr: "value" }, { name: "tos_checked", selector: "input[name=terms]", attr: "checked" }]) { entries { tabId url signals { name valueJson } } } }'
+```
+
+### readTabs
+
+`readTabs` reads each targeted tab's main-frame HTML and converts it to Markdown.
+
+Arguments:
+- scope via one of `windowId`, `groupId`, `groupTitle`, `tabIds`, or `ungrouped`
+- `extract` — best-effort content extraction before Markdown conversion; defaults to `true`
+- `maxChars` — maximum Markdown characters per tab; defaults to `50000`, max `200000`
+- `maxHtmlChars` — maximum raw HTML characters read per tab; defaults to `500000`, max `1000000`
+- `timeoutMs` — per-tab timeout in milliseconds; defaults to `15000`
+
+Caveats:
+- Extraction is heuristic; check `extracted` in the response to see whether it was applied.
+- v1 reads the main frame only; cross-origin iframes and shadow DOM are not traversed.
+- Non-scriptable URLs such as `chrome://` and `about:` are skipped automatically.
+
+Example:
+
+```bash
+tabctl query 'query { readTabs(groupTitle: "Research", extract: true, maxChars: 30000, timeoutMs: 15000) { totals { tabs tasks } entries { tabId windowId title url markdown chars truncated extracted error } } }'
 ```
 
 ### Mutation examples
