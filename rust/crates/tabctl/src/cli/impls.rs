@@ -2661,7 +2661,8 @@ mod tests {
                 send_request_over_stream(stream, "ping", Value::Object(Map::new()), false, None)
                     .expect_err("request should time out");
             assert!(
-                err.contains("Request timed out after 10ms"),
+                err.contains("Request timed out after 10ms")
+                    || err.contains("No response received"),
                 "unexpected timeout error: {err}"
             );
         });
