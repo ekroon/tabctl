@@ -455,7 +455,9 @@ impl Query {
         #[graphql(description = "Restrict to these specific tab IDs.")] tab_ids: Option<Vec<i32>>,
         #[graphql(description = "Enable content extraction (strip nav/ads). Default: true.")]
         extract: Option<bool>,
-        #[graphql(description = "Maximum raw HTML characters to read per tab. Default: 500000.")]
+        #[graphql(
+            description = "Maximum raw HTML characters to read per tab. Default: 500000, max: 650000."
+        )]
         max_html_chars: Option<i32>,
         #[graphql(description = "Maximum Markdown characters per tab. Default: 50000.")]
         max_chars: Option<i32>,
@@ -912,6 +914,12 @@ fn parse_read_result(response: &serde_json::Value) -> ReadTabResult {
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false),
                         extracted: e.get("extracted").and_then(|v| v.as_bool()).unwrap_or(true),
+                        status: parse_read_status(e.get("status").and_then(|v| v.as_str())),
+                        empty_reason: e
+                            .get("emptyReason")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
+                        diagnostics: parse_read_diagnostics(e.get("diagnostics")),
                         error: e.get("error").and_then(|v| v.as_str()).map(String::from),
                     })
                 })
@@ -920,6 +928,40 @@ fn parse_read_result(response: &serde_json::Value) -> ReadTabResult {
         .unwrap_or_default();
 
     ReadTabResult { totals, entries }
+}
+
+fn parse_read_status(value: Option<&str>) -> ReadTabStatus {
+    match value {
+        Some("EMPTY") => ReadTabStatus::Empty,
+        Some("UNSUPPORTED_URL") => ReadTabStatus::UnsupportedUrl,
+        Some("PROTECTED") => ReadTabStatus::Protected,
+        Some("NOT_LOADED") => ReadTabStatus::NotLoaded,
+        Some("INJECTION_FAILED") => ReadTabStatus::InjectionFailed,
+        Some("EXTRACTION_FAILED") => ReadTabStatus::ExtractionFailed,
+        Some("TIMED_OUT") => ReadTabStatus::TimedOut,
+        _ => ReadTabStatus::Read,
+    }
+}
+
+fn parse_read_diagnostics(value: Option<&serde_json::Value>) -> ReadTabDiagnostics {
+    let get_i32 = |name: &str| {
+        value
+            .and_then(|v| v.get(name))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32
+    };
+    ReadTabDiagnostics {
+        source_html_chars: get_i32("sourceHtmlChars"),
+        source_text_chars: get_i32("sourceTextChars"),
+        document_ready_state: value
+            .and_then(|v| v.get("documentReadyState"))
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        truncated_html: value
+            .and_then(|v| v.get("truncatedHtml"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+    }
 }
 
 fn parse_report_result(response: &serde_json::Value) -> ReportResult {
@@ -2317,7 +2359,7 @@ mod tests {
     #[test]
     fn query_read_tabs_basic() {
         let result = exec(
-            r#"{ readTabs(windowId: 100) { totals { tabs tasks } entries { tabId markdown chars truncated extracted error } } }"#,
+            r#"{ readTabs(windowId: 100) { totals { tabs tasks } entries { tabId markdown chars truncated extracted status emptyReason diagnostics { sourceHtmlChars sourceTextChars documentReadyState truncatedHtml } error } } }"#,
         );
         assert!(
             result.get("errors").is_none(),
@@ -2330,6 +2372,7 @@ mod tests {
         assert_eq!(entries[0]["tabId"], 1);
         assert_eq!(entries[0]["markdown"], "# Hello\n\nWorld.");
         assert_eq!(entries[0]["chars"], 16);
+        assert_eq!(entries[0]["status"], "READ");
         assert!(entries[0]["error"].is_null());
     }
 

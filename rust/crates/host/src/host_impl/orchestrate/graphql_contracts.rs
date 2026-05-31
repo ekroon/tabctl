@@ -635,13 +635,20 @@ fn contract_read_markdown_inspect() {
             "entries": [{
                 "tabId": 1, "windowId": 100, "url": "https://a.com", "title": "A",
                 "markdown": "# A\n\nContent.", "chars": 13,
-                "truncated": false, "extracted": true, "error": null
+                "truncated": false, "extracted": true, "status": "READ", "emptyReason": null,
+                "diagnostics": {
+                    "sourceHtmlChars": 120,
+                    "sourceTextChars": 10,
+                    "documentReadyState": "complete",
+                    "truncatedHtml": false
+                },
+                "error": null
             }]
         }),
     );
 
     let result = tabctl_graphql::execute(
-        r#"{ readTabs(windowId: 100) { totals { tabs tasks } entries { tabId url markdown chars truncated extracted error } } }"#,
+        r#"{ readTabs(windowId: 100) { totals { tabs tasks } entries { tabId url markdown chars truncated extracted status emptyReason diagnostics { sourceHtmlChars sourceTextChars documentReadyState truncatedHtml } error } } }"#,
         None,
         snapshot,
         std::sync::Arc::new(sender),
@@ -659,6 +666,8 @@ fn contract_read_markdown_inspect() {
     let entries = result["data"]["readTabs"]["entries"].as_array().unwrap();
     assert_eq!(entries[0]["tabId"], 1);
     assert_eq!(entries[0]["markdown"], "# A\n\nContent.");
+    assert_eq!(entries[0]["status"], "READ");
+    assert_eq!(entries[0]["diagnostics"]["documentReadyState"], "complete");
     assert!(entries[0]["error"].is_null());
 }
 

@@ -1,4 +1,4 @@
-use juniper::{GraphQLInputObject, GraphQLObject};
+use juniper::{GraphQLEnum, GraphQLInputObject, GraphQLObject};
 
 /// A browser tab.
 #[derive(Debug, Clone, GraphQLObject)]
@@ -419,6 +419,40 @@ pub(crate) struct ScreenshotResult {
     pub entries: Vec<ScreenshotEntry>,
 }
 
+/// Status for a tab Markdown read attempt.
+#[derive(Debug, Clone, Copy, GraphQLEnum)]
+pub(crate) enum ReadTabStatus {
+    /// Markdown was produced.
+    Read,
+    /// The page was reachable but contained no convertible content.
+    Empty,
+    /// The URL cannot be accessed by browser content scripts.
+    UnsupportedUrl,
+    /// Browser policy or permissions blocked access to the page.
+    Protected,
+    /// The page had not finished loading when it was read.
+    NotLoaded,
+    /// Content-script injection failed.
+    InjectionFailed,
+    /// Page extraction or Markdown conversion failed.
+    ExtractionFailed,
+    /// Page extraction exceeded the timeout.
+    TimedOut,
+}
+
+/// Diagnostics captured while reading tab Markdown.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct ReadTabDiagnostics {
+    /// Raw HTML characters observed before applying maxHtmlChars.
+    pub source_html_chars: i32,
+    /// Visible text characters observed in the document body.
+    pub source_text_chars: i32,
+    /// Browser document.readyState at extraction time.
+    pub document_ready_state: Option<String>,
+    /// Whether the raw HTML was truncated before conversion.
+    pub truncated_html: bool,
+}
+
 /// Markdown content read from a single tab.
 #[derive(Debug, Clone, GraphQLObject)]
 pub(crate) struct ReadTabEntry {
@@ -436,8 +470,14 @@ pub(crate) struct ReadTabEntry {
     pub chars: i32,
     /// Whether the markdown was truncated at maxChars.
     pub truncated: bool,
-    /// Whether content extraction (strip nav/ads) was applied.
+    /// Whether Kreuzberg preprocessing was applied before conversion.
     pub extracted: bool,
+    /// Structured read status for this tab.
+    pub status: ReadTabStatus,
+    /// Machine-readable reason when Markdown is empty or unavailable.
+    pub empty_reason: Option<String>,
+    /// Extraction and conversion diagnostics.
+    pub diagnostics: ReadTabDiagnostics,
     /// Error message if the tab could not be read, otherwise null.
     pub error: Option<String>,
 }

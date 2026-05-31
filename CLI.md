@@ -71,7 +71,7 @@ Use `tabctl schema` when you need field discovery, then use `tabctl query` for b
  tabctl query 'query { inspectTabs(windowId: 123, selectors: [{ name: "prices", selector: ".price", attr: "text", all: true }, { name: "checkout_visible", selector: "#checkout", attr: "visible" }, { name: "checkout_style", selector: "#checkout", attr: "styles", styleProps: ["color", "background-color"] }, { name: "item_count", selector: ".line-item", attr: "count" }, { name: "email_value", selector: "input[type=email]", attr: "value" }]) { totals { tabs tasks } entries { tabId url signals { name valueJson } } } }'
 
 # Read page content as Markdown
- tabctl query 'query { readTabs(windowId: 123, extract: true, maxChars: 50000) { totals { tabs tasks } entries { tabId title url markdown chars truncated extracted error } } }'
+ tabctl query 'query { readTabs(windowId: 123, extract: true, maxChars: 50000) { totals { tabs tasks } entries { tabId title url markdown chars truncated extracted status emptyReason diagnostics { sourceHtmlChars sourceTextChars documentReadyState truncatedHtml } error } } }'
 
 # Generate a report with descriptions
  tabctl query '{ reportTabs(windowId: 123) { totals { tabs } entries { tabId title url description } } }'
@@ -123,20 +123,21 @@ tabctl query 'query { inspectTabs(windowId: 123, selectors: [{ name: "prices", s
 
 Arguments:
 - scope via one of `windowId`, `groupId`, `groupTitle`, `tabIds`, or `ungrouped`
-- `extract` — best-effort content extraction before Markdown conversion; defaults to `true`
+- `extract` — enables Kreuzberg standard preprocessing before Markdown conversion; defaults to `true`
 - `maxChars` — maximum Markdown characters per tab; defaults to `50000`, max `200000`
-- `maxHtmlChars` — maximum raw HTML characters read per tab; defaults to `500000`, max `1000000`
+- `maxHtmlChars` — maximum raw HTML characters read per tab; defaults to `500000`, max `650000`
 - `timeoutMs` — per-tab timeout in milliseconds; defaults to `15000`
 
 Caveats:
-- Extraction is heuristic; check `extracted` in the response to see whether it was applied.
+- Markdown conversion uses the Kreuzberg `html-to-markdown` converter in the native host.
+- Check `status`, `emptyReason`, `diagnostics`, and `error` per tab; empty Markdown is not reported as a clean success.
 - v1 reads the main frame only; cross-origin iframes and shadow DOM are not traversed.
-- Non-scriptable URLs such as `chrome://` and `about:` are skipped automatically.
+- Non-scriptable URLs such as `chrome://` and `about:` are returned with `status: UNSUPPORTED_URL`.
 
 Example:
 
 ```bash
-tabctl query 'query { readTabs(groupTitle: "Research", extract: true, maxChars: 30000, timeoutMs: 15000) { totals { tabs tasks } entries { tabId windowId title url markdown chars truncated extracted error } } }'
+tabctl query 'query { readTabs(groupTitle: "Research", extract: true, maxChars: 30000, timeoutMs: 15000) { totals { tabs tasks } entries { tabId windowId title url markdown chars truncated extracted status emptyReason diagnostics { sourceHtmlChars sourceTextChars documentReadyState truncatedHtml } error } } }'
 ```
 
 ### Mutation examples

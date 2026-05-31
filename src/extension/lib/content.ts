@@ -35,6 +35,42 @@ export async function executeWithTimeout<T>(
   }
 }
 
+export type ScriptExecutionResult<T> =
+  | { kind: "ok"; value: T | null }
+  | { kind: "timeout" }
+  | { kind: "error"; message: string };
+
+export async function executeWithTimeoutDetailed<T>(
+  tabId: number,
+  timeoutMs: number,
+  func: (...args: Array<any>) => T,
+  args: Array<unknown> = [],
+): Promise<ScriptExecutionResult<T>> {
+  const execPromise: Promise<ScriptExecutionResult<T>> = chrome.scripting.executeScript({
+    target: { tabId },
+    func,
+    args,
+  }).then((result): ScriptExecutionResult<T> => {
+    if (!result || !Array.isArray(result)) {
+      return { kind: "ok", value: null };
+    }
+    const [{ result: value }] = result as Array<{ result?: T | null }>;
+    return { kind: "ok", value: value ?? null };
+  }).catch((err: unknown) => ({
+    kind: "error",
+    message: err instanceof Error ? err.message : String(err),
+  }));
+
+  const timeoutPromise = new Promise<ScriptExecutionResult<T>>((resolve) => {
+    const handle = setTimeout(() => {
+      clearTimeout(handle);
+      resolve({ kind: "timeout" });
+    }, timeoutMs);
+  });
+
+  return Promise.race([execPromise, timeoutPromise]);
+}
+
 export async function extractPageMeta(tabId: number, timeoutMs: number, descriptionMaxLength: number) {
   const result = await executeWithTimeout(tabId, timeoutMs, () => {
     const pickContent = (selector: string) => {
@@ -78,6 +114,79 @@ export async function extractPageMarkdown(tabId: number, timeoutMs: number, maxH
   }, [maxHtmlChars]);
 
   return typeof result === "string" ? result : "";
+}
+
+type PageHtmlPayload = {
+  html: string;
+  sourceHtmlChars: number;
+  sourceTextChars: number;
+  documentReadyState: string;
+  truncatedHtml: boolean;
+};
+
+function injectionStatus(message: string) {
+  const lower = message.toLowerCase();
+  if (lower.includes("cannot access") || lower.includes("permission") || lower.includes("extensions gallery")) {
+    return "PROTECTED";
+  }
+  return "INJECTION_FAILED";
+}
+
+export async function extractPageHtml(tabId: number, timeoutMs: number, maxHtmlChars: number) {
+  const result = await executeWithTimeoutDetailed<PageHtmlPayload>(tabId, timeoutMs, (cap: number) => {
+    const raw = document.documentElement?.outerHTML || "";
+    const text = document.body?.innerText || document.documentElement?.textContent || "";
+    return {
+      html: raw.length > cap ? raw.slice(0, cap) : raw,
+      sourceHtmlChars: raw.length,
+      sourceTextChars: text.length,
+      documentReadyState: document.readyState,
+      truncatedHtml: raw.length > cap,
+    };
+  }, [maxHtmlChars]);
+
+  if (result.kind === "timeout") {
+    return {
+      status: "TIMED_OUT",
+      html: "",
+      sourceHtmlChars: 0,
+      sourceTextChars: 0,
+      documentReadyState: null,
+      truncatedHtml: false,
+      error: `Timed out after ${timeoutMs}ms`,
+    };
+  }
+
+  if (result.kind === "error") {
+    return {
+      status: injectionStatus(result.message),
+      html: "",
+      sourceHtmlChars: 0,
+      sourceTextChars: 0,
+      documentReadyState: null,
+      truncatedHtml: false,
+      error: result.message,
+    };
+  }
+
+  if (!result.value) {
+    return {
+      status: "EXTRACTION_FAILED",
+      html: "",
+      sourceHtmlChars: 0,
+      sourceTextChars: 0,
+      documentReadyState: null,
+      truncatedHtml: false,
+      error: "Content script returned no page HTML payload",
+    };
+  }
+
+  const status = result.value.documentReadyState === "loading" ? "NOT_LOADED" : "READ";
+  return {
+    status,
+    ...result.value,
+    error: null,
+  };
 }
 
 export async function extractSelectorSignal(tabId: number, specs: Array<Record<string, unknown>>, timeoutMs: number, selectorValueMaxLength: number) {

@@ -168,18 +168,22 @@ query {
       chars
       truncated
       extracted
+      status
+      emptyReason
+      error
       markdown
     }
   }
 }")
 
 echo "$NOS_READ" | jq -r '.data.readTabs.entries[0] |
-  "url: \(.url)\ntitle: \(.title)\nchars: \(.chars)\ntruncated: \(.truncated)\nextracted: \(.extracted)\n\n--- MARKDOWN PREVIEW ---\n\(.markdown[:1200])"'
+  "url: \(.url)\ntitle: \(.title)\nstatus: \(.status)\nemptyReason: \(.emptyReason)\nerror: \(.error)\nchars: \(.chars)\ntruncated: \(.truncated)\nextracted: \(.extracted)\n\n--- MARKDOWN PREVIEW ---\n\(.markdown[:1200])"'
 ```
 
 Success criteria:
 
 - `readTabs.totals.tabs` is `1`.
+- `entries[0].status` is `READ`.
 - `entries[0].chars` is greater than `0`.
 - `entries[0].markdown` contains readable Markdown, not raw empty HTML.
 - `entries[0].truncated` is acceptable only if `maxChars` was intentionally low.

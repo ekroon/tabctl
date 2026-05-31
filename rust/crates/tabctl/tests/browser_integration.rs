@@ -6,8 +6,46 @@
 mod common;
 
 use common::*;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::thread::sleep;
 use std::time::Duration;
+
+fn known_markdown_fixture_url() -> String {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind known markdown fixture");
+    let addr = listener.local_addr().expect("read fixture address");
+    std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut request_buffer = [0_u8; 1024];
+            let _ = stream.read(&mut request_buffer);
+            let body = r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Known Markdown Fixture</title>
+  </head>
+  <body>
+    <main>
+      <h1>Known Markdown Heading</h1>
+      <p>This deterministic integration paragraph proves readTabs converted fixture HTML.</p>
+      <ul>
+        <li>First known list item</li>
+        <li>Second known list item</li>
+      </ul>
+      <a href="https://example.test/fixture-link">Fixture Link</a>
+    </main>
+  </body>
+</html>"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    format!("http://{addr}/known-markdown")
+}
 
 #[test]
 #[ignore = "requires built dist artifacts and Chrome"]
@@ -128,6 +166,85 @@ fn real_browser_integration_harness_passes() {
                     && entry["action"].as_str() == Some("close")
             })),
         "expected closeTabs txid in history results: {history}"
+    );
+
+    b.close_test_window(window_id);
+}
+
+#[test]
+#[ignore = "requires built dist artifacts and Chrome"]
+fn read_tabs_returns_markdown_for_known_page() {
+    let b = shared_browser();
+    let fixture_url = known_markdown_fixture_url();
+    let (window_id, tab_ids) = b.create_test_window(&[fixture_url.as_str()], None);
+    let tab_id = tab_ids[0];
+    sleep(Duration::from_secs(1));
+
+    let read = b.run_query(&format!(
+        r#"query {{ readTabs(tabIds: [{tab_id}], extract: true, maxChars: 50000, timeoutMs: 15000) {{ totals {{ tabs tasks }} entries {{ tabId url title chars truncated extracted status emptyReason diagnostics {{ sourceHtmlChars sourceTextChars documentReadyState truncatedHtml }} error markdown }} }} }}"#
+    ));
+    assert_ok("readTabs known markdown page", &read);
+    let data = &response_data(&read)["readTabs"];
+    assert_eq!(
+        data["totals"]["tabs"].as_i64(),
+        Some(1),
+        "readTabs should return one tab: {read}"
+    );
+    assert_eq!(
+        data["totals"]["tasks"].as_i64(),
+        Some(1),
+        "readTabs should run extraction for the known http page: {read}"
+    );
+
+    let entry = &data["entries"][0];
+    assert_eq!(entry["tabId"].as_i64(), Some(tab_id));
+    assert_eq!(entry["status"].as_str(), Some("READ"), "{read}");
+    assert_eq!(entry["emptyReason"], serde_json::Value::Null);
+    assert_eq!(entry["error"], serde_json::Value::Null);
+    assert_eq!(entry["extracted"].as_bool(), Some(true));
+    assert_eq!(entry["truncated"].as_bool(), Some(false));
+    assert!(
+        entry["chars"].as_i64().unwrap_or(0) > 0,
+        "readTabs should report Markdown characters: {read}"
+    );
+    assert!(
+        entry["diagnostics"]["sourceHtmlChars"]
+            .as_i64()
+            .unwrap_or(0)
+            > 0,
+        "readTabs should report source HTML diagnostics: {read}"
+    );
+    assert!(
+        entry["diagnostics"]["sourceTextChars"]
+            .as_i64()
+            .unwrap_or(0)
+            > 0,
+        "readTabs should report source text diagnostics: {read}"
+    );
+    assert_eq!(
+        entry["diagnostics"]["documentReadyState"].as_str(),
+        Some("complete")
+    );
+    assert_eq!(entry["diagnostics"]["truncatedHtml"].as_bool(), Some(false));
+
+    let markdown = entry["markdown"]
+        .as_str()
+        .expect("readTabs should return Markdown text");
+    assert!(
+        markdown.contains("Known Markdown Heading"),
+        "expected known heading in Markdown: {markdown}"
+    );
+    assert!(
+        markdown.contains("deterministic integration paragraph"),
+        "expected known paragraph in Markdown: {markdown}"
+    );
+    assert!(
+        markdown.contains("First known list item"),
+        "expected known list item in Markdown: {markdown}"
+    );
+    assert!(
+        markdown.contains("Fixture Link") && markdown.contains("https://example.test/fixture-link"),
+        "expected known link in Markdown: {markdown}"
     );
 
     b.close_test_window(window_id);

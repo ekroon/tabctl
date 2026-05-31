@@ -1,5 +1,3 @@
-import { convert } from "markdown-for-agents";
-
 const HOST_NAME = "com.erwinkroon.tabctl";
 const manifest = chrome.runtime.getManifest();
 const MANIFEST_VERSION = manifest.version || "0.0.0";
@@ -582,29 +580,16 @@ async function handleAction(action: string, params: Record<string, unknown>, req
       );
     }
 
-    case "p:page-markdown": {
+    case "p:page-html": {
       const targetTabId = requireFiniteId(params.tabId, "tabId");
-      const extract = params.extract !== false;
       const maxHtmlChars = typeof params.maxHtmlChars === "number"
-        ? Math.max(1, Math.min(params.maxHtmlChars, 1_000_000))
+        ? Math.max(1, Math.min(params.maxHtmlChars, 650_000))
         : 500_000;
-      const maxChars = typeof params.maxChars === "number"
-        ? Math.max(1, Math.min(params.maxChars, 200_000))
-        : 50_000;
       const timeoutMs = typeof params.timeoutMs === "number"
         ? Math.max(1, params.timeoutMs)
         : 15_000;
 
-      const html = await content.extractPageMarkdown(targetTabId, timeoutMs, maxHtmlChars);
-      if (!html) {
-        return { markdown: "", chars: 0, truncated: false, extracted: extract };
-      }
-
-      const fullMarkdown = convert(html, { extract }).markdown;
-      const truncated = fullMarkdown.length > maxChars;
-      const markdown = truncated ? fullMarkdown.slice(0, maxChars) : fullMarkdown;
-
-      return { markdown, chars: markdown.length, truncated, extracted: extract };
+      return await content.extractPageHtml(targetTabId, timeoutMs, maxHtmlChars);
     }
 
     default:
