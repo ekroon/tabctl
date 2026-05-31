@@ -216,9 +216,10 @@ async function main() {
   readTab = readOpen.data.openTabs.tabs[0].tabId;
   log(`Opened readTabs page: tab=${readTab}`);
   await new Promise((resolve) => setTimeout(resolve, 2_000));
-  const read = await query(`query { readTabs(tabIds: [${readTab}], extract: true, maxChars: 50000, timeoutMs: 15000) { totals { tabs tasks } entries { tabId url title chars truncated extracted markdown } } }`);
+  const read = await query(`query { readTabs(tabIds: [${readTab}], extract: true, maxChars: 50000, timeoutMs: 15000) { totals { tabs tasks } entries { tabId url title chars truncated extracted status emptyReason error markdown } } }`);
   const readEntry = read.data.readTabs.entries[0];
   expect(read.data.readTabs.totals.tabs === 1, "readTabs did not return exactly one tab");
+  expect(readEntry.status === "READ", `readTabs status was ${readEntry.status}: ${readEntry.error || readEntry.emptyReason || "no detail"}`);
   expect(readEntry.chars > 0, "readTabs returned empty content");
   expect(readEntry.markdown.length > 0, "readTabs returned empty markdown");
   log(`readTabs extracted ${readEntry.chars} chars from ${readEntry.url}`);
