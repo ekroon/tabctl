@@ -269,6 +269,10 @@ jobs:
     if: ${{ always() && needs.validate.result == 'success' && needs.build.result == 'success' && needs.extension.result == 'success' && (needs.npm_publish.result == 'success' || needs.npm_publish.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
