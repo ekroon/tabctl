@@ -6,7 +6,8 @@ use tabctl_shared::{ClientInfo, NativeMessage, ProtocolError, RequestEnvelope, R
 
 use super::browser_state;
 use super::focus_store;
-use super::orchestrate::{orchestration_for, OrchStep, Orchestration};
+use super::orchestrate::{orchestration_for, OrchStep, Orchestration, OrchestrationContext};
+use super::page_cache::{OpenTabCacheKey, PageCache};
 use super::protocol::{
     add_host_metadata, add_ping_metadata, base_response, create_id, host_ping_data, host_version,
     local_actions, log_line, now_ms, trace_line, undo_actions, value_object, version_info_value,
@@ -41,6 +42,7 @@ pub(super) struct HostState {
     undo_log: PathBuf,
     state_db_path: PathBuf,
     focus_db_path: PathBuf,
+    page_cache_path: PathBuf,
     profile_name: Option<String>,
     native_channel_available: bool,
 }
@@ -87,6 +89,135 @@ impl HostState {
         }
     }
 
+    fn ingest_page_cache_capture(&self, payload: &Value) -> bool {
+        match self.try_ingest_page_cache_capture(payload) {
+            Ok(available) => available,
+            Err(err) => {
+                log_line(&format!("page-cache capture ingest failed: {err}"));
+                false
+            }
+        }
+    }
+
+    fn try_ingest_page_cache_capture(&self, payload: &Value) -> Result<bool, String> {
+        let Some(root) = payload.as_object() else {
+            return Ok(false);
+        };
+        let Some(tab) = root.get("tab").and_then(Value::as_object) else {
+            return Ok(false);
+        };
+        let Some(extraction) = root.get("extraction").and_then(Value::as_object) else {
+            return Ok(false);
+        };
+
+        if extraction.get("status").and_then(Value::as_str) != Some("READ") {
+            return Ok(false);
+        }
+
+        let Some(html) = extraction.get("html").and_then(Value::as_str) else {
+            return Ok(false);
+        };
+        if html.is_empty() {
+            return Ok(false);
+        }
+
+        let Some(tab_id) = tab.get("tabId").and_then(Value::as_i64) else {
+            return Ok(false);
+        };
+        let Some(url) = tab.get("url").and_then(Value::as_str) else {
+            return Ok(false);
+        };
+        if url.is_empty() {
+            return Ok(false);
+        }
+
+        let incognito = tab
+            .get("incognito")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let truncated_html = extraction
+            .get("truncatedHtml")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if incognito || truncated_html || is_non_scriptable_url(url) {
+            return Ok(false);
+        }
+
+        let source_html_chars = extraction
+            .get("sourceHtmlChars")
+            .and_then(Value::as_i64)
+            .unwrap_or_else(|| html.chars().count() as i64);
+        let source_text_chars = extraction
+            .get("sourceTextChars")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let document_ready_state = extraction.get("documentReadyState").and_then(Value::as_str);
+        let captured_at = root
+            .get("capturedAt")
+            .and_then(Value::as_i64)
+            .unwrap_or_else(|| now_ms() as i64);
+        let title = tab.get("title").and_then(Value::as_str);
+
+        let mut cache = PageCache::load(&self.page_cache_path);
+        if let Some(open_tabs) = page_cache_open_tabs_from_payload(root) {
+            cache.prune_to_open_tabs(self.profile_name.as_deref(), &open_tabs);
+        }
+        cache.store_success(
+            self.profile_name.as_deref(),
+            tab_id,
+            url,
+            title,
+            html,
+            source_html_chars,
+            source_text_chars,
+            document_ready_state,
+            truncated_html,
+            incognito,
+            captured_at,
+        );
+        let available = cache.has_exact_open_tab(self.profile_name.as_deref(), tab_id, url);
+        cache.save_if_dirty(&self.page_cache_path)?;
+        Ok(available)
+    }
+
+    fn page_cache_status(&self, payload: &Value) -> Value {
+        let Some((tab_id, url, incognito, discarded)) = page_cache_tab_request(payload) else {
+            return page_cache_status_value(None, None, false);
+        };
+        if incognito || discarded || is_non_scriptable_url(&url) {
+            return page_cache_status_value(Some(tab_id), Some(&url), false);
+        }
+        let cache = PageCache::load(&self.page_cache_path);
+        page_cache_status_value(
+            Some(tab_id),
+            Some(&url),
+            cache.has_exact_open_tab(self.profile_name.as_deref(), tab_id, &url),
+        )
+    }
+
+    fn page_cache_status_effect(&self, id: String, payload: &Value, available: bool) -> HostEffect {
+        let Some((tab_id, url, _, _)) = page_cache_tab_request(payload) else {
+            return HostEffect::SendNative(NativeMessage {
+                id,
+                action: None,
+                ok: Some(true),
+                progress: None,
+                params: None,
+                data: Some(page_cache_status_value(None, None, false)),
+                error: None,
+            });
+        };
+        HostEffect::SendNative(NativeMessage {
+            id,
+            action: None,
+            ok: Some(true),
+            progress: None,
+            params: None,
+            data: Some(page_cache_status_value(Some(tab_id), Some(&url), available)),
+            error: None,
+        })
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn new(
         undo_log: PathBuf,
@@ -102,6 +233,26 @@ impl HostState {
         profile_name: Option<String>,
         native_channel_available: bool,
     ) -> Self {
+        let page_cache_path = undo_log
+            .parent()
+            .map(|parent| parent.join("page-cache"))
+            .unwrap_or_else(|| PathBuf::from("page-cache"));
+        Self::new_with_native_channel_and_page_cache(
+            undo_log,
+            focus_db_path,
+            page_cache_path,
+            profile_name,
+            native_channel_available,
+        )
+    }
+
+    pub(super) fn new_with_native_channel_and_page_cache(
+        undo_log: PathBuf,
+        focus_db_path: PathBuf,
+        page_cache_path: PathBuf,
+        profile_name: Option<String>,
+        native_channel_available: bool,
+    ) -> Self {
         let state_db_path = undo_log
             .parent()
             .map(|parent| parent.join("state.db"))
@@ -112,8 +263,16 @@ impl HostState {
             undo_log,
             state_db_path,
             focus_db_path,
+            page_cache_path,
             profile_name,
             native_channel_available,
+        }
+    }
+
+    fn orchestration_context(&self) -> OrchestrationContext {
+        OrchestrationContext {
+            page_cache_path: Some(self.page_cache_path.clone()),
+            profile_name: self.profile_name.clone(),
         }
     }
 
@@ -441,7 +600,9 @@ impl HostState {
                 "record".to_string(),
                 Value::Object(record),
             )]));
-            if let Some(mut orch) = orchestration_for("undo", &undo_params) {
+            if let Some(mut orch) =
+                orchestration_for("undo", &undo_params, &self.orchestration_context())
+            {
                 let step = orch.start();
                 return self.process_orch_step(client_id, "undo", request.id, None, step, orch);
             }
@@ -544,7 +705,9 @@ impl HostState {
         // Must come before undo_actions legacy forward so migrated commands
         // use the orchestration path. Undo-tracked orchestrated commands get
         // a txid generated here.
-        if let Some(mut orch) = orchestration_for(&action, &request.params) {
+        if let Some(mut orch) =
+            orchestration_for(&action, &request.params, &self.orchestration_context())
+        {
             let txid = if undo_actions().contains(action.as_str()) {
                 Some(create_id("tx"))
             } else {
@@ -583,6 +746,22 @@ impl HostState {
                 ) {
                     log_line(&format!("browser-state sync ingest failed: {err}"));
                 }
+            } else if message.action.as_deref() == Some("page-cache-capture") {
+                let payload = message.data.unwrap_or(Value::Object(Map::new()));
+                let available = self.ingest_page_cache_capture(&payload);
+                return vec![self.page_cache_status_effect(message_id, &payload, available)];
+            } else if message.action.as_deref() == Some("page-cache-status") {
+                let payload = message.data.unwrap_or(Value::Object(Map::new()));
+                let data = self.page_cache_status(&payload);
+                return vec![HostEffect::SendNative(NativeMessage {
+                    id: message_id,
+                    action: None,
+                    ok: Some(true),
+                    progress: None,
+                    params: None,
+                    data: Some(data),
+                    error: None,
+                })];
             }
             return Vec::new();
         }
@@ -870,17 +1049,318 @@ impl HostState {
     }
 }
 
+fn page_cache_open_tabs_from_payload(root: &Map<String, Value>) -> Option<Vec<OpenTabCacheKey>> {
+    for key in ["openTabs", "tabs"] {
+        if let Some(tabs) = root.get(key).and_then(Value::as_array) {
+            let open_tabs = collect_page_cache_open_tabs(tabs);
+            if !open_tabs.is_empty() {
+                return Some(open_tabs);
+            }
+        }
+    }
+
+    root.get("snapshot").and_then(|snapshot| {
+        let open_tabs = collect_page_cache_open_tabs_from_snapshot(snapshot);
+        (!open_tabs.is_empty()).then_some(open_tabs)
+    })
+}
+
+fn collect_page_cache_open_tabs(tabs: &[Value]) -> Vec<OpenTabCacheKey> {
+    tabs.iter()
+        .filter_map(|tab| {
+            let tab = tab.as_object()?;
+            let tab_id = tab.get("tabId").and_then(Value::as_i64)?;
+            let url = tab.get("url").and_then(Value::as_str)?;
+            (!url.is_empty()).then(|| OpenTabCacheKey::new(tab_id, url))
+        })
+        .collect()
+}
+
+fn collect_page_cache_open_tabs_from_snapshot(snapshot: &Value) -> Vec<OpenTabCacheKey> {
+    let Some(snapshot) = snapshot.as_object() else {
+        return Vec::new();
+    };
+    if let Some(tabs) = snapshot.get("tabs").and_then(Value::as_array) {
+        return collect_page_cache_open_tabs(tabs);
+    }
+    snapshot
+        .get("windows")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|window| window.get("tabs").and_then(Value::as_array))
+        .flat_map(|tabs| collect_page_cache_open_tabs(tabs))
+        .collect()
+}
+
+fn page_cache_tab_request(payload: &Value) -> Option<(i64, String, bool, bool)> {
+    let root = payload.as_object()?;
+    let tab = root.get("tab").and_then(Value::as_object)?;
+    let tab_id = tab.get("tabId").and_then(Value::as_i64)?;
+    let url = tab.get("url").and_then(Value::as_str)?.to_string();
+    if url.is_empty() {
+        return None;
+    }
+    let incognito = tab
+        .get("incognito")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let discarded = tab
+        .get("discarded")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Some((tab_id, url, incognito, discarded))
+}
+
+fn page_cache_status_value(tab_id: Option<i64>, url: Option<&str>, available: bool) -> Value {
+    serde_json::json!({
+        "tabId": tab_id,
+        "url": url,
+        "available": available,
+    })
+}
+
+fn is_non_scriptable_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    !(lower.starts_with("http://") || lower.starts_with("https://"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::{Map, Value};
+    use std::fs;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn state_path(name: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("state-tests")
+            .join(format!("{}-{}-{}", name, std::process::id(), id));
+        let _ = fs::remove_dir_all(&path);
+        path
+    }
 
     fn test_state() -> HostState {
-        HostState::new(
-            std::env::temp_dir().join("tabctl-host-state-test-undo.jsonl"),
-            std::env::temp_dir().join("tabctl-host-state-test-focus.db"),
-            None,
+        let path = state_path("default");
+        HostState::new(path.join("undo.jsonl"), path.join("focus.db"), None)
+    }
+
+    fn page_cache_test_state(name: &str) -> (HostState, PathBuf) {
+        let path = state_path(name);
+        let page_cache_path = path.join("page-cache");
+        (
+            HostState::new_with_native_channel_and_page_cache(
+                path.join("undo.jsonl"),
+                path.join("focus.db"),
+                page_cache_path.clone(),
+                Some("work".to_string()),
+                true,
+            ),
+            page_cache_path,
         )
+    }
+
+    fn page_cache_capture(
+        status: &str,
+        incognito: bool,
+        truncated_html: bool,
+        html: &str,
+    ) -> NativeMessage {
+        NativeMessage {
+            id: "unsolicited-page-cache".to_string(),
+            action: Some("page-cache-capture".to_string()),
+            ok: Some(true),
+            progress: None,
+            params: None,
+            data: Some(serde_json::json!({
+                "reason": "activation",
+                "capturedAt": 12345,
+                "tab": {
+                    "tabId": 42,
+                    "windowId": 7,
+                    "index": 0,
+                    "url": "https://example.com/page#section",
+                    "title": "Example Page",
+                    "incognito": incognito
+                },
+                "extraction": {
+                    "status": status,
+                    "html": html,
+                    "sourceHtmlChars": 99,
+                    "sourceTextChars": 12,
+                    "documentReadyState": "complete",
+                    "truncatedHtml": truncated_html
+                },
+                "snapshot": {
+                    "windows": [{
+                        "tabs": [{
+                            "tabId": 42,
+                            "url": "https://example.com/page#section"
+                        }]
+                    }]
+                }
+            })),
+            error: None,
+        }
+    }
+
+    fn cached_entry(path: &Path) -> Option<super::super::page_cache::PageCacheLookup> {
+        PageCache::load(path).lookup_open_tab(Some("work"), 42, "https://example.com/page#section")
+    }
+
+    fn page_cache_status_request(tab_id: i64, url: &str) -> NativeMessage {
+        NativeMessage {
+            id: "page-cache-status-1".to_string(),
+            action: Some("page-cache-status".to_string()),
+            ok: Some(true),
+            progress: None,
+            params: None,
+            data: Some(serde_json::json!({
+                "reason": "test",
+                "tab": {
+                    "tabId": tab_id,
+                    "url": url,
+                    "incognito": false,
+                    "discarded": false
+                }
+            })),
+            error: None,
+        }
+    }
+
+    fn assert_cache_status_effect(effects: &[HostEffect], available: bool) {
+        let [HostEffect::SendNative(message)] = effects else {
+            panic!("expected one native status response");
+        };
+        assert_eq!(message.action, None);
+        assert_eq!(message.ok, Some(true));
+        let data = message.data.as_ref().expect("status data");
+        assert_eq!(data["tabId"], 42);
+        assert_eq!(data["url"], "https://example.com/page#section");
+        assert_eq!(data["available"], available);
+    }
+
+    #[test]
+    fn unsolicited_page_cache_capture_stores_valid_read() {
+        let (mut state, page_cache_path) = page_cache_test_state("valid-capture");
+        let effects = state.handle_native_message(page_cache_capture(
+            "READ",
+            false,
+            false,
+            "<html>ok</html>",
+        ));
+
+        assert_cache_status_effect(&effects, true);
+        let entry = cached_entry(&page_cache_path).expect("cached page capture");
+        assert_eq!(entry.entry.title.as_deref(), Some("Example Page"));
+        assert_eq!(entry.entry.html, "<html>ok</html>");
+        assert_eq!(entry.entry.source_html_chars, 99);
+        assert_eq!(entry.entry.source_text_chars, 12);
+        assert_eq!(
+            entry.entry.document_ready_state.as_deref(),
+            Some("complete")
+        );
+        assert_eq!(entry.entry.captured_at, 12345);
+    }
+
+    #[test]
+    fn unsolicited_page_cache_capture_skips_invalid_status() {
+        let (mut state, page_cache_path) = page_cache_test_state("invalid-status");
+        let effects = state.handle_native_message(page_cache_capture(
+            "ERROR",
+            false,
+            false,
+            "<html>ok</html>",
+        ));
+
+        assert_cache_status_effect(&effects, false);
+        assert!(cached_entry(&page_cache_path).is_none());
+    }
+
+    #[test]
+    fn unsolicited_page_cache_capture_skips_incognito() {
+        let (mut state, page_cache_path) = page_cache_test_state("incognito");
+        let effects =
+            state.handle_native_message(page_cache_capture("READ", true, false, "<html>ok</html>"));
+
+        assert_cache_status_effect(&effects, false);
+        assert!(cached_entry(&page_cache_path).is_none());
+    }
+
+    #[test]
+    fn unsolicited_page_cache_capture_skips_truncated_html() {
+        let (mut state, page_cache_path) = page_cache_test_state("truncated");
+        let effects =
+            state.handle_native_message(page_cache_capture("READ", false, true, "<html>ok</html>"));
+
+        assert_cache_status_effect(&effects, false);
+        assert!(cached_entry(&page_cache_path).is_none());
+    }
+
+    #[test]
+    fn unsolicited_page_cache_capture_save_failure_is_nonfatal() {
+        let (mut state, page_cache_path) = page_cache_test_state("save-failure");
+        fs::create_dir_all(page_cache_path.parent().expect("parent")).expect("create parent");
+        fs::write(&page_cache_path, b"not a directory").expect("create blocking file");
+
+        let effects = state.handle_native_message(page_cache_capture(
+            "READ",
+            false,
+            false,
+            "<html>ok</html>",
+        ));
+
+        assert_cache_status_effect(&effects, false);
+    }
+
+    #[test]
+    fn page_cache_status_reports_exact_cached_entry() {
+        let (mut state, page_cache_path) = page_cache_test_state("status-hit");
+        let _ = state.handle_native_message(page_cache_capture(
+            "READ",
+            false,
+            false,
+            "<html>ok</html>",
+        ));
+        assert!(cached_entry(&page_cache_path).is_some());
+
+        let effects = state.handle_native_message(page_cache_status_request(
+            42,
+            "https://example.com/page#section",
+        ));
+
+        assert_cache_status_effect(&effects, true);
+    }
+
+    #[test]
+    fn page_cache_status_does_not_report_canonical_match() {
+        let (mut state, page_cache_path) = page_cache_test_state("status-canonical-miss");
+        let _ = state.handle_native_message(page_cache_capture(
+            "READ",
+            false,
+            false,
+            "<html>ok</html>",
+        ));
+        assert!(cached_entry(&page_cache_path).is_some());
+
+        let effects = state.handle_native_message(page_cache_status_request(
+            42,
+            "https://example.com/page#other",
+        ));
+
+        let [HostEffect::SendNative(message)] = &effects[..] else {
+            panic!("expected one native status response");
+        };
+        assert_eq!(
+            message.data.as_ref().expect("status data")["available"],
+            false
+        );
     }
 
     #[test]

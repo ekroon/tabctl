@@ -44,7 +44,7 @@ tabctl help query
  tabctl query 'query { inspectTabs(windowId: 123, selectors: [{ name: "prices", selector: ".price", attr: "text", all: true, text: "$", textMode: "contains" }, { name: "submit_visible", selector: "#submit", attr: "visible" }, { name: "submit_style", selector: "#submit", attr: "styles", styleProps: ["color", "background-color"] }, { name: "item_count", selector: ".item", attr: "count" }, { name: "email_value", selector: "input[type=email]", attr: "value" }, { name: "tos_checked", selector: "input[name=terms]", attr: "checked" }]) { entries { tabId url signals { name valueJson } } } }'
 
 # Read page content as Markdown
- tabctl query 'query { readTabs(windowId: 123, extract: true, maxChars: 30000) { entries { tabId title url markdown chars truncated extracted status emptyReason diagnostics { sourceHtmlChars sourceTextChars documentReadyState truncatedHtml } error } } }'
+ tabctl query 'query { readTabs(windowId: 123, extract: true, maxChars: 30000) { entries { tabId title url markdown chars truncated extracted cached status emptyReason diagnostics { source sourceHtmlChars sourceTextChars documentReadyState truncatedHtml cachedAt cacheAgeMs } error } } }'
 
 # Build reports
  tabctl query '{ reportTabs(windowId: 123) { entries { tabId title url description } } }'
@@ -55,7 +55,7 @@ tabctl help query
 
 ## Read-only extraction notes
 
-- `readTabs` converts main-frame HTML to Markdown with Kreuzberg preprocessing. Check `status`, `emptyReason`, `diagnostics`, and `error` per tab.
+- `readTabs` converts main-frame HTML to Markdown with Kreuzberg preprocessing. Check `status`, `emptyReason`, `diagnostics`, and `error` per tab; cached fallbacks use a bounded profile-local open-tab cache refreshed by successful reads, active tab switches, and quiescent active pages, and report `status: CACHED`, `cached: true`, and cache provenance in diagnostics.
 - `readTabs` v1 does not traverse cross-origin iframes or shadow DOM; non-scriptable URLs are returned with `status: UNSUPPORTED_URL`.
 - `inspectTabs` selector attrs now include `html`, `value`, `count`, `box`, `styles`, `visible`, `enabled`, and `checked`.
 - `visible` means rendered and not `display:none`, `visibility:hidden`, or `opacity:0`.

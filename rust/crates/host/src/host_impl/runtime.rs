@@ -205,12 +205,15 @@ fn run_unix() -> io::Result<()> {
     let _ = fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600));
 
     let native_channel_available = !io::stdin().is_terminal() && !io::stdout().is_terminal();
-    let state = Arc::new(Mutex::new(HostState::new_with_native_channel(
-        PathBuf::from(&config.undo_log),
-        PathBuf::from(&config.base_data_dir).join("focus.db"),
-        config.active_profile_name.clone(),
-        native_channel_available,
-    )));
+    let state = Arc::new(Mutex::new(
+        HostState::new_with_native_channel_and_page_cache(
+            PathBuf::from(&config.undo_log),
+            PathBuf::from(&config.base_data_dir).join("focus.db"),
+            PathBuf::from(&config.data_dir).join("page-cache"),
+            config.active_profile_name.clone(),
+            native_channel_available,
+        ),
+    ));
     let clients: Clients = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let native_out: NativeWriter = Arc::new(Mutex::new(Box::new(io::stdout())));
 
@@ -472,12 +475,15 @@ fn run_windows() -> io::Result<()> {
     let pipe_file = write_pipe_endpoint_file(&data_dir, &pipe_path)?;
 
     let native_channel_available = !io::stdin().is_terminal() && !io::stdout().is_terminal();
-    let state = Arc::new(Mutex::new(HostState::new_with_native_channel(
-        PathBuf::from(&config.undo_log),
-        PathBuf::from(&config.base_data_dir).join("focus.db"),
-        config.active_profile_name.clone(),
-        native_channel_available,
-    )));
+    let state = Arc::new(Mutex::new(
+        HostState::new_with_native_channel_and_page_cache(
+            PathBuf::from(&config.undo_log),
+            PathBuf::from(&config.base_data_dir).join("focus.db"),
+            PathBuf::from(&config.data_dir).join("page-cache"),
+            config.active_profile_name.clone(),
+            native_channel_available,
+        ),
+    ));
     let clients: Clients = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let native_out: NativeWriter = Arc::new(Mutex::new(Box::new(io::stdout())));
     start_native_reader(state.clone(), clients.clone(), native_out.clone());

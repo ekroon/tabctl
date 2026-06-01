@@ -2,6 +2,7 @@ mod browser_state;
 mod dispatch;
 mod focus_store;
 mod orchestrate;
+mod page_cache;
 mod protocol;
 mod runtime;
 mod state;

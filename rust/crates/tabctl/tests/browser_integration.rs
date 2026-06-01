@@ -181,7 +181,7 @@ fn read_tabs_returns_markdown_for_known_page() {
     sleep(Duration::from_secs(1));
 
     let read = b.run_query(&format!(
-        r#"query {{ readTabs(tabIds: [{tab_id}], extract: true, maxChars: 50000, timeoutMs: 15000) {{ totals {{ tabs tasks }} entries {{ tabId url title chars truncated extracted status emptyReason diagnostics {{ sourceHtmlChars sourceTextChars documentReadyState truncatedHtml }} error markdown }} }} }}"#
+        r#"query {{ readTabs(tabIds: [{tab_id}], extract: true, maxChars: 50000, timeoutMs: 15000) {{ totals {{ tabs tasks }} entries {{ tabId url title chars truncated extracted cached status emptyReason diagnostics {{ source cachedAt cacheAgeMs sourceHtmlChars sourceTextChars documentReadyState truncatedHtml }} error markdown }} }} }}"#
     ));
     assert_ok("readTabs known markdown page", &read);
     let data = &response_data(&read)["readTabs"];
@@ -202,6 +202,7 @@ fn read_tabs_returns_markdown_for_known_page() {
     assert_eq!(entry["emptyReason"], serde_json::Value::Null);
     assert_eq!(entry["error"], serde_json::Value::Null);
     assert_eq!(entry["extracted"].as_bool(), Some(true));
+    assert_eq!(entry["cached"].as_bool(), Some(false));
     assert_eq!(entry["truncated"].as_bool(), Some(false));
     assert!(
         entry["chars"].as_i64().unwrap_or(0) > 0,
@@ -221,6 +222,9 @@ fn read_tabs_returns_markdown_for_known_page() {
             > 0,
         "readTabs should report source text diagnostics: {read}"
     );
+    assert_eq!(entry["diagnostics"]["source"].as_str(), Some("live"));
+    assert_eq!(entry["diagnostics"]["cachedAt"], serde_json::Value::Null);
+    assert_eq!(entry["diagnostics"]["cacheAgeMs"], serde_json::Value::Null);
     assert_eq!(
         entry["diagnostics"]["documentReadyState"].as_str(),
         Some("complete")
