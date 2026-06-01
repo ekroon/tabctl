@@ -456,7 +456,7 @@ impl Query {
         #[graphql(description = "Enable content extraction (strip nav/ads). Default: true.")]
         extract: Option<bool>,
         #[graphql(
-            description = "Maximum raw HTML characters to read per tab. Default: 500000, max: 650000."
+            description = "Maximum raw HTML characters to read per tab. Default: 500000, max: 1500000."
         )]
         max_html_chars: Option<i32>,
         #[graphql(description = "Maximum Markdown characters per tab. Default: 50000.")]
@@ -914,6 +914,7 @@ fn parse_read_result(response: &serde_json::Value) -> ReadTabResult {
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false),
                         extracted: e.get("extracted").and_then(|v| v.as_bool()).unwrap_or(true),
+                        cached: e.get("cached").and_then(|v| v.as_bool()).unwrap_or(false),
                         status: parse_read_status(e.get("status").and_then(|v| v.as_str())),
                         empty_reason: e
                             .get("emptyReason")
@@ -932,6 +933,7 @@ fn parse_read_result(response: &serde_json::Value) -> ReadTabResult {
 
 fn parse_read_status(value: Option<&str>) -> ReadTabStatus {
     match value {
+        Some("CACHED") => ReadTabStatus::Cached,
         Some("EMPTY") => ReadTabStatus::Empty,
         Some("UNSUPPORTED_URL") => ReadTabStatus::UnsupportedUrl,
         Some("PROTECTED") => ReadTabStatus::Protected,
@@ -951,6 +953,20 @@ fn parse_read_diagnostics(value: Option<&serde_json::Value>) -> ReadTabDiagnosti
             .unwrap_or(0) as i32
     };
     ReadTabDiagnostics {
+        source: value
+            .and_then(|v| v.get("source"))
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        cached_at: value
+            .and_then(|v| v.get("cachedAt"))
+            .and_then(|v| v.as_f64()),
+        cache_age_ms: value
+            .and_then(|v| v.get("cacheAgeMs"))
+            .and_then(|v| v.as_f64()),
+        cache_match: value
+            .and_then(|v| v.get("cacheMatch"))
+            .and_then(|v| v.as_str())
+            .map(String::from),
         source_html_chars: get_i32("sourceHtmlChars"),
         source_text_chars: get_i32("sourceTextChars"),
         document_ready_state: value
@@ -2359,7 +2375,7 @@ mod tests {
     #[test]
     fn query_read_tabs_basic() {
         let result = exec(
-            r#"{ readTabs(windowId: 100) { totals { tabs tasks } entries { tabId markdown chars truncated extracted status emptyReason diagnostics { sourceHtmlChars sourceTextChars documentReadyState truncatedHtml } error } } }"#,
+            r#"{ readTabs(windowId: 100) { totals { tabs tasks } entries { tabId markdown chars truncated extracted cached status emptyReason diagnostics { source cachedAt cacheAgeMs cacheMatch sourceHtmlChars sourceTextChars documentReadyState truncatedHtml } error } } }"#,
         );
         assert!(
             result.get("errors").is_none(),
@@ -2372,8 +2388,88 @@ mod tests {
         assert_eq!(entries[0]["tabId"], 1);
         assert_eq!(entries[0]["markdown"], "# Hello\n\nWorld.");
         assert_eq!(entries[0]["chars"], 16);
+        assert_eq!(entries[0]["cached"], false);
         assert_eq!(entries[0]["status"], "READ");
+        assert!(entries[0]["diagnostics"]["source"].is_null());
+        assert!(entries[0]["diagnostics"]["cachedAt"].is_null());
+        assert!(entries[0]["diagnostics"]["cacheAgeMs"].is_null());
+        assert!(entries[0]["diagnostics"]["cacheMatch"].is_null());
         assert!(entries[0]["error"].is_null());
+    }
+
+    #[test]
+    fn parse_read_tabs_cached_contract() {
+        let parsed = super::parse_read_result(&serde_json::json!({
+            "totals": { "tabs": 1, "tasks": 0 },
+            "entries": [{
+                "tabId": 7,
+                "windowId": 100,
+                "url": "https://cached.example/",
+                "title": "Cached",
+                "markdown": "# Cached",
+                "chars": 8,
+                "truncated": false,
+                "extracted": true,
+                "cached": true,
+                "status": "CACHED",
+                "diagnostics": {
+                    "source": "cache",
+                    "cachedAt": 1700000000000.0,
+                    "cacheAgeMs": 2500.0,
+                    "cacheMatch": "canonical",
+                    "sourceHtmlChars": 1234,
+                    "sourceTextChars": 56,
+                    "documentReadyState": "complete",
+                    "truncatedHtml": false
+                },
+                "error": null
+            }]
+        }));
+
+        assert_eq!(parsed.entries.len(), 1);
+        let entry = &parsed.entries[0];
+        assert!(entry.cached);
+        assert!(matches!(entry.status, super::ReadTabStatus::Cached));
+        assert_eq!(entry.diagnostics.source.as_deref(), Some("cache"));
+        assert_eq!(entry.diagnostics.cached_at, Some(1700000000000.0));
+        assert_eq!(entry.diagnostics.cache_age_ms, Some(2500.0));
+        assert_eq!(entry.diagnostics.cache_match.as_deref(), Some("canonical"));
+    }
+
+    #[test]
+    fn parse_read_tabs_older_cache_diagnostics_default_cache_match() {
+        let parsed = super::parse_read_result(&serde_json::json!({
+            "totals": { "tabs": 1, "tasks": 0 },
+            "entries": [{
+                "tabId": 7,
+                "windowId": 100,
+                "url": "https://cached.example/",
+                "title": "Cached",
+                "markdown": "# Cached",
+                "chars": 8,
+                "truncated": false,
+                "extracted": true,
+                "cached": true,
+                "status": "CACHED",
+                "diagnostics": {
+                    "source": "cache",
+                    "cachedAt": 1700000000000.0,
+                    "cacheAgeMs": 2500.0,
+                    "sourceHtmlChars": 1234,
+                    "sourceTextChars": 56,
+                    "documentReadyState": "complete",
+                    "truncatedHtml": false
+                },
+                "error": null
+            }]
+        }));
+
+        assert_eq!(parsed.entries.len(), 1);
+        let entry = &parsed.entries[0];
+        assert!(entry.cached);
+        assert!(matches!(entry.status, super::ReadTabStatus::Cached));
+        assert_eq!(entry.diagnostics.source.as_deref(), Some("cache"));
+        assert_eq!(entry.diagnostics.cache_match, None);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::path::PathBuf;
 
 mod analyze;
 mod archive;
@@ -26,6 +27,12 @@ mod undo;
 /// Each implementation encodes a state machine: `start()` produces the first
 /// primitive call, and `step(response)` advances the machine until it reaches
 /// `Complete` or `Error`.
+#[derive(Clone, Debug, Default)]
+pub(super) struct OrchestrationContext {
+    pub(super) page_cache_path: Option<PathBuf>,
+    pub(super) profile_name: Option<String>,
+}
+
 pub(super) trait Orchestration: Send + std::fmt::Debug {
     /// Produce the first primitive action to send to the extension.
     fn start(&mut self) -> OrchStep;
@@ -63,7 +70,11 @@ pub(super) enum OrchStep {
 ///
 /// Commands are registered here as they migrate from thick extension handlers
 /// to host-side orchestration.
-pub(super) fn orchestration_for(action: &str, params: &Value) -> Option<Box<dyn Orchestration>> {
+pub(super) fn orchestration_for(
+    action: &str,
+    params: &Value,
+    context: &OrchestrationContext,
+) -> Option<Box<dyn Orchestration>> {
     match action {
         "list" => Some(Box::new(list::ListOrchestration::new(params))),
         "group-list" => Some(Box::new(list::GroupListOrchestration::new(params))),
@@ -102,6 +113,7 @@ pub(super) fn orchestration_for(action: &str, params: &Value) -> Option<Box<dyn 
         "inspect" => Some(Box::new(inspect::InspectOrchestration::new(params))),
         "read-markdown" => Some(Box::new(read_markdown::ReadMarkdownOrchestration::new(
             params,
+            context.clone(),
         ))),
         "report" => Some(Box::new(report::ReportOrchestration::new(params))),
         "screenshot" => Some(Box::new(screenshot::ScreenshotOrchestration::new(params))),

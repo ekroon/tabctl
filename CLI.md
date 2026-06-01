@@ -71,7 +71,7 @@ Use `tabctl schema` when you need field discovery, then use `tabctl query` for b
  tabctl query 'query { inspectTabs(windowId: 123, selectors: [{ name: "prices", selector: ".price", attr: "text", all: true }, { name: "checkout_visible", selector: "#checkout", attr: "visible" }, { name: "checkout_style", selector: "#checkout", attr: "styles", styleProps: ["color", "background-color"] }, { name: "item_count", selector: ".line-item", attr: "count" }, { name: "email_value", selector: "input[type=email]", attr: "value" }]) { totals { tabs tasks } entries { tabId url signals { name valueJson } } } }'
 
 # Read page content as Markdown
- tabctl query 'query { readTabs(windowId: 123, extract: true, maxChars: 50000) { totals { tabs tasks } entries { tabId title url markdown chars truncated extracted status emptyReason diagnostics { sourceHtmlChars sourceTextChars documentReadyState truncatedHtml } error } } }'
+ tabctl query 'query { readTabs(windowId: 123, extract: true, maxChars: 50000) { totals { tabs tasks } entries { tabId title url markdown chars truncated extracted cached status emptyReason diagnostics { source sourceHtmlChars sourceTextChars documentReadyState truncatedHtml cachedAt cacheAgeMs } error } } }'
 
 # Generate a report with descriptions
  tabctl query '{ reportTabs(windowId: 123) { totals { tabs } entries { tabId title url description } } }'
@@ -125,19 +125,20 @@ Arguments:
 - scope via one of `windowId`, `groupId`, `groupTitle`, `tabIds`, or `ungrouped`
 - `extract` — enables Kreuzberg standard preprocessing before Markdown conversion; defaults to `true`
 - `maxChars` — maximum Markdown characters per tab; defaults to `50000`, max `200000`
-- `maxHtmlChars` — maximum raw HTML characters read per tab; defaults to `500000`, max `650000`
+- `maxHtmlChars` — maximum raw HTML characters read per tab; defaults to `500000`, max `1500000`
 - `timeoutMs` — per-tab timeout in milliseconds; defaults to `15000`
 
 Caveats:
 - Markdown conversion uses the Kreuzberg `html-to-markdown` converter in the native host.
 - Check `status`, `emptyReason`, `diagnostics`, and `error` per tab; empty Markdown is not reported as a clean success.
+- The host keeps a bounded profile-local cache of active/open-tab HTML from successful `readTabs` reads and active-tab refreshes; if a later live read fails for the same open tab, exact URL, duplicate exact URL, or canonical URL without fragment, `readTabs` may return cached Markdown with `status: CACHED`, `cached: true`, and cache provenance in `diagnostics.source`, `cachedAt`, `cacheAgeMs`, and `cacheMatch`.
 - v1 reads the main frame only; cross-origin iframes and shadow DOM are not traversed.
 - Non-scriptable URLs such as `chrome://` and `about:` are returned with `status: UNSUPPORTED_URL`.
 
 Example:
 
 ```bash
-tabctl query 'query { readTabs(groupTitle: "Research", extract: true, maxChars: 30000, timeoutMs: 15000) { totals { tabs tasks } entries { tabId windowId title url markdown chars truncated extracted status emptyReason diagnostics { sourceHtmlChars sourceTextChars documentReadyState truncatedHtml } error } } }'
+tabctl query 'query { readTabs(groupTitle: "Research", extract: true, maxChars: 30000, timeoutMs: 15000) { totals { tabs tasks } entries { tabId windowId title url markdown chars truncated extracted cached status emptyReason diagnostics { source sourceHtmlChars sourceTextChars documentReadyState truncatedHtml cachedAt cacheAgeMs } error } } }'
 ```
 
 ### Mutation examples

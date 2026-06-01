@@ -43,7 +43,7 @@ export type ScriptExecutionResult<T> =
 export async function executeWithTimeoutDetailed<T>(
   tabId: number,
   timeoutMs: number,
-  func: (...args: Array<any>) => T,
+  func: (...args: Array<any>) => T | Promise<T>,
   args: Array<unknown> = [],
 ): Promise<ScriptExecutionResult<T>> {
   const execPromise: Promise<ScriptExecutionResult<T>> = chrome.scripting.executeScript({
@@ -124,6 +124,23 @@ type PageHtmlPayload = {
   truncatedHtml: boolean;
 };
 
+type PageQuiescenceCounters = {
+  textChars: number;
+  htmlChars: number;
+  domElements: number;
+  resourceCount: number | null;
+};
+
+export type PageQuiescenceProbe = {
+  quiet: boolean;
+  reason: string;
+  documentReadyState: string | null;
+  before: PageQuiescenceCounters | null;
+  after: PageQuiescenceCounters | null;
+  elapsedMs: number;
+  error: string | null;
+};
+
 function injectionStatus(message: string) {
   const lower = message.toLowerCase();
   if (lower.includes("cannot access") || lower.includes("permission") || lower.includes("extensions gallery")) {
@@ -186,6 +203,128 @@ export async function extractPageHtml(tabId: number, timeoutMs: number, maxHtmlC
     status,
     ...result.value,
     error: null,
+  };
+}
+
+export async function probePageQuiescence(tabId: number, timeoutMs: number, sampleWindowMs: number) {
+  const result = await executeWithTimeoutDetailed<PageQuiescenceProbe>(tabId, timeoutMs, async (rawWindowMs: number) => {
+    const startedAt = Date.now();
+    const windowMs = Math.max(50, Math.min(Number(rawWindowMs) || 350, 1_500));
+    const htmlCap = 250_000;
+
+    const sample = (): PageQuiescenceCounters => {
+      const root = document.documentElement;
+      const bodyText = document.body?.innerText || root?.textContent || "";
+      const html = root?.outerHTML || "";
+      const resources = typeof performance !== "undefined" && typeof performance.getEntriesByType === "function"
+        ? performance.getEntriesByType("resource").length
+        : null;
+      return {
+        textChars: bodyText.length,
+        htmlChars: Math.min(html.length, htmlCap),
+        domElements: document.getElementsByTagName("*").length,
+        resourceCount: resources,
+      };
+    };
+
+    const waitForIdleWindow = () => new Promise<void>((resolve) => {
+      const win = window as Window & {
+        requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+      };
+      const done = () => setTimeout(resolve, windowMs);
+      if (typeof win.requestIdleCallback === "function") {
+        let resolved = false;
+        const finish = () => {
+          if (resolved) {
+            return;
+          }
+          resolved = true;
+          done();
+        };
+        const fallback = setTimeout(finish, windowMs + 100);
+        win.requestIdleCallback(() => {
+          clearTimeout(fallback);
+          finish();
+        }, { timeout: windowMs });
+        return;
+      }
+      setTimeout(resolve, windowMs);
+    });
+
+    try {
+      const readyState = document.readyState;
+      if (readyState !== "interactive" && readyState !== "complete") {
+        return {
+          quiet: false,
+          reason: "not-ready",
+          documentReadyState: readyState,
+          before: null,
+          after: null,
+          elapsedMs: Date.now() - startedAt,
+          error: null,
+        };
+      }
+
+      const before = sample();
+      await waitForIdleWindow();
+      const after = sample();
+      const stable = before.textChars === after.textChars
+        && before.htmlChars === after.htmlChars
+        && before.domElements === after.domElements
+        && before.resourceCount === after.resourceCount;
+
+      return {
+        quiet: stable,
+        reason: stable ? "stable" : "changed",
+        documentReadyState: document.readyState,
+        before,
+        after,
+        elapsedMs: Date.now() - startedAt,
+        error: null,
+      };
+    } catch (err) {
+      return {
+        quiet: false,
+        reason: "probe-error",
+        documentReadyState: typeof document !== "undefined" ? document.readyState : null,
+        before: null,
+        after: null,
+        elapsedMs: Date.now() - startedAt,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }, [sampleWindowMs]);
+
+  if (result.kind === "timeout") {
+    return {
+      quiet: false,
+      reason: "timed-out",
+      documentReadyState: null,
+      before: null,
+      after: null,
+      elapsedMs: timeoutMs,
+      error: `Timed out after ${timeoutMs}ms`,
+    };
+  }
+  if (result.kind === "error") {
+    return {
+      quiet: false,
+      reason: "injection-error",
+      documentReadyState: null,
+      before: null,
+      after: null,
+      elapsedMs: 0,
+      error: result.message,
+    };
+  }
+  return result.value ?? {
+    quiet: false,
+    reason: "no-result",
+    documentReadyState: null,
+    before: null,
+    after: null,
+    elapsedMs: 0,
+    error: "Content script returned no quiescence probe payload",
   };
 }
 

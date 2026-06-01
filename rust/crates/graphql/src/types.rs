@@ -424,6 +424,8 @@ pub(crate) struct ScreenshotResult {
 pub(crate) enum ReadTabStatus {
     /// Markdown was produced.
     Read,
+    /// Markdown was served from the readTabs page cache.
+    Cached,
     /// The page was reachable but contained no convertible content.
     Empty,
     /// The URL cannot be accessed by browser content scripts.
@@ -443,6 +445,14 @@ pub(crate) enum ReadTabStatus {
 /// Diagnostics captured while reading tab Markdown.
 #[derive(Debug, Clone, GraphQLObject)]
 pub(crate) struct ReadTabDiagnostics {
+    /// Provenance for the returned content, e.g. "live" or "cache".
+    pub source: Option<String>,
+    /// Cache capture timestamp in milliseconds since the Unix epoch.
+    pub cached_at: Option<f64>,
+    /// Age of the cached content when returned, in milliseconds.
+    pub cache_age_ms: Option<f64>,
+    /// Cache lookup strategy that produced cached content.
+    pub cache_match: Option<String>,
     /// Raw HTML characters observed before applying maxHtmlChars.
     pub source_html_chars: i32,
     /// Visible text characters observed in the document body.
@@ -472,6 +482,8 @@ pub(crate) struct ReadTabEntry {
     pub truncated: bool,
     /// Whether Kreuzberg preprocessing was applied before conversion.
     pub extracted: bool,
+    /// Whether the markdown came from the readTabs page cache.
+    pub cached: bool,
     /// Structured read status for this tab.
     pub status: ReadTabStatus,
     /// Machine-readable reason when Markdown is empty or unavailable.

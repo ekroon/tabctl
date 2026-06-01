@@ -170,7 +170,7 @@ tabctl query 'query { inspectTabs(tabIds: [456], signals: ["page-meta"]) { entri
 tabctl query 'query { inspectTabs(windowId: 123, selectors: [{ name: "prices", selector: ".price", attr: "text", all: true }, { name: "buy_now_visible", selector: "button.buy-now", attr: "visible" }, { name: "buy_now_style", selector: "button.buy-now", attr: "styles", styleProps: ["color", "background-color"] }, { name: "review_count", selector: ".review", attr: "count" }, { name: "email_value", selector: "input[type=email]", attr: "value" }]) { entries { tabId url signals { name valueJson } } } }'
 
 # Read tab content as Markdown (Kreuzberg preprocessing by default)
-tabctl query 'query { readTabs(windowId: 123, extract: true, maxChars: 30000) { entries { tabId title url markdown chars truncated extracted status emptyReason diagnostics { sourceHtmlChars sourceTextChars documentReadyState truncatedHtml } error } } }'
+tabctl query 'query { readTabs(windowId: 123, extract: true, maxChars: 30000) { entries { tabId title url markdown chars truncated extracted cached status emptyReason diagnostics { source sourceHtmlChars sourceTextChars documentReadyState truncatedHtml cachedAt cacheAgeMs } error } } }'
 
 # Generate reports
 tabctl query '{ reportTabs(windowId: 123) { entries { tabId title url description } } }'
@@ -427,7 +427,8 @@ Notes:
 - Browser reads and mutations now go through GraphQL via `tabctl query`.
 - Reports include short descriptions from page metadata and a fallback snippet.
 - `inspectTabs` supports `page-meta` plus selector reads with `all`, `text`, `textMode`, `styleProps`, and attrs such as `html`, `value`, `count`, `box`, `styles`, `visible`, `enabled`, and `checked`.
-- `readTabs` converts main-frame page HTML to Markdown with Kreuzberg `html-to-markdown`; per-tab `status`, `emptyReason`, `diagnostics`, and `error` distinguish empty pages, unsupported URLs, injection failures, conversion failures, and timeouts.
+- `readTabs` converts main-frame page HTML to Markdown with Kreuzberg `html-to-markdown`; per-tab `status`, `emptyReason`, `diagnostics`, and `error` distinguish empty pages, unsupported URLs, injection failures, conversion failures, timeouts, and cached fallbacks (`status: CACHED`, `cached: true`, `diagnostics.source: "cache"`).
+- Cached fallbacks use a bounded profile-local open-tab HTML cache refreshed after successful reads, active tab switches, and quiescent active pages; diagnostics include cache age and match mode when cached content is used.
 - `captureScreenshots` returns tile metadata and image data from GraphQL.
 - `undoAction` accepts either an explicit `txid` or `latest: true`.
 - `tabctl history --json` returns a top-level JSON array.

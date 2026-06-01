@@ -23,6 +23,15 @@ const KEEPALIVE_ALARM = "tabctl-keepalive";
 const RECONNECT_ALARM = "tabctl-reconnect";
 const KEEPALIVE_INTERVAL_MINUTES = 1;
 const BROWSER_STATE_SYNC_DEBOUNCE_MS = 750;
+const ACTIVE_PAGE_CACHE_DEBOUNCE_MS = 1_000;
+const ACTIVE_PAGE_CACHE_TIMEOUT_MS = 5_000;
+const MAX_PAGE_HTML_CHARS = 1_500_000;
+const ACTIVE_PAGE_CACHE_MAX_HTML_CHARS = MAX_PAGE_HTML_CHARS;
+const ACTIVE_PAGE_CACHE_QUIESCENT_DELAY_MS = 6_000;
+const ACTIVE_PAGE_CACHE_QUIESCENT_RETRY_MS = 1_000;
+const ACTIVE_PAGE_CACHE_QUIESCENT_TIMEOUT_MS = 2_500;
+const ACTIVE_PAGE_CACHE_QUIESCENT_SAMPLE_MS = 350;
+const ACTIVE_PAGE_CACHE_QUIESCENT_COOLDOWN_MS = 30_000;
 const RECONNECT_INITIAL_DELAY_MS = 250;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 const RECONNECT_ALARM_MIN_DELAY_MS = 30_000;
@@ -52,6 +61,23 @@ const browserState = {
   incognitoWindowIds: new Set<number>(),
   incognitoTabIds: new Set<number>(),
   incognitoGroupIds: new Set<number>(),
+};
+
+const activePageCache = {
+  nextId: 1,
+  timer: null as ReturnType<typeof setTimeout> | null,
+  pending: null as { tab: chrome.tabs.Tab & { id: number }; reason: string; key: string } | null,
+  quiescentTimer: null as ReturnType<typeof setTimeout> | null,
+  quiescentPending: null as {
+    tabId: number;
+    key: string;
+    reason: string;
+    attempts: number;
+  } | null,
+  inFlightKeys: new Set<string>(),
+  lastCapturedKey: null as string | null,
+  lastQuiescentCapturedKey: null as string | null,
+  lastQuiescentCapturedAt: 0,
 };
 
 function log(...args: Array<unknown>) {
@@ -178,6 +204,279 @@ function nextBrowserStateId() {
   const id = browserState.nextId;
   browserState.nextId += 1;
   return `browser-state-${Date.now()}-${id}`;
+}
+
+function nextActivePageCacheId() {
+  const id = activePageCache.nextId;
+  activePageCache.nextId += 1;
+  return `page-cache-capture-${Date.now()}-${id}`;
+}
+
+function isScriptableUrl(url: string) {
+  const lower = url.toLowerCase();
+  return lower.startsWith("http://") || lower.startsWith("https://");
+}
+
+function activePageCacheKey(tab: chrome.tabs.Tab, url: string) {
+  return `${tab.id}:${url}`;
+}
+
+function activePageCacheUrl(tab: chrome.tabs.Tab) {
+  return tab.url || tab.pendingUrl || "";
+}
+
+async function tabUrlMatches(tabId: number, expectedUrl: string) {
+  try {
+    return activePageCacheUrl(await chrome.tabs.get(tabId)) === expectedUrl;
+  } catch {
+    return false;
+  }
+}
+
+function urlMismatchPageHtmlResponse(expectedUrl: string) {
+  return {
+    status: "URL_MISMATCH",
+    html: "",
+    sourceHtmlChars: 0,
+    sourceTextChars: 0,
+    documentReadyState: null,
+    truncatedHtml: false,
+    error: `Tab URL changed before page HTML extraction completed: expected ${expectedUrl}`,
+  };
+}
+
+function isEligibleActivePageCacheTab(tab: chrome.tabs.Tab): tab is chrome.tabs.Tab & { id: number } {
+  const url = activePageCacheUrl(tab);
+  return typeof tab.id === "number"
+    && Boolean(url)
+    && tab.incognito !== true
+    && !browserState.incognitoTabIds.has(tab.id)
+    && (typeof tab.windowId !== "number" || !browserState.incognitoWindowIds.has(tab.windowId))
+    && tab.discarded !== true
+    && tab.status !== "loading"
+    && isScriptableUrl(url);
+}
+
+function clearPendingActivePageCacheCapture() {
+  if (activePageCache.timer) {
+    clearTimeout(activePageCache.timer);
+    activePageCache.timer = null;
+  }
+  activePageCache.pending = null;
+}
+
+function clearPendingQuiescentActivePageCacheCapture() {
+  if (activePageCache.quiescentTimer) {
+    clearTimeout(activePageCache.quiescentTimer);
+    activePageCache.quiescentTimer = null;
+  }
+  activePageCache.quiescentPending = null;
+}
+
+function isQuiescentCaptureCoolingDown(key: string) {
+  return activePageCache.lastQuiescentCapturedKey === key
+    && Date.now() - activePageCache.lastQuiescentCapturedAt < ACTIVE_PAGE_CACHE_QUIESCENT_COOLDOWN_MS;
+}
+
+function scheduleQuiescentActivePageCacheCapture(tab: chrome.tabs.Tab & { id: number }, reason: string, key: string) {
+  if (isQuiescentCaptureCoolingDown(key)) {
+    return;
+  }
+
+  clearPendingQuiescentActivePageCacheCapture();
+  activePageCache.quiescentPending = {
+    tabId: tab.id,
+    key,
+    reason: `${reason}:quiescent`,
+    attempts: 0,
+  };
+  activePageCache.quiescentTimer = setTimeout(() => {
+    activePageCache.quiescentTimer = null;
+    const pending = activePageCache.quiescentPending;
+    activePageCache.quiescentPending = null;
+    if (pending) {
+      void captureQuiescentActivePageCache(pending);
+    }
+  }, ACTIVE_PAGE_CACHE_QUIESCENT_DELAY_MS);
+}
+
+function scheduleActivePageCacheCapture(tab: chrome.tabs.Tab, reason: string) {
+  if (!isEligibleActivePageCacheTab(tab)) {
+    clearPendingActivePageCacheCapture();
+    clearPendingQuiescentActivePageCacheCapture();
+    return;
+  }
+
+  const url = activePageCacheUrl(tab);
+  const key = activePageCacheKey(tab, url);
+  scheduleQuiescentActivePageCacheCapture(tab, reason, key);
+  if (activePageCache.inFlightKeys.has(key) || activePageCache.lastCapturedKey === key) {
+    return;
+  }
+
+  clearPendingActivePageCacheCapture();
+  activePageCache.pending = { tab, reason, key };
+  activePageCache.timer = setTimeout(() => {
+    activePageCache.timer = null;
+    const pending = activePageCache.pending;
+    activePageCache.pending = null;
+    if (pending) {
+      void captureActivePageCache(pending.tab, pending.reason, pending.key);
+    }
+  }, ACTIVE_PAGE_CACHE_DEBOUNCE_MS);
+}
+
+async function scheduleActivePageCacheCaptureForTab(tabId: number, reason: string) {
+  try {
+    scheduleActivePageCacheCapture(await chrome.tabs.get(tabId), reason);
+  } catch (error) {
+    log("active page cache tab lookup failed", { tabId, reason, error });
+  }
+}
+
+async function scheduleActivePageCacheCaptureForWindow(windowId: number, reason: string) {
+  if (windowId === chrome.windows.WINDOW_ID_NONE) {
+    return;
+  }
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, windowId });
+    if (tab) {
+      scheduleActivePageCacheCapture(tab, reason);
+    }
+  } catch (error) {
+    log("active page cache window lookup failed", { windowId, reason, error });
+  }
+}
+
+async function currentActivePageCacheTab(tabId: number, key: string) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const url = activePageCacheUrl(tab);
+    if (!tab.active || !isEligibleActivePageCacheTab(tab) || activePageCacheKey(tab, url) !== key) {
+      return null;
+    }
+    return tab;
+  } catch {
+    return null;
+  }
+}
+
+async function rescheduleQuiescentActivePageCacheCapture(
+  pending: { tabId: number; key: string; reason: string; attempts: number },
+) {
+  if (pending.attempts >= 2 || isQuiescentCaptureCoolingDown(pending.key)) {
+    return;
+  }
+  activePageCache.quiescentPending = { ...pending, attempts: pending.attempts + 1 };
+  activePageCache.quiescentTimer = setTimeout(() => {
+    activePageCache.quiescentTimer = null;
+    const retry = activePageCache.quiescentPending;
+    activePageCache.quiescentPending = null;
+    if (retry) {
+      void captureQuiescentActivePageCache(retry);
+    }
+  }, ACTIVE_PAGE_CACHE_QUIESCENT_RETRY_MS);
+}
+
+async function captureQuiescentActivePageCache(pending: { tabId: number; key: string; reason: string; attempts: number }) {
+  if (isQuiescentCaptureCoolingDown(pending.key)) {
+    return;
+  }
+  if (activePageCache.inFlightKeys.has(pending.key)) {
+    await rescheduleQuiescentActivePageCacheCapture(pending);
+    return;
+  }
+
+  const tab = await currentActivePageCacheTab(pending.tabId, pending.key);
+  if (!tab) {
+    return;
+  }
+
+  const probe = await content.probePageQuiescence(
+    tab.id,
+    ACTIVE_PAGE_CACHE_QUIESCENT_TIMEOUT_MS,
+    ACTIVE_PAGE_CACHE_QUIESCENT_SAMPLE_MS,
+  );
+  if (!probe.quiet) {
+    await rescheduleQuiescentActivePageCacheCapture(pending);
+    return;
+  }
+
+  const captured = await captureActivePageCache(tab, pending.reason, pending.key);
+  if (captured) {
+    activePageCache.lastQuiescentCapturedKey = pending.key;
+    activePageCache.lastQuiescentCapturedAt = Date.now();
+  }
+}
+
+async function captureActivePageCache(
+  tab: chrome.tabs.Tab & { id: number },
+  reason: string,
+  key: string,
+) {
+  if (!state.port) {
+    connectNative();
+    return false;
+  }
+  if (!isEligibleActivePageCacheTab(tab) || activePageCache.inFlightKeys.has(key)) {
+    return false;
+  }
+
+  activePageCache.inFlightKeys.add(key);
+  try {
+    const captureTab = await currentActivePageCacheTab(tab.id, key);
+    if (!captureTab) {
+      return false;
+    }
+
+    const extraction = await content.extractPageHtml(captureTab.id, ACTIVE_PAGE_CACHE_TIMEOUT_MS, ACTIVE_PAGE_CACHE_MAX_HTML_CHARS);
+    if (extraction.status !== "READ" || typeof extraction.html !== "string" || extraction.html.length === 0) {
+      return false;
+    }
+
+    const verifiedTab = await currentActivePageCacheTab(captureTab.id, key);
+    if (!verifiedTab) {
+      return false;
+    }
+
+    const port = state.port;
+    if (!port) {
+      return false;
+    }
+
+    port.postMessage({
+      id: nextActivePageCacheId(),
+      action: "page-cache-capture",
+      ok: true,
+      data: {
+        reason,
+        capturedAt: Date.now(),
+        tab: {
+          tabId: verifiedTab.id,
+          windowId: verifiedTab.windowId,
+          index: verifiedTab.index,
+          url: activePageCacheUrl(verifiedTab),
+          title: verifiedTab.title,
+          groupId: verifiedTab.groupId,
+          favIconUrl: verifiedTab.favIconUrl || null,
+          status: verifiedTab.status || null,
+          pinned: verifiedTab.pinned || false,
+          active: verifiedTab.active || false,
+          incognito: verifiedTab.incognito || false,
+          discarded: verifiedTab.discarded || false,
+          lastAccessedAt: verifiedTab.lastAccessed || null,
+        },
+        extraction,
+      },
+    });
+    activePageCache.lastCapturedKey = key;
+    return true;
+  } catch (error) {
+    log("active page cache capture failed", { tabId: tab.id, reason, error });
+    return false;
+  } finally {
+    activePageCache.inFlightKeys.delete(key);
+  }
 }
 
 function normalizeEventPayload(
@@ -310,6 +609,9 @@ function registerBrowserStateListeners() {
       incognito: tab.incognito,
       changeInfo,
     });
+    if (tab.active && ("url" in changeInfo || "status" in changeInfo || "discarded" in changeInfo)) {
+      scheduleActivePageCacheCapture(tab, "tabs.onUpdated");
+    }
   });
 
   chrome.tabs?.onMoved?.addListener((tabId, moveInfo) => {
@@ -350,6 +652,7 @@ function registerBrowserStateListeners() {
       tabId: activeInfo.tabId,
       windowId: activeInfo.windowId,
     });
+    void scheduleActivePageCacheCaptureForTab(activeInfo.tabId, "tabs.onActivated");
   });
 
   chrome.tabGroups?.onCreated?.addListener((group) => {
@@ -407,6 +710,7 @@ function registerBrowserStateListeners() {
 
   chrome.windows?.onFocusChanged?.addListener((windowId) => {
     enqueueBrowserStateEvent("windows.onFocusChanged", { windowId });
+    void scheduleActivePageCacheCaptureForWindow(windowId, "windows.onFocusChanged");
   });
 }
 
@@ -582,14 +886,23 @@ async function handleAction(action: string, params: Record<string, unknown>, req
 
     case "p:page-html": {
       const targetTabId = requireFiniteId(params.tabId, "tabId");
+      const expectedUrl = typeof params.expectedUrl === "string" ? params.expectedUrl : "";
       const maxHtmlChars = typeof params.maxHtmlChars === "number"
-        ? Math.max(1, Math.min(params.maxHtmlChars, 650_000))
+        ? Math.max(1, Math.min(params.maxHtmlChars, MAX_PAGE_HTML_CHARS))
         : 500_000;
       const timeoutMs = typeof params.timeoutMs === "number"
         ? Math.max(1, params.timeoutMs)
         : 15_000;
 
-      return await content.extractPageHtml(targetTabId, timeoutMs, maxHtmlChars);
+      if (expectedUrl && !(await tabUrlMatches(targetTabId, expectedUrl))) {
+        return urlMismatchPageHtmlResponse(expectedUrl);
+      }
+
+      const result = await content.extractPageHtml(targetTabId, timeoutMs, maxHtmlChars);
+      if (expectedUrl && !(await tabUrlMatches(targetTabId, expectedUrl))) {
+        return urlMismatchPageHtmlResponse(expectedUrl);
+      }
+      return result;
     }
 
     default:
