@@ -32,6 +32,9 @@ const ACTIVE_PAGE_CACHE_QUIESCENT_RETRY_MS = 1_000;
 const ACTIVE_PAGE_CACHE_QUIESCENT_TIMEOUT_MS = 2_500;
 const ACTIVE_PAGE_CACHE_QUIESCENT_SAMPLE_MS = 350;
 const ACTIVE_PAGE_CACHE_QUIESCENT_COOLDOWN_MS = 30_000;
+const ACTIVE_PAGE_CACHE_STATUS_TIMEOUT_MS = 30_000;
+const CACHE_AVAILABLE_BADGE_TEXT = "C";
+const CACHE_AVAILABLE_BADGE_COLOR = "#2da44e";
 const RECONNECT_INITIAL_DELAY_MS = 250;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 const RECONNECT_ALARM_MIN_DELAY_MS = 30_000;
@@ -78,6 +81,7 @@ const activePageCache = {
   lastCapturedKey: null as string | null,
   lastQuiescentCapturedKey: null as string | null,
   lastQuiescentCapturedAt: 0,
+  statusRequests: new Map<string, { tabId: number; url: string }>(),
 };
 
 function log(...args: Array<unknown>) {
@@ -177,6 +181,9 @@ function connectNative() {
     state.port = port;
     resetReconnectBackoffAfterStablePort(port);
     port.onMessage.addListener((message) => {
+      if (handlePageCacheStatusMessage(message)) {
+        return;
+      }
       void handleNativeMessage(port, message);
     });
     port.onDisconnect.addListener(() => {
@@ -189,11 +196,13 @@ function connectNative() {
       if (state.port === port) {
         state.port = null;
       }
+      activePageCache.statusRequests.clear();
       clearReconnectStableTimer();
       scheduleReconnect("disconnect");
     });
     log("Native host connected");
     queueBrowserStateSync("startup");
+    void refreshActivePageCacheIndicator("connectNative");
   } catch (error) {
     log("Native host connection failed", error);
     scheduleReconnect("connect-failed");
@@ -210,6 +219,19 @@ function nextActivePageCacheId() {
   const id = activePageCache.nextId;
   activePageCache.nextId += 1;
   return `page-cache-capture-${Date.now()}-${id}`;
+}
+
+function nextActivePageCacheStatusId() {
+  const id = activePageCache.nextId;
+  activePageCache.nextId += 1;
+  return `page-cache-status-${Date.now()}-${id}`;
+}
+
+function trackPageCacheStatusRequest(id: string, tabId: number, url: string) {
+  activePageCache.statusRequests.set(id, { tabId, url });
+  setTimeout(() => {
+    activePageCache.statusRequests.delete(id);
+  }, ACTIVE_PAGE_CACHE_STATUS_TIMEOUT_MS);
 }
 
 function isScriptableUrl(url: string) {
@@ -230,6 +252,123 @@ async function tabUrlMatches(tabId: number, expectedUrl: string) {
     return activePageCacheUrl(await chrome.tabs.get(tabId)) === expectedUrl;
   } catch {
     return false;
+  }
+}
+
+async function clearCacheAvailableIndicator(tabId: number) {
+  try {
+    await chrome.action?.setBadgeText?.({ tabId, text: "" });
+    await chrome.action?.setTitle?.({ tabId, title: "Tab Control" });
+  } catch (error) {
+    log("clear cache indicator failed", { tabId, error });
+  }
+}
+
+async function setCacheAvailableIndicator(tabId: number, expectedUrl: string) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!isEligibleActivePageCacheTab(tab) || activePageCacheUrl(tab) !== expectedUrl) {
+      await clearCacheAvailableIndicator(tabId);
+      return;
+    }
+    await chrome.action?.setBadgeBackgroundColor?.({ tabId, color: CACHE_AVAILABLE_BADGE_COLOR });
+    await chrome.action?.setBadgeText?.({ tabId, text: CACHE_AVAILABLE_BADGE_TEXT });
+    await chrome.action?.setTitle?.({ tabId, title: "Tab Control - page cache available" });
+  } catch (error) {
+    log("set cache indicator failed", { tabId, error });
+  }
+}
+
+async function applyPageCacheStatus(tabId: number, expectedUrl: string, available: boolean) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (activePageCacheUrl(tab) !== expectedUrl) {
+      return;
+    }
+    if (!isEligibleActivePageCacheTab(tab) || !available) {
+      await clearCacheAvailableIndicator(tabId);
+      return;
+    }
+    await setCacheAvailableIndicator(tabId, expectedUrl);
+  } catch {
+    await clearCacheAvailableIndicator(tabId);
+  }
+}
+
+function handlePageCacheStatusMessage(message: {
+  id?: string;
+  action?: string;
+  ok?: boolean;
+  data?: Record<string, unknown>;
+}) {
+  if (!message || typeof message !== "object" || message.action) {
+    return false;
+  }
+  const requestId = typeof message.id === "string" ? message.id : "";
+  const pending = activePageCache.statusRequests.get(requestId);
+  if (!pending) {
+    return false;
+  }
+  activePageCache.statusRequests.delete(requestId);
+  const data = message.data && typeof message.data === "object" ? message.data : {};
+  const tabId = typeof data.tabId === "number" ? data.tabId : pending.tabId;
+  const url = typeof data.url === "string" ? data.url : pending.url;
+  const available = message.ok === true && data.available === true && tabId === pending.tabId && url === pending.url;
+  void applyPageCacheStatus(pending.tabId, pending.url, available);
+  return true;
+}
+
+function requestPageCacheStatus(tab: chrome.tabs.Tab, reason: string) {
+  const url = activePageCacheUrl(tab);
+  if (typeof tab.id !== "number" || !isEligibleActivePageCacheTab(tab)) {
+    if (typeof tab.id === "number") {
+      void clearCacheAvailableIndicator(tab.id);
+    }
+    return;
+  }
+  const port = state.port;
+  if (!port) {
+    connectNative();
+    void clearCacheAvailableIndicator(tab.id);
+    return;
+  }
+
+  const id = nextActivePageCacheStatusId();
+  trackPageCacheStatusRequest(id, tab.id, url);
+  port.postMessage({
+    id,
+    action: "page-cache-status",
+    ok: true,
+    data: {
+      reason,
+      requestedAt: Date.now(),
+      tab: {
+        tabId: tab.id,
+        url,
+        incognito: tab.incognito || false,
+        discarded: tab.discarded || false,
+        status: tab.status || null,
+      },
+    },
+  });
+}
+
+async function requestPageCacheStatusForTab(tabId: number, reason: string) {
+  try {
+    requestPageCacheStatus(await chrome.tabs.get(tabId), reason);
+  } catch {
+    await clearCacheAvailableIndicator(tabId);
+  }
+}
+
+async function refreshActivePageCacheIndicator(reason: string) {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab) {
+      requestPageCacheStatus(tab, reason);
+    }
+  } catch (error) {
+    log("active page cache indicator refresh failed", { reason, error });
   }
 }
 
@@ -302,11 +441,15 @@ function scheduleQuiescentActivePageCacheCapture(tab: chrome.tabs.Tab & { id: nu
 
 function scheduleActivePageCacheCapture(tab: chrome.tabs.Tab, reason: string) {
   if (!isEligibleActivePageCacheTab(tab)) {
+    if (typeof tab.id === "number") {
+      void clearCacheAvailableIndicator(tab.id);
+    }
     clearPendingActivePageCacheCapture();
     clearPendingQuiescentActivePageCacheCapture();
     return;
   }
 
+  requestPageCacheStatus(tab, reason);
   const url = activePageCacheUrl(tab);
   const key = activePageCacheKey(tab, url);
   scheduleQuiescentActivePageCacheCapture(tab, reason, key);
@@ -331,6 +474,7 @@ async function scheduleActivePageCacheCaptureForTab(tabId: number, reason: strin
     scheduleActivePageCacheCapture(await chrome.tabs.get(tabId), reason);
   } catch (error) {
     log("active page cache tab lookup failed", { tabId, reason, error });
+    await clearCacheAvailableIndicator(tabId);
   }
 }
 
@@ -431,6 +575,7 @@ async function captureActivePageCache(
 
     const extraction = await content.extractPageHtml(captureTab.id, ACTIVE_PAGE_CACHE_TIMEOUT_MS, ACTIVE_PAGE_CACHE_MAX_HTML_CHARS);
     if (extraction.status !== "READ" || typeof extraction.html !== "string" || extraction.html.length === 0) {
+      void requestPageCacheStatusForTab(captureTab.id, `${reason}:capture-failed`);
       return false;
     }
 
@@ -444,8 +589,10 @@ async function captureActivePageCache(
       return false;
     }
 
+    const id = nextActivePageCacheId();
+    trackPageCacheStatusRequest(id, verifiedTab.id, activePageCacheUrl(verifiedTab));
     port.postMessage({
-      id: nextActivePageCacheId(),
+      id,
       action: "page-cache-capture",
       ok: true,
       data: {
@@ -473,6 +620,7 @@ async function captureActivePageCache(
     return true;
   } catch (error) {
     log("active page cache capture failed", { tabId: tab.id, reason, error });
+    void requestPageCacheStatusForTab(tab.id, `${reason}:capture-error`);
     return false;
   } finally {
     activePageCache.inFlightKeys.delete(key);
@@ -609,6 +757,9 @@ function registerBrowserStateListeners() {
       incognito: tab.incognito,
       changeInfo,
     });
+    if ("url" in changeInfo || "status" in changeInfo || "discarded" in changeInfo) {
+      void clearCacheAvailableIndicator(tabId);
+    }
     if (tab.active && ("url" in changeInfo || "status" in changeInfo || "discarded" in changeInfo)) {
       scheduleActivePageCacheCapture(tab, "tabs.onUpdated");
     }
@@ -645,6 +796,12 @@ function registerBrowserStateListeners() {
       windowId: removeInfo.windowId,
       isWindowClosing: removeInfo.isWindowClosing,
     });
+    activePageCache.statusRequests.forEach((pending, requestId) => {
+      if (pending.tabId === tabId) {
+        activePageCache.statusRequests.delete(requestId);
+      }
+    });
+    void clearCacheAvailableIndicator(tabId);
   });
 
   chrome.tabs?.onActivated?.addListener((activeInfo) => {

@@ -179,6 +179,14 @@ impl PageCache {
             })
     }
 
+    pub(crate) fn has_exact_open_tab(&self, profile: Option<&str>, tab_id: i64, url: &str) -> bool {
+        self.entries.contains_key(&CacheKey {
+            profile: profile_key(profile),
+            tab_id,
+            url_key: url_key(url),
+        })
+    }
+
     #[cfg(test)]
     fn lookup_exact_open_tab(
         &self,
