@@ -25,6 +25,14 @@ fn known_markdown_fixture_url() -> String {
     <title>Known Markdown Fixture</title>
   </head>
   <body>
+    <header>
+      <h1>Navigation Shell Heading</h1>
+      <p>This noisy shell text should not dominate readTabs Markdown output.</p>
+    </header>
+    <aside>
+      <h2>Debug Panel</h2>
+      <p>Response timing, staff tools, and route diagnostics appear before content.</p>
+    </aside>
     <main>
       <h1>Known Markdown Heading</h1>
       <p>This deterministic integration paragraph proves readTabs converted fixture HTML.</p>
@@ -249,6 +257,10 @@ fn read_tabs_returns_markdown_for_known_page() {
     assert!(
         markdown.contains("Fixture Link") && markdown.contains("https://example.test/fixture-link"),
         "expected known link in Markdown: {markdown}"
+    );
+    assert!(
+        !markdown.contains("Navigation Shell Heading") && !markdown.contains("Debug Panel"),
+        "expected readTabs to prefer article content over page chrome: {markdown}"
     );
 
     b.close_test_window(window_id);
