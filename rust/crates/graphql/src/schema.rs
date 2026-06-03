@@ -977,6 +977,35 @@ fn parse_read_diagnostics(value: Option<&serde_json::Value>) -> ReadTabDiagnosti
             .and_then(|v| v.get("truncatedHtml"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        content_source: value
+            .and_then(|v| v.get("contentSource"))
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        landmark_candidate_count: get_i32("landmarkCandidateCount"),
+        selected_landmarks: value
+            .and_then(|v| v.get("selectedLandmarks"))
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .map(parse_selected_landmark)
+            .collect(),
+    }
+}
+
+fn parse_selected_landmark(value: &serde_json::Value) -> ReadTabSelectedLandmark {
+    ReadTabSelectedLandmark {
+        kind: value
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        path: value
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        text_chars: value.get("textChars").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+        html_chars: value.get("htmlChars").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
     }
 }
 

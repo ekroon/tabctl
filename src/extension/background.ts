@@ -25,7 +25,7 @@ const KEEPALIVE_INTERVAL_MINUTES = 1;
 const BROWSER_STATE_SYNC_DEBOUNCE_MS = 750;
 const ACTIVE_PAGE_CACHE_DEBOUNCE_MS = 1_000;
 const ACTIVE_PAGE_CACHE_TIMEOUT_MS = 5_000;
-const MAX_PAGE_HTML_CHARS = 1_500_000;
+const MAX_PAGE_HTML_CHARS = 10 * 1024 * 1024;
 const ACTIVE_PAGE_CACHE_MAX_HTML_CHARS = MAX_PAGE_HTML_CHARS;
 const ACTIVE_PAGE_CACHE_QUIESCENT_DELAY_MS = 6_000;
 const ACTIVE_PAGE_CACHE_QUIESCENT_RETRY_MS = 1_000;
@@ -1046,7 +1046,7 @@ async function handleAction(action: string, params: Record<string, unknown>, req
       const expectedUrl = typeof params.expectedUrl === "string" ? params.expectedUrl : "";
       const maxHtmlChars = typeof params.maxHtmlChars === "number"
         ? Math.max(1, Math.min(params.maxHtmlChars, MAX_PAGE_HTML_CHARS))
-        : 500_000;
+        : MAX_PAGE_HTML_CHARS;
       const timeoutMs = typeof params.timeoutMs === "number"
         ? Math.max(1, params.timeoutMs)
         : 15_000;

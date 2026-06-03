@@ -461,6 +461,25 @@ pub(crate) struct ReadTabDiagnostics {
     pub document_ready_state: Option<String>,
     /// Whether the raw HTML was truncated before conversion.
     pub truncated_html: bool,
+    /// Content source selected for Markdown conversion, e.g. "main-landmark" or "full-html".
+    pub content_source: Option<String>,
+    /// Number of main landmark candidates found in the source HTML.
+    pub landmark_candidate_count: i32,
+    /// Main landmarks selected for conversion.
+    pub selected_landmarks: Vec<ReadTabSelectedLandmark>,
+}
+
+/// A main landmark selected for Markdown conversion.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct ReadTabSelectedLandmark {
+    /// Landmark kind, currently "main".
+    pub kind: String,
+    /// Best-effort selector/path for the landmark.
+    pub path: String,
+    /// Visible text character count.
+    pub text_chars: i32,
+    /// HTML character count.
+    pub html_chars: i32,
 }
 
 /// Markdown content read from a single tab.

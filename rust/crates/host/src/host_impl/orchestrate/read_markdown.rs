@@ -1,4 +1,5 @@
-use html_to_markdown_rs::{convert, ConversionOptions, PreprocessingOptions};
+use html_to_markdown_rs::{convert, ConversionOptions, PreprocessingOptions, PreprocessingPreset};
+use scraper::{Html, Selector};
 use serde_json::{Map, Value};
 
 use crate::host_impl::page_cache::{OpenTabCacheKey, PageCache, PageCacheEntry, PageCacheLookup};
@@ -17,7 +18,7 @@ const STATUS_INJECTION_FAILED: &str = "INJECTION_FAILED";
 const STATUS_EXTRACTION_FAILED: &str = "EXTRACTION_FAILED";
 const STATUS_TIMED_OUT: &str = "TIMED_OUT";
 const STATUS_PROTECTED: &str = "PROTECTED";
-const MAX_HTML_CHARS_PER_READ: i64 = 1_500_000;
+const MAX_HTML_CHARS_PER_READ: i64 = 10 * 1024 * 1024;
 
 #[derive(Debug)]
 pub(crate) struct ReadMarkdownOrchestration {
@@ -294,7 +295,7 @@ fn build_unsupported_entry(tab: &ReadMarkdownTab, options: &ReadMarkdownOptions)
         false,
         Some("unsupported URL for content-script extraction"),
         Some("unsupported_url"),
-        diagnostics(0, 0, None, false),
+        diagnostics(0, 0, None, false, &full_html_selection_diagnostics()),
     )
 }
 
@@ -313,7 +314,7 @@ fn build_result_entry(
             false,
             Some("failed to read page"),
             Some("missing_response"),
-            diagnostics(0, 0, None, false),
+            diagnostics(0, 0, None, false, &full_html_selection_diagnostics()),
         );
     };
 
@@ -333,11 +334,14 @@ fn build_result_entry(
         .get("truncatedHtml")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let html = response.get("html").and_then(Value::as_str).unwrap_or("");
+    let selected = select_content_html(html);
     let diag = diagnostics(
         source_html_chars,
         source_text_chars,
         document_ready_state.as_deref(),
         truncated_html,
+        &selected.diagnostics,
     );
 
     let response_status = response
@@ -363,8 +367,7 @@ fn build_result_entry(
         );
     }
 
-    let html = response.get("html").and_then(Value::as_str).unwrap_or("");
-    if html.is_empty() {
+    if selected.html.is_empty() {
         let status = if document_ready_state.as_deref() == Some("loading") {
             STATUS_NOT_LOADED
         } else {
@@ -383,7 +386,7 @@ fn build_result_entry(
         );
     }
 
-    let conversion = convert(html, Some(conversion_options(options.extract)));
+    let conversion = convert(&selected.html, Some(conversion_options(options.extract)));
     let full_markdown = match conversion {
         Ok(result) => result.content.unwrap_or_default(),
         Err(err) => {
@@ -443,8 +446,18 @@ fn conversion_options(extract: bool) -> ConversionOptions {
     ConversionOptions {
         preprocessing: PreprocessingOptions {
             enabled: extract,
+            preset: PreprocessingPreset::Aggressive,
             ..PreprocessingOptions::default()
         },
+        skip_images: true,
+        extract_metadata: false,
+        strip_tags: vec!["svg".to_string()],
+        exclude_selectors: vec![
+            "header".to_string(),
+            "nav".to_string(),
+            "aside".to_string(),
+            "footer".to_string(),
+        ],
         ..ConversionOptions::default()
     }
 }
@@ -504,6 +517,7 @@ fn diagnostics(
     source_text_chars: i64,
     document_ready_state: Option<&str>,
     truncated_html: bool,
+    content: &ContentSelectionDiagnostics,
 ) -> Value {
     serde_json::json!({
         "sourceHtmlChars": source_html_chars,
@@ -513,7 +527,18 @@ fn diagnostics(
         "source": "live",
         "cachedAt": null,
         "cacheAgeMs": null,
+        "contentSource": content.content_source,
+        "landmarkCandidateCount": content.landmark_candidate_count,
+        "selectedLandmarks": content.selected_landmarks,
     })
+}
+
+fn full_html_selection_diagnostics() -> ContentSelectionDiagnostics {
+    ContentSelectionDiagnostics {
+        content_source: "full-html",
+        landmark_candidate_count: 0,
+        selected_landmarks: Vec::new(),
+    }
 }
 
 fn cache_diagnostics_with_truncation(
@@ -521,6 +546,7 @@ fn cache_diagnostics_with_truncation(
     cache_match: &str,
     now: i64,
     truncated_html: bool,
+    content: &ContentSelectionDiagnostics,
 ) -> Value {
     serde_json::json!({
         "sourceHtmlChars": entry.source_html_chars,
@@ -531,6 +557,9 @@ fn cache_diagnostics_with_truncation(
         "cachedAt": entry.captured_at,
         "cacheAgeMs": now.saturating_sub(entry.captured_at),
         "cacheMatch": cache_match,
+        "contentSource": content.content_source,
+        "landmarkCandidateCount": content.landmark_candidate_count,
+        "selectedLandmarks": content.selected_landmarks,
     })
 }
 
@@ -633,7 +662,8 @@ fn build_cached_entry(
 ) -> Value {
     let (html, truncated_html_for_request) =
         truncate_cached_html_for_request(&cached.html, options.max_html_chars);
-    let conversion = convert(&html, Some(conversion_options(options.extract)));
+    let selected = select_content_html(&html);
+    let conversion = convert(&selected.html, Some(conversion_options(options.extract)));
     let full_markdown = match conversion {
         Ok(result) => result.content.unwrap_or_default(),
         Err(_) => return build_result_entry(tab, options, None),
@@ -651,7 +681,13 @@ fn build_cached_entry(
         truncated,
         None,
         None,
-        cache_diagnostics_with_truncation(cached, cache_match, now, truncated_html_for_request),
+        cache_diagnostics_with_truncation(
+            cached,
+            cache_match,
+            now,
+            truncated_html_for_request,
+            &selected.diagnostics,
+        ),
     )
 }
 
@@ -666,6 +702,109 @@ fn truncate_cached_html_for_request(html: &str, max_html_chars: Option<i64>) -> 
     } else {
         (html.to_string(), false)
     }
+}
+
+#[derive(Debug, Clone)]
+struct SelectedContent {
+    html: String,
+    diagnostics: ContentSelectionDiagnostics,
+}
+
+#[derive(Debug, Clone)]
+struct ContentSelectionDiagnostics {
+    content_source: &'static str,
+    landmark_candidate_count: usize,
+    selected_landmarks: Vec<Value>,
+}
+
+#[derive(Debug, Clone)]
+struct LandmarkCandidate {
+    html: String,
+    text_chars: usize,
+    html_chars: usize,
+    path: String,
+}
+
+fn select_content_html(html: &str) -> SelectedContent {
+    let (candidates, landmark_candidate_count) = main_landmark_candidates(html);
+    if candidates.is_empty() {
+        return SelectedContent {
+            html: html.to_string(),
+            diagnostics: ContentSelectionDiagnostics {
+                content_source: "full-html",
+                landmark_candidate_count,
+                selected_landmarks: Vec::new(),
+            },
+        };
+    }
+
+    let merged = candidates
+        .iter()
+        .map(|candidate| candidate.html.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let selected_landmarks = candidates
+        .iter()
+        .map(|candidate| {
+            serde_json::json!({
+                "kind": "main",
+                "path": candidate.path,
+                "textChars": candidate.text_chars,
+                "htmlChars": candidate.html_chars,
+            })
+        })
+        .collect();
+
+    SelectedContent {
+        html: format!(r#"<main data-tabctl-content="landmarks">{merged}</main>"#),
+        diagnostics: ContentSelectionDiagnostics {
+            content_source: "main-landmark",
+            landmark_candidate_count,
+            selected_landmarks,
+        },
+    }
+}
+
+fn main_landmark_candidates(html: &str) -> (Vec<LandmarkCandidate>, usize) {
+    let document = Html::parse_document(html);
+    let selector = Selector::parse(r#"main, [role="main"]"#).expect("valid main landmark selector");
+    let mut candidates = Vec::new();
+    let mut landmark_candidate_count = 0;
+    for element in document.select(&selector) {
+        landmark_candidate_count += 1;
+        let candidate_html = element.html();
+        let text = element.text().collect::<Vec<_>>().join(" ");
+        let text_chars = text.trim().chars().count();
+        if text_chars == 0
+            || candidates
+                .iter()
+                .any(|c: &LandmarkCandidate| c.html.contains(&candidate_html))
+        {
+            continue;
+        }
+        candidates.push(LandmarkCandidate {
+            html_chars: candidate_html.chars().count(),
+            html: candidate_html,
+            text_chars,
+            path: landmark_path(&element),
+        });
+    }
+    (candidates, landmark_candidate_count)
+}
+
+fn landmark_path(element: &scraper::ElementRef<'_>) -> String {
+    let value = element.value();
+    let mut path = value.name().to_string();
+    if let Some(id) = value.attr("id") {
+        path.push('#');
+        path.push_str(id);
+    }
+    if let Some(role) = value.attr("role") {
+        path.push_str("[role=\"");
+        path.push_str(role);
+        path.push_str("\"]");
+    }
+    path
 }
 
 #[cfg(test)]
@@ -801,8 +940,86 @@ mod tests {
         assert_eq!(entries[0]["status"], STATUS_READ);
         assert_eq!(entries[0]["cached"], false);
         assert_eq!(entries[0]["diagnostics"]["source"], "live");
+        assert_eq!(entries[0]["diagnostics"]["contentSource"], "full-html");
+        assert_eq!(entries[0]["diagnostics"]["landmarkCandidateCount"], 0);
         assert!(entries[0]["markdown"].as_str().unwrap().contains("Hello"));
         assert_eq!(entries[0]["truncated"], false);
+    }
+
+    #[test]
+    fn read_markdown_prefers_main_landmark() {
+        let params = serde_json::json!({"extract": true, "maxChars": 10000});
+        let mut orch = ReadMarkdownOrchestration::new(&params, OrchestrationContext::default());
+        let _ = orch.start();
+        let _ = orch.step(snapshot_with(vec![
+            serde_json::json!({"tabId": 1, "windowId": 100, "url": "https://a.com", "title": "A", "groupId": -1}),
+        ]));
+        let step = orch.step(html_response(
+            "<header>Navigation Noise</header><main id=\"content\"><h1>Main Heading</h1><p>Main body.</p></main>",
+            35,
+        ));
+        let OrchStep::Complete { response, .. } = step else {
+            panic!("expected Complete")
+        };
+        let entry = &response["entries"][0];
+        let markdown = entry["markdown"].as_str().unwrap();
+        assert!(markdown.contains("Main Heading"));
+        assert!(!markdown.contains("Navigation Noise"));
+        assert_eq!(entry["diagnostics"]["contentSource"], "main-landmark");
+        assert_eq!(entry["diagnostics"]["landmarkCandidateCount"], 1);
+        assert_eq!(
+            entry["diagnostics"]["selectedLandmarks"][0]["path"],
+            "main#content"
+        );
+    }
+
+    #[test]
+    fn read_markdown_prefers_role_main_landmark() {
+        let params = serde_json::json!({"extract": true, "maxChars": 10000});
+        let mut orch = ReadMarkdownOrchestration::new(&params, OrchestrationContext::default());
+        let _ = orch.start();
+        let _ = orch.step(snapshot_with(vec![
+            serde_json::json!({"tabId": 1, "windowId": 100, "url": "https://a.com", "title": "A", "groupId": -1}),
+        ]));
+        let step = orch.step(html_response(
+            "<div>Navigation Noise</div><div role=\"main\"><h1>Role Main</h1></div>",
+            26,
+        ));
+        let OrchStep::Complete { response, .. } = step else {
+            panic!("expected Complete")
+        };
+        let entry = &response["entries"][0];
+        let markdown = entry["markdown"].as_str().unwrap();
+        assert!(markdown.contains("Role Main"));
+        assert!(!markdown.contains("Navigation Noise"));
+        assert_eq!(entry["diagnostics"]["contentSource"], "main-landmark");
+        assert_eq!(
+            entry["diagnostics"]["selectedLandmarks"][0]["path"],
+            "div[role=\"main\"]"
+        );
+    }
+
+    #[test]
+    fn read_markdown_merges_multiple_main_landmarks() {
+        let selected = select_content_html(
+            "<main><h1>First</h1></main><aside>Skip</aside><main><h1>Second</h1></main>",
+        );
+        assert_eq!(selected.diagnostics.content_source, "main-landmark");
+        assert_eq!(selected.diagnostics.landmark_candidate_count, 2);
+        assert!(selected.html.contains("First"));
+        assert!(selected.html.contains("Second"));
+        assert!(!selected.html.contains("Skip"));
+    }
+
+    #[test]
+    fn read_markdown_deduplicates_nested_main_landmarks() {
+        let selected =
+            select_content_html("<main><h1>Outer</h1><main><h2>Inner</h2></main></main>");
+        assert_eq!(selected.diagnostics.content_source, "main-landmark");
+        assert_eq!(selected.diagnostics.landmark_candidate_count, 2);
+        assert_eq!(selected.diagnostics.selected_landmarks.len(), 1);
+        assert!(selected.html.contains("Outer"));
+        assert!(selected.html.contains("Inner"));
     }
 
     #[test]
@@ -815,19 +1032,35 @@ mod tests {
             serde_json::json!({"tabId": 1, "windowId": 100, "url": "https://a.com/page#frag", "title": "A", "groupId": -1}),
         ]);
         let _ = orch.step(snap);
-        let step = orch.step(html_response("<h1>Cached</h1>", 6));
+        let step = orch.step(serde_json::json!({
+            "status": "READ",
+            "html": "<header>Navigation Noise</header><main><h1>Cached</h1></main>",
+            "sourceHtmlChars": 66,
+            "sourceTextChars": 23,
+            "documentReadyState": "complete",
+            "truncatedHtml": false,
+            "error": null
+        }));
         let OrchStep::Complete { response, .. } = step else {
             panic!("expected Complete")
         };
         assert_eq!(response["entries"][0]["status"], STATUS_READ);
         assert_eq!(response["entries"][0]["cached"], false);
         assert_eq!(response["entries"][0]["diagnostics"]["source"], "live");
+        let markdown = response["entries"][0]["markdown"].as_str().unwrap();
+        assert!(markdown.contains("Cached"));
+        assert!(!markdown.contains("Navigation Noise"));
         assert!(path.exists());
 
         let cache = PageCache::load(&path);
-        assert!(cache
+        let cached = cache
             .lookup_open_tab(Some("test-profile"), 1, "https://a.com/page#frag")
-            .is_some());
+            .expect("live read should cache full HTML");
+        assert!(
+            cached.entry.html.contains("Navigation Noise"),
+            "cache should retain raw page HTML"
+        );
+        assert!(cached.entry.html.contains("<main><h1>Cached</h1></main>"));
     }
 
     #[test]

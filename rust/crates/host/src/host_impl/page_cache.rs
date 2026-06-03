@@ -18,9 +18,9 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-const MAX_HTML_CHARS_PER_ENTRY: usize = 1_500_000;
+const MAX_HTML_CHARS_PER_ENTRY: usize = 10 * 1024 * 1024;
 const MAX_ENTRIES: usize = 250;
-const MAX_TOTAL_HTML_BYTES: usize = 128 * 1024 * 1024;
+const MAX_TOTAL_HTML_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct CacheKey {
@@ -330,6 +330,10 @@ impl PageCache {
     }
 
     fn enforce_caps(&mut self) {
+        self.enforce_caps_with_limits(MAX_ENTRIES, MAX_TOTAL_HTML_BYTES);
+    }
+
+    fn enforce_caps_with_limits(&mut self, max_entries: usize, max_total_html_bytes: usize) {
         let mut entries: Vec<_> = self.entries.values().cloned().collect();
         entries.sort_by_key(|entry| entry.captured_at);
 
@@ -337,8 +341,8 @@ impl PageCache {
         let mut total_bytes = 0usize;
         for entry in entries.into_iter().rev() {
             let html_bytes = entry.html.len();
-            if keep.len() >= MAX_ENTRIES
-                || total_bytes.saturating_add(html_bytes) > MAX_TOTAL_HTML_BYTES
+            if keep.len() >= max_entries
+                || total_bytes.saturating_add(html_bytes) > max_total_html_bytes
             {
                 self.dirty = true;
                 continue;
@@ -908,7 +912,7 @@ mod tests {
 
         let mut byte_cache = PageCache::default();
         let html = "x".repeat(600_000);
-        for i in 0..230 {
+        for i in 0..10 {
             store(
                 &mut byte_cache,
                 None,
@@ -918,17 +922,18 @@ mod tests {
                 i,
             );
         }
+        byte_cache.enforce_caps_with_limits(MAX_ENTRIES, 2_000_000);
         let total: usize = byte_cache
             .entries
             .values()
             .map(|entry| entry.html.len())
             .sum();
-        assert!(total <= MAX_TOTAL_HTML_BYTES);
+        assert!(total <= 2_000_000);
         assert!(byte_cache
             .lookup_open_tab(None, 0, "https://bytes.example/0")
             .is_none());
         assert!(byte_cache
-            .lookup_open_tab(None, 229, "https://bytes.example/229")
+            .lookup_open_tab(None, 9, "https://bytes.example/9")
             .is_some());
     }
 

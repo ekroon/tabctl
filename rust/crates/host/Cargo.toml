@@ -10,6 +10,7 @@ path = "src/lib.rs"
 getrandom = "0.2"
 html-to-markdown-rs = "3.5.7"
 rusqlite = { version = "0.33", features = ["bundled"] }
+scraper = "0.27.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
