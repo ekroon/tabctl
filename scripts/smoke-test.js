@@ -11,9 +11,14 @@ const defaultTmpRoot =
 const shortTmpRoot = process.env.TABCTL_TEST_TMP_ROOT || defaultTmpRoot;
 let smokeBrowser = null;
 let smokeProfile = null;
+let smokeReady = null;
+let smokeTabctlEnv = null;
 let readTab = null;
+let readWindow = null;
 let testWindow = null;
 let testGroup = null;
+const createdWindowIds = new Set();
+let finalizing = null;
 
 function log(message) {
   const ts = new Date().toISOString();
@@ -32,13 +37,29 @@ function run(command, args, options = {}) {
       const seconds = Math.round((Date.now() - started) / 1000);
       log(`Still running after ${seconds}s: ${label}`);
     }, 15_000);
+    const env = {
+      ...process.env,
+      TABCTL_TEST_TMP_ROOT: shortTmpRoot,
+      TABCTL_BOOTSTRAP_TMP_ROOT: process.env.TABCTL_BOOTSTRAP_TMP_ROOT || shortTmpRoot,
+    };
+    if (options.scrubTabctlEnv === true) {
+      for (const key of [
+        "TABCTL_PROFILE",
+        "TABCTL_CONFIG_DIR",
+        "TABCTL_DATA_DIR",
+        "TABCTL_STATE_DIR",
+        "TABCTL_TRANSPORT",
+        "TABCTL_TCP_PORT",
+        "TABCTL_AUTH_TOKEN",
+      ]) {
+        delete env[key];
+      }
+    }
+    Object.assign(env, options.env || {});
+
     const child = spawn(command, args, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        TABCTL_TEST_TMP_ROOT: shortTmpRoot,
-        TABCTL_BOOTSTRAP_TMP_ROOT: process.env.TABCTL_BOOTSTRAP_TMP_ROOT || shortTmpRoot,
-      },
+      env,
     });
     let settled = false;
 
@@ -79,8 +100,8 @@ function run(command, args, options = {}) {
   });
 }
 
-async function runJson(command, args) {
-  const output = await run(command, args, { capture: true });
+async function runJson(command, args, options = {}) {
+  const output = await run(command, args, { ...options, capture: true });
   const parsed = JSON.parse(output);
   if (parsed.errors && parsed.errors.length > 0) {
     throw new Error(JSON.stringify(parsed.errors, null, 2));
@@ -89,14 +110,70 @@ async function runJson(command, args) {
 }
 
 async function query(source) {
-  return runJson(tabctl, ["query", "--profile", smokeProfile, source]);
+  return runJson(tabctl, ["query", "--profile", smokeProfile, source], {
+    env: smokeTabctlEnv,
+    scrubTabctlEnv: true,
+  });
+}
+
+function buildTabctlSmokeEnv(ready) {
+  return {
+    TABCTL_CONFIG_DIR: ready.configDir,
+    TABCTL_STATE_DIR: ready.dataDir,
+    XDG_CONFIG_HOME: path.join(ready.tmpDir, "xdg-config"),
+    XDG_STATE_HOME: path.join(ready.tmpDir, "xdg-state"),
+  };
+}
+
+function pathIsInside(parent, candidate) {
+  const relative = path.relative(parent, candidate);
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function assertSmokeReady() {
+  expect(smokeReady, "smoke browser did not provide ready metadata");
+  expect(smokeProfile && smokeProfile.startsWith("smoke-"), `unsafe smoke profile name: ${smokeProfile}`);
+  for (const [label, value] of [
+    ["configDir", smokeReady.configDir],
+    ["dataDir", smokeReady.dataDir],
+    ["browserProfileDir", smokeReady.browserProfileDir],
+  ]) {
+    expect(value, `smoke browser did not report ${label}`);
+    expect(
+      pathIsInside(smokeReady.tmpDir, value),
+      `${label} is outside smoke temp root: ${value}`
+    );
+  }
+}
+
+async function verifySmokeProfile() {
+  assertSmokeReady();
+  const show = await runJson(
+    tabctl,
+    ["--json", "--no-pretty", "--profile", smokeProfile, "profile-show"],
+    { env: smokeTabctlEnv, scrubTabctlEnv: true }
+  );
+  const data = show.data || show;
+  expect(data.name === smokeProfile, `profile-show resolved ${data.name}, expected ${smokeProfile}`);
+  expect(
+    pathIsInside(smokeReady.configDir, data.profilesPath),
+    `profile-show profilesPath is outside smoke config dir: ${data.profilesPath}`
+  );
+  expect(
+    pathIsInside(smokeReady.dataDir, data.dataDir),
+    `profile-show dataDir is outside smoke data dir: ${data.dataDir}`
+  );
 }
 
 async function startSmokeBrowser() {
   log("Starting isolated smoke browser");
   smokeBrowser = spawn(process.execPath, ["scripts/smoke-browser.js"], {
     stdio: ["ignore", "pipe", "inherit"],
-    env: process.env,
+    env: {
+      ...process.env,
+      TABCTL_TEST_TMP_ROOT: shortTmpRoot,
+      TABCTL_BOOTSTRAP_TMP_ROOT: process.env.TABCTL_BOOTSTRAP_TMP_ROOT || shortTmpRoot,
+    },
   });
 
   let stdout = "";
@@ -114,9 +191,18 @@ async function startSmokeBrowser() {
         process.stdout.write(`${line}\n`);
         try {
           const ready = JSON.parse(line);
-          if (ready.ok && ready.profile) {
+          if (
+            ready.ok &&
+            ready.profile &&
+            ready.tmpDir &&
+            ready.configDir &&
+            ready.dataDir &&
+            ready.browserProfileDir
+          ) {
             clearTimeout(timeout);
+            smokeReady = ready;
             smokeProfile = ready.profile;
+            smokeTabctlEnv = buildTabctlSmokeEnv(ready);
             log(`Smoke browser ready: profile=${ready.profile} pid=${ready.pid}`);
             resolve(ready);
           }
@@ -146,38 +232,73 @@ function expect(condition, message) {
 async function cleanupSmokeTabs() {
   if (!smokeProfile) return;
 
-  if (readTab) {
-    log(`Cleaning up readTabs tab ${readTab}`);
+  const cleanupErrors = [];
+  const ids = new Set();
+
+  try {
+    const tabs = await query("query { tabs(limit: 500) { items { tabId windowId groupTitle } } }");
+    for (const tab of tabs.data.tabs.items) {
+      if (
+        tab.tabId === readTab ||
+        createdWindowIds.has(tab.windowId) ||
+        (testGroup && tab.groupTitle === testGroup)
+      ) {
+        ids.add(tab.tabId);
+      }
+    }
+  } catch (err) {
+    cleanupErrors.push(`query smoke tabs: ${err.message}`);
+  }
+
+  if (ids.size > 0) {
+    const tabIds = [...ids];
+    log(`Cleaning up smoke tabs: ${tabIds.join(",")}`);
     try {
-      await query(`mutation { closeTabs(tabIds: [${readTab}], confirm: true) { txid closedTabs } }`);
+      await query(`mutation { closeTabs(tabIds: [${tabIds.join(",")}], confirm: true) { txid closedTabs } }`);
     } catch (err) {
-      log(`Cleanup warning for readTabs tab: ${err.message}`);
+      cleanupErrors.push(`close smoke tabs: ${err.message}`);
     }
   }
 
-  if (testGroup) {
-    log(`Cleaning up smoke group ${testGroup}`);
-    try {
-      const tabs = await query("query { tabs(limit: 200) { items { tabId groupTitle } } }");
-      const ids = tabs.data.tabs.items
-        .filter((tab) => tab.groupTitle === testGroup)
-        .map((tab) => tab.tabId);
-      if (ids.length > 0) {
-        await query(`mutation { closeTabs(tabIds: [${ids.join(",")}], confirm: true) { txid closedTabs } }`);
-      }
-    } catch (err) {
-      log(`Cleanup warning for smoke group: ${err.message}`);
+  try {
+    const after = await query("query { tabs(limit: 500) { items { tabId windowId groupTitle } } }");
+    const remaining = after.data.tabs.items.filter(
+      (tab) =>
+        tab.tabId === readTab ||
+        createdWindowIds.has(tab.windowId) ||
+        (testGroup && tab.groupTitle === testGroup)
+    );
+    if (remaining.length > 0) {
+      cleanupErrors.push(
+        `remaining smoke tabs after cleanup: ${remaining.map((tab) => tab.tabId).join(",")}`
+      );
     }
+  } catch (err) {
+    cleanupErrors.push(`verify smoke cleanup: ${err.message}`);
+  }
+
+  if (cleanupErrors.length > 0) {
+    throw new Error(cleanupErrors.join("; "));
   }
 }
 
 async function stopSmokeBrowser() {
   if (!smokeBrowser || smokeBrowser.exitCode !== null) return;
   log("Stopping isolated smoke browser");
-  smokeBrowser.kill("SIGTERM");
+  try {
+    smokeBrowser.kill("SIGTERM");
+  } catch {
+    // already gone
+  }
   await new Promise((resolve) => {
     const timeout = setTimeout(() => {
-      if (smokeBrowser.exitCode === null) smokeBrowser.kill("SIGKILL");
+      if (smokeBrowser.exitCode === null) {
+        try {
+          smokeBrowser.kill("SIGKILL");
+        } catch {
+          // already gone
+        }
+      }
       resolve();
     }, 3_000);
     smokeBrowser.on("exit", () => {
@@ -187,7 +308,45 @@ async function stopSmokeBrowser() {
   });
 }
 
+async function finalizeSmokeRun() {
+  if (finalizing) return finalizing;
+  finalizing = (async () => {
+    const errors = [];
+    try {
+      await cleanupSmokeTabs();
+    } catch (err) {
+      errors.push(`cleanup tabs: ${err.message}`);
+    }
+    try {
+      await stopSmokeBrowser();
+    } catch (err) {
+      errors.push(`stop smoke browser: ${err.message}`);
+    }
+    if (errors.length > 0) {
+      throw new Error(errors.join("; "));
+    }
+  })();
+  return finalizing;
+}
+
+function installSignalHandlers() {
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.once(signal, () => {
+      log(`Received ${signal}; cleaning up smoke browser`);
+      finalizeSmokeRun()
+        .catch((err) => {
+          log(`Cleanup after ${signal} failed: ${err.message}`);
+        })
+        .finally(() => {
+          process.exit(signal === "SIGINT" ? 130 : 143);
+        });
+    });
+  }
+}
+
 async function main() {
+  installSignalHandlers();
+
   log("Step 1/8: build");
   await run("npm", ["run", "build"]);
 
@@ -201,7 +360,11 @@ async function main() {
   await startSmokeBrowser();
 
   log("Step 5/8: connectivity and read-only GraphQL checks");
-  await run(tabctl, ["ping", "--profile", smokeProfile]);
+  await verifySmokeProfile();
+  await run(tabctl, ["ping", "--profile", smokeProfile], {
+    env: smokeTabctlEnv,
+    scrubTabctlEnv: true,
+  });
   const ping = await query("query { ping { ok latencyMs } }");
   expect(ping.data.ping.ok === true, "GraphQL ping did not return ok=true");
   const tabs = await query("query { tabs(limit: 20) { total items { tabId windowId url title groupId groupTitle active } } }");
@@ -213,8 +376,10 @@ async function main() {
 
   log("Step 6/8: readTabs markdown extraction");
   const readOpen = await query('mutation { openTabs(urls: ["https://example.com"], newWindow: true) { windowId tabs { tabId url title } } }');
+  readWindow = readOpen.data.openTabs.windowId;
   readTab = readOpen.data.openTabs.tabs[0].tabId;
-  log(`Opened readTabs page: tab=${readTab}`);
+  createdWindowIds.add(readWindow);
+  log(`Opened readTabs page: window=${readWindow} tab=${readTab}`);
   await new Promise((resolve) => setTimeout(resolve, 2_000));
   const read = await query(`query { readTabs(tabIds: [${readTab}], extract: true, maxChars: 50000, timeoutMs: 15000) { totals { tabs tasks } entries { tabId url title chars truncated extracted status emptyReason error markdown } } }`);
   const readEntry = read.data.readTabs.entries[0];
@@ -228,6 +393,7 @@ async function main() {
   testGroup = `TEST-Smoke-${Date.now()}`;
   const opened = await query(`mutation { openTabs(urls: ["https://example.com", "https://example.org", "https://example.net"], newWindow: true, group: "${testGroup}") { windowId groupId tabs { tabId windowId url title groupId groupTitle } } }`);
   testWindow = opened.data.openTabs.windowId;
+  createdWindowIds.add(testWindow);
   const firstTab = opened.data.openTabs.tabs[0].tabId;
   log(`Opened smoke window: window=${testWindow} group=${testGroup} firstTab=${firstTab}`);
   const windowCheck = await query(`query { window(id: ${testWindow}) { windowId tabs { tabId url groupTitle index } groups { groupId title color collapsed tabCount } } }`);
@@ -251,6 +417,7 @@ async function main() {
   const restoredTabs = restored.data.tabs.items.filter((tab) => tab.groupTitle === testGroup);
   expect(restoredTabs.length > 0, "undo archive did not restore any grouped smoke tabs");
   testWindow = restoredTabs[0].windowId;
+  createdWindowIds.add(testWindow);
   const restoredFirstTab = restoredTabs[0].tabId;
   const screenshots = await query(`query { captureScreenshots(tabIds: [${restoredFirstTab}], mode: "viewport") { totals { tabs tiles } entries { tabId tiles { index width height } error { message } } } }`);
   expect(screenshots.data.captureScreenshots.totals.tabs === 1, "captureScreenshots did not return one tab");
@@ -259,7 +426,9 @@ async function main() {
 
   log("Step 8/8: cleanup");
   await cleanupSmokeTabs();
+  createdWindowIds.clear();
   readTab = null;
+  readWindow = null;
   testWindow = null;
   testGroup = null;
   log("Smoke test completed successfully");
@@ -271,6 +440,10 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => {
-    await cleanupSmokeTabs();
-    await stopSmokeBrowser();
+    try {
+      await finalizeSmokeRun();
+    } catch (err) {
+      log(`Cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
   });

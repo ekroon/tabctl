@@ -673,6 +673,7 @@ pub(super) fn attempt_profile_repair(
         &entry.extension_id,
         &wrapper_path,
         &manifest_path,
+        entry.user_data_dir.as_deref(),
     )?;
     Ok(json!({
         "wrapperPath": wrapper_path.display().to_string(),
