@@ -1,6 +1,6 @@
 {
   "name": "tabctl",
-  "version": "0.6.0-rc.10",
+  "version": "0.6.0-rc.11",
   "description": "CLI tool to manage and analyze browser tabs",
   "license": "MIT",
   "repository": {
@@ -53,7 +53,7 @@
     "typescript": "^5.4.5"
   },
   "optionalDependencies": {
-    "tabctl-win32-x64": "0.6.0-rc.10"
+    "tabctl-win32-x64": "0.6.0-rc.11"
   },
   "dependencies": {
     "normalize-url": "^8.1.1"
