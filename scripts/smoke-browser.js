@@ -31,6 +31,10 @@ const path = require("node:path");
 const os = require("node:os");
 const { spawn, execFileSync } = require("node:child_process");
 
+const defaultTmpRoot =
+  process.platform === "win32" ? path.join(os.tmpdir(), "tctl-it") : path.join("/tmp", "tctl-it");
+const smokeTmpRoot = process.env.TABCTL_TEST_TMP_ROOT || defaultTmpRoot;
+
 function log(msg) {
   process.stderr.write(`[smoke-browser] ${msg}\n`);
 }
@@ -128,19 +132,156 @@ function findTabctl() {
 
 let browserProc = null;
 let tmpDir = null;
+let configDir = null;
+let dataDir = null;
+let browserProfileDir = null;
 let profileName = null;
 let tabctlBin = null;
+let smokeEnv = null;
+let smokeCliEnv = null;
 let shuttingDown = false;
+let cdpWrite = null;
+let cdpRead = null;
+let cdpId = 0;
+let cdpBuffer = "";
+const pendingCdp = new Map();
+
+function buildSmokeEnv() {
+  if (!tmpDir || !configDir || !dataDir) {
+    throw new Error("smoke directories are not initialized");
+  }
+  const env = {
+    ...process.env,
+    TABCTL_CONFIG_DIR: configDir,
+    TABCTL_DATA_DIR: dataDir,
+    TABCTL_STATE_DIR: dataDir,
+    XDG_CONFIG_HOME: path.join(tmpDir, "xdg-config"),
+    XDG_STATE_HOME: path.join(tmpDir, "xdg-state"),
+  };
+  delete env.TABCTL_PROFILE;
+  delete env.TABCTL_TRANSPORT;
+  delete env.TABCTL_TCP_PORT;
+  delete env.TABCTL_AUTH_TOKEN;
+  return env;
+}
+
+function buildSmokeCliEnv() {
+  const env = buildSmokeEnv();
+  delete env.TABCTL_DATA_DIR;
+  return env;
+}
+
+function visibleBrowserRequested() {
+  return process.env.SMOKE_BROWSER_VISIBLE === "1";
+}
+
+function initCDP(browserProcess) {
+  cdpWrite = browserProcess.stdio[3];
+  cdpRead = browserProcess.stdio[4];
+  cdpRead.on("data", (chunk) => {
+    cdpBuffer += chunk.toString("utf8");
+    const parts = cdpBuffer.split("\0");
+    cdpBuffer = parts.pop() || "";
+    for (const part of parts) {
+      if (!part.trim()) continue;
+      try {
+        const msg = JSON.parse(part);
+        if (msg.id && pendingCdp.has(msg.id)) {
+          const deferred = pendingCdp.get(msg.id);
+          pendingCdp.delete(msg.id);
+          if (msg.error) deferred.reject(new Error(msg.error.message || "Unknown CDP error"));
+          else deferred.resolve(msg.result);
+        }
+      } catch {
+        // Ignore malformed fragments while buffering.
+      }
+    }
+  });
+}
+
+function sendCDP(method, params = {}, sessionId) {
+  return new Promise((resolve, reject) => {
+    const id = ++cdpId;
+    pendingCdp.set(id, { resolve, reject });
+    const payload = { id, method, params };
+    if (sessionId) payload.sessionId = sessionId;
+    cdpWrite.write(`${JSON.stringify(payload)}\0`);
+  });
+}
+
+async function findServiceWorkerTarget(extensionId) {
+  const targets = await sendCDP("Target.getTargets");
+  return (targets.targetInfos || []).find(
+    (target) => target.type === "service_worker" && String(target.url || "").includes(extensionId)
+  );
+}
+
+async function attachServiceWorker(extensionId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (browserProc.exitCode !== null) {
+      throw new Error(`Browser exited during service-worker discovery (code ${browserProc.exitCode})`);
+    }
+    const swTarget = await findServiceWorkerTarget(extensionId);
+    if (swTarget) {
+      const attached = await sendCDP("Target.attachToTarget", {
+        targetId: swTarget.targetId,
+        flatten: true,
+      });
+      return attached.sessionId;
+    }
+    await sleep(250);
+  }
+  throw new Error("Extension service worker not found before timeout");
+}
+
+async function ensureNativePortConnected(sessionId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const evaluation = await sendCDP(
+      "Runtime.evaluate",
+      {
+        expression: `
+          (() => {
+            if (!self.__tabctl?.state?.port) {
+              self.__tabctl?.connectNative?.();
+              return { connected: false };
+            }
+            return { connected: true };
+          })();
+        `,
+        returnByValue: true,
+      },
+      sessionId
+    );
+    if (evaluation?.exceptionDetails) {
+      const detail =
+        evaluation.exceptionDetails.exception?.description ||
+        evaluation.exceptionDetails.text ||
+        "unknown runtime exception";
+      throw new Error(`native port probe failed: ${detail}`);
+    }
+    if (evaluation?.result?.value?.connected === true) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error("native port did not connect before timeout");
+}
 
 async function shutdown(exitCode) {
   if (shuttingDown) return;
   shuttingDown = true;
 
-  if (browserProc && !browserProc.killed) {
+  if (browserProc && browserProc.exitCode === null) {
     log("Stopping browser...");
-    browserProc.kill("SIGTERM");
+    try {
+      browserProc.kill("SIGTERM");
+    } catch {
+      // already gone
+    }
     await sleep(800);
-    if (!browserProc.killed) {
+    if (browserProc.exitCode === null) {
       try {
         browserProc.kill("SIGKILL");
       } catch {
@@ -149,9 +290,12 @@ async function shutdown(exitCode) {
     }
   }
 
-  if (profileName && tabctlBin) {
+  if (profileName && tabctlBin && smokeCliEnv) {
     try {
-      execFileSync(tabctlBin, ["profile-remove", profileName], { stdio: "ignore" });
+      execFileSync(tabctlBin, ["profile-remove", profileName], {
+        stdio: "ignore",
+        env: smokeCliEnv,
+      });
       log(`Removed profile ${profileName}`);
     } catch {
       // best effort
@@ -159,11 +303,15 @@ async function shutdown(exitCode) {
   }
 
   if (tmpDir) {
-    try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-      log(`Removed ${tmpDir}`);
-    } catch {
-      // best effort
+    if (process.env.SMOKE_KEEP_ARTIFACTS === "1") {
+      log(`Preserved ${tmpDir} because SMOKE_KEEP_ARTIFACTS=1`);
+    } else {
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+        log(`Removed ${tmpDir}`);
+      } catch {
+        // best effort
+      }
     }
   }
 
@@ -188,15 +336,31 @@ async function main() {
   const ts = Date.now();
   profileName = `smoke-${ts}`;
 
+  fs.mkdirSync(smokeTmpRoot, { recursive: true });
+  tmpDir = fs.mkdtempSync(path.join(smokeTmpRoot, "smoke-"));
+  configDir = path.join(tmpDir, "tabctl-config");
+  dataDir = path.join(tmpDir, "tabctl-data");
+  browserProfileDir = path.join(tmpDir, "browser-profile");
+  for (const dir of [
+    configDir,
+    dataDir,
+    browserProfileDir,
+    path.join(tmpDir, "xdg-config"),
+    path.join(tmpDir, "xdg-state"),
+  ]) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  smokeEnv = buildSmokeEnv();
+  smokeCliEnv = buildSmokeCliEnv();
+
   log(`tabctl:    ${tabctlBin}`);
   log(`browser:   ${browserBin} (${browserName})`);
   log(`extension: ${extensionDirInput}`);
   log(`profile:   ${profileName}`);
-
-  // Create temp dir for isolated browser profile.
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tabctl-smoke-"));
-  const browserProfileDir = path.join(tmpDir, "browser-profile");
-  fs.mkdirSync(browserProfileDir, { recursive: true });
+  log(`tmp root:  ${tmpDir}`);
+  log(`config:    ${configDir}`);
+  log(`data:      ${dataDir}`);
+  log(`user data: ${browserProfileDir}`);
 
   // Step 1: Run tabctl setup BEFORE launching the browser.
   // This syncs the extension to the active dir, derives the extension ID from
@@ -221,7 +385,7 @@ async function main() {
         "--json",
         "--no-pretty",
       ],
-      { encoding: "utf8" }
+      { encoding: "utf8", env: smokeEnv }
     );
   } catch (err) {
     throw new Error(
@@ -234,9 +398,11 @@ async function main() {
   // We launch the browser with --load-extension pointing at the same path setup used
   // to derive the extension ID, ensuring they match.
   let activeExtDir;
+  let expectedExtensionId;
   try {
     const setupJson = JSON.parse(setupOutput);
     activeExtDir = setupJson?.data?.extensionSync?.activePath;
+    expectedExtensionId = setupJson?.data?.extensionId;
   } catch {
     // ignore parse errors; will fail below
   }
@@ -248,22 +414,37 @@ async function main() {
   }
   log(`Active extension: ${activeExtDir}`);
 
-  // Step 2: Launch the browser with the isolated profile and local extension.
-  const browserArgs = [
-    `--load-extension=${activeExtDir}`,
-    `--user-data-dir=${browserProfileDir}`,
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-default-apps",
-    "--new-window",
-    "about:blank",
-  ];
+  // Step 2: Launch the browser with the isolated profile. Headless mode keeps
+  // smoke windows out of the user's window manager; visible mode is debugging-only.
+  const visible = visibleBrowserRequested();
+  const browserArgs = visible
+    ? [
+        `--load-extension=${activeExtDir}`,
+        `--user-data-dir=${browserProfileDir}`,
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-default-apps",
+        "--new-window",
+        "about:blank",
+      ]
+    : [
+        "--headless=new",
+        "--remote-debugging-pipe",
+        "--enable-unsafe-extension-debugging",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-gpu",
+        "--disable-background-timer-throttling",
+        `--user-data-dir=${browserProfileDir}`,
+      ];
 
-  log(`Launching browser...`);
+  log(`Launching ${visible ? "visible" : "headless"} browser...`);
   browserProc = spawn(browserBin, browserArgs, {
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio: visible ? ["ignore", "ignore", "pipe"] : ["ignore", "pipe", "pipe", "pipe", "pipe"],
     detached: false,
+    env: smokeEnv,
   });
+  browserProc.stdout?.resume();
 
   let browserStderrBuffer = "";
   browserProc.stderr.on("data", (chunk) => {
@@ -285,9 +466,29 @@ async function main() {
     }
   });
 
-  // Step 3: Poll tabctl ping until the extension connects.
+  // Step 3: Load the extension in headless mode, then poll tabctl ping until it connects.
   const timeoutMs = parseInt(process.env.SMOKE_BROWSER_TIMEOUT_MS || "30000", 10);
   const deadline = Date.now() + timeoutMs;
+  if (!visible) {
+    await sleep(1500);
+    if (browserProc.exitCode !== null) {
+      throw new Error(`Browser exited early (code ${browserProc.exitCode})`);
+    }
+    initCDP(browserProc);
+    const loadResult = await sendCDP("Extensions.loadUnpacked", { path: activeExtDir });
+    const loadedExtensionId = loadResult && loadResult.id;
+    if (!loadedExtensionId) {
+      throw new Error("Failed to determine extension id from Extensions.loadUnpacked");
+    }
+    if (expectedExtensionId && loadedExtensionId !== expectedExtensionId) {
+      throw new Error(
+        `Loaded extension id ${loadedExtensionId} did not match setup extension id ${expectedExtensionId}`
+      );
+    }
+    log(`Loaded headless extension: ${loadedExtensionId}`);
+    const sessionId = await attachServiceWorker(loadedExtensionId, timeoutMs);
+    await ensureNativePortConnected(sessionId, timeoutMs);
+  }
   log(`Waiting for ping (${timeoutMs}ms timeout)...`);
 
   while (Date.now() < deadline) {
@@ -298,6 +499,7 @@ async function main() {
       execFileSync(tabctlBin, ["ping", "--profile", profileName], {
         stdio: "ignore",
         timeout: 3000,
+        env: smokeCliEnv,
       });
       break;
     } catch {
@@ -311,6 +513,7 @@ async function main() {
       execFileSync(tabctlBin, ["ping", "--profile", profileName], {
         stdio: "ignore",
         timeout: 3000,
+        env: smokeCliEnv,
       });
     } catch {
       throw new Error(`Browser did not connect within ${timeoutMs}ms`);
@@ -323,6 +526,9 @@ async function main() {
     profile: profileName,
     pid: browserProc.pid,
     tmpDir,
+    configDir,
+    dataDir,
+    browserProfileDir,
     extensionDir: activeExtDir,
   };
   process.stdout.write(`${JSON.stringify(ready)}\n`);

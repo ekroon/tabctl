@@ -1445,6 +1445,7 @@ mod tests {
                     "mpglnmehddpkinfhheeahiicfieegcon",
                     &wrapper,
                     &manifest,
+                    None,
                 );
                 assert!(
                     result.is_ok(),
@@ -1514,6 +1515,7 @@ mod tests {
                     "bbbbbbbb",
                     &wrapper,
                     &manifest,
+                    None,
                 );
                 assert!(
                     result.is_ok(),
@@ -1576,6 +1578,7 @@ mod tests {
                     "new-ext-id",
                     &wrapper,
                     &manifest,
+                    None,
                 );
                 assert!(
                     result.is_ok(),
@@ -1703,6 +1706,7 @@ mod tests {
                     "extid",
                     &wrapper,
                     &manifest,
+                    None,
                 );
                 assert!(result.is_err());
                 assert!(result.unwrap_err().contains("unsupported browser"));
@@ -1735,6 +1739,7 @@ mod tests {
                     "extid",
                     &wrapper,
                     &manifest,
+                    None,
                 )
                 .unwrap();
 
@@ -1813,6 +1818,10 @@ mod tests {
                 assert_eq!(
                     reg["profiles"]["edge"]["extensionId"],
                     "testextensionid1234567890abcde"
+                );
+                assert_eq!(
+                    reg["profiles"]["edge"]["userDataDir"],
+                    udd.to_str().unwrap()
                 );
             },
         );
@@ -1894,6 +1903,10 @@ mod tests {
                     .expect("derived extension id should be string");
                 assert_eq!(extension_id.len(), 32);
                 assert!(extension_id.chars().all(|ch| ('a'..='p').contains(&ch)));
+                assert_eq!(
+                    registry["profiles"]["edge"]["userDataDir"],
+                    udd.to_str().unwrap()
+                );
                 assert_eq!(
                     manifest_json["allowed_origins"][0],
                     json!(format!("chrome-extension://{extension_id}/"))

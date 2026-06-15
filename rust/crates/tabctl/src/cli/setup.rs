@@ -966,6 +966,7 @@ pub(super) fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), St
             ext_id,
             &wrapper_file,
             &manifest_path,
+            user_data_dir,
         )?;
         is_default_profile = registry
             .get("default")
@@ -1146,6 +1147,7 @@ pub(super) fn register_profile(
     extension_id: &str,
     wrapper_path: &Path,
     _manifest_path: &Path,
+    user_data_dir: Option<&str>,
 ) -> Result<Value, String> {
     let config_dir = resolve_config_dir()?;
     let profiles_path = PathBuf::from(&config_dir).join("profiles.json");
@@ -1176,7 +1178,7 @@ pub(super) fn register_profile(
         node_path: resolve_tabctl_binary_path(),
         host_path: path_to_platform_string(wrapper_path),
         data_dir: path_to_platform_string(&profile_data_dir),
-        user_data_dir: None,
+        user_data_dir: user_data_dir.map(|dir| path_to_platform_string(Path::new(dir))),
     };
 
     // First registered profile becomes the default

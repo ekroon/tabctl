@@ -179,19 +179,19 @@ Notes:
 
 ## Required end-of-task checks
 
-Always finish by running the `/smoke-test` skill (`.github/skills/smoke-test/SKILL.md`). It covers:
+Always finish by running the `/smoke-test` skill (`.github/skills/smoke-test/SKILL.md`). The skill must use the automated runner (`npm run test:smoke`) instead of manual smoke commands. It covers:
 1. `npm test` — unit tests
 2. `npm run test:integration` — integration tests (if Chrome is available)
-3. Profile verification
+3. Isolated smoke profile verification
 4. Read-only live browser checks (`ping`, `list`, `analyze`, `report`)
 5. Mutation round-trips (close + undo, archive + undo) in a disposable `TEST-Smoke-<timestamp>` window
-6. Clean up of the test window
+6. Automated cleanup of smoke-created tabs/windows and browser teardown
 
 > **Note:** Hooks provide split enforcement (fast on commit, heavy on push). If you bypass with `--no-verify` on push, run `npm test` and `npm run test:integration` manually.
 
 ## Smoke tests and integration tests
 
-See `.github/skills/smoke-test/SKILL.md` for the full procedure — safe read-only checks, controlled mutation tests (close + undo, archive + undo) in a disposable `TEST-Smoke-*` window, and synthetic undo sanity checks.
+See `.github/skills/smoke-test/SKILL.md` for the full automated procedure — safe read-only checks, controlled mutation tests (close + undo, archive + undo) in a disposable `TEST-Smoke-*` window, and synthetic undo sanity checks. Do not run ad hoc live-browser smoke mutations outside the automated runner unless debugging a specific runner failure.
 
 Integration tests run against an isolated headless Chrome (`npm run test:integration`) and cover destructive paths safely. To test additional destructive commands (archive, dedupe), add Rust-side scenarios in `rust/crates/tabctl/tests/browser_integration.rs` (keep `scripts/ci/integration-bootstrap.js` as thin browser bootstrap only). On Windows, use `TABCTL_TRANSPORT=tcp`.
 
