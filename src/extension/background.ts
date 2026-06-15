@@ -35,6 +35,10 @@ const ACTIVE_PAGE_CACHE_QUIESCENT_COOLDOWN_MS = 30_000;
 const ACTIVE_PAGE_CACHE_STATUS_TIMEOUT_MS = 30_000;
 const CACHE_AVAILABLE_BADGE_TEXT = "C";
 const CACHE_AVAILABLE_BADGE_COLOR = "#2da44e";
+const CACHE_WAITING_BADGE_TEXT = "W";
+const CACHE_WAITING_BADGE_COLOR = "#bf8700";
+const CACHE_ERROR_BADGE_TEXT = "E";
+const CACHE_ERROR_BADGE_COLOR = "#cf222e";
 const RECONNECT_INITIAL_DELAY_MS = 250;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 const RECONNECT_ALARM_MIN_DELAY_MS = 30_000;
@@ -82,6 +86,7 @@ const activePageCache = {
   lastQuiescentCapturedKey: null as string | null,
   lastQuiescentCapturedAt: 0,
   statusRequests: new Map<string, { tabId: number; url: string }>(),
+  diagnostics: new Map<string, { kind: "waiting" | "error"; detail: string }>(),
 };
 
 function log(...args: Array<unknown>) {
@@ -243,6 +248,10 @@ function activePageCacheKey(tab: chrome.tabs.Tab, url: string) {
   return `${tab.id}:${url}`;
 }
 
+function activePageCacheKeyForTabId(tabId: number, url: string) {
+  return `${tabId}:${url}`;
+}
+
 function activePageCacheUrl(tab: chrome.tabs.Tab) {
   return tab.url || tab.pendingUrl || "";
 }
@@ -264,18 +273,72 @@ async function clearCacheAvailableIndicator(tabId: number) {
   }
 }
 
-async function setCacheAvailableIndicator(tabId: number, expectedUrl: string) {
+async function setCacheBadgeIndicator(tabId: number, expectedUrl: string, text: string, color: string, title: string) {
   try {
     const tab = await chrome.tabs.get(tabId);
     if (!isEligibleActivePageCacheTab(tab) || activePageCacheUrl(tab) !== expectedUrl) {
       await clearCacheAvailableIndicator(tabId);
       return;
     }
-    await chrome.action?.setBadgeBackgroundColor?.({ tabId, color: CACHE_AVAILABLE_BADGE_COLOR });
-    await chrome.action?.setBadgeText?.({ tabId, text: CACHE_AVAILABLE_BADGE_TEXT });
-    await chrome.action?.setTitle?.({ tabId, title: "Tab Control - page cache available" });
+    await chrome.action?.setBadgeBackgroundColor?.({ tabId, color });
+    await chrome.action?.setBadgeText?.({ tabId, text });
+    await chrome.action?.setTitle?.({ tabId, title });
   } catch (error) {
-    log("set cache indicator failed", { tabId, error });
+    log("set cache indicator failed", { tabId, text, error });
+  }
+}
+
+async function setCacheAvailableIndicator(tabId: number, expectedUrl: string) {
+  await setCacheBadgeIndicator(
+    tabId,
+    expectedUrl,
+    CACHE_AVAILABLE_BADGE_TEXT,
+    CACHE_AVAILABLE_BADGE_COLOR,
+    "Tab Control - page cache available",
+  );
+}
+
+async function setCacheWaitingIndicator(tabId: number, expectedUrl: string, detail: string) {
+  await setCacheBadgeIndicator(
+    tabId,
+    expectedUrl,
+    CACHE_WAITING_BADGE_TEXT,
+    CACHE_WAITING_BADGE_COLOR,
+    `Tab Control - waiting for page cache (${detail})`,
+  );
+}
+
+async function setCacheErrorIndicator(tabId: number, expectedUrl: string, detail: string) {
+  await setCacheBadgeIndicator(
+    tabId,
+    expectedUrl,
+    CACHE_ERROR_BADGE_TEXT,
+    CACHE_ERROR_BADGE_COLOR,
+    `Tab Control - page cache error (${detail})`,
+  );
+}
+
+function hasPendingActivePageCacheWork(tabId: number, url: string) {
+  const key = activePageCacheKeyForTabId(tabId, url);
+  return activePageCache.inFlightKeys.has(key)
+    || activePageCache.pending?.key === key
+    || activePageCache.quiescentPending?.key === key;
+}
+
+function setActivePageCacheDiagnostic(tabId: number, url: string, kind: "waiting" | "error", detail: string) {
+  activePageCache.diagnostics.set(activePageCacheKeyForTabId(tabId, url), { kind, detail });
+}
+
+function clearActivePageCacheDiagnostic(tabId: number, url: string) {
+  activePageCache.diagnostics.delete(activePageCacheKeyForTabId(tabId, url));
+}
+
+function clearActivePageCacheDiagnosticsForTab(tabId: number) {
+  const prefix = `${tabId}:`;
+  for (const key of activePageCache.diagnostics.keys()) {
+    if (key.startsWith(prefix)) {
+      activePageCache.diagnostics.delete(key);
+    }
   }
 }
 
@@ -285,10 +348,28 @@ async function applyPageCacheStatus(tabId: number, expectedUrl: string, availabl
     if (activePageCacheUrl(tab) !== expectedUrl) {
       return;
     }
-    if (!isEligibleActivePageCacheTab(tab) || !available) {
+    if (!isEligibleActivePageCacheTab(tab)) {
       await clearCacheAvailableIndicator(tabId);
       return;
     }
+    if (!available) {
+      const diagnostic = activePageCache.diagnostics.get(activePageCacheKeyForTabId(tabId, expectedUrl));
+      if (diagnostic?.kind === "waiting") {
+        await setCacheWaitingIndicator(tabId, expectedUrl, diagnostic.detail);
+        return;
+      }
+      if (diagnostic?.kind === "error") {
+        await setCacheErrorIndicator(tabId, expectedUrl, diagnostic.detail);
+        return;
+      }
+      if (hasPendingActivePageCacheWork(tabId, expectedUrl)) {
+        await setCacheWaitingIndicator(tabId, expectedUrl, "capture pending");
+        return;
+      }
+      await clearCacheAvailableIndicator(tabId);
+      return;
+    }
+    clearActivePageCacheDiagnostic(tabId, expectedUrl);
     await setCacheAvailableIndicator(tabId, expectedUrl);
   } catch {
     await clearCacheAvailableIndicator(tabId);
@@ -329,7 +410,7 @@ function requestPageCacheStatus(tab: chrome.tabs.Tab, reason: string) {
   const port = state.port;
   if (!port) {
     connectNative();
-    void clearCacheAvailableIndicator(tab.id);
+    void setCacheWaitingIndicator(tab.id, url, "native host reconnecting");
     return;
   }
 
@@ -449,9 +530,11 @@ function scheduleActivePageCacheCapture(tab: chrome.tabs.Tab, reason: string) {
     return;
   }
 
-  requestPageCacheStatus(tab, reason);
   const url = activePageCacheUrl(tab);
   const key = activePageCacheKey(tab, url);
+  clearActivePageCacheDiagnostic(tab.id, url);
+  void setCacheWaitingIndicator(tab.id, url, "checking status");
+  requestPageCacheStatus(tab, reason);
   scheduleQuiescentActivePageCacheCapture(tab, reason, key);
   if (activePageCache.inFlightKeys.has(key) || activePageCache.lastCapturedKey === key) {
     return;
@@ -575,6 +658,27 @@ async function captureActivePageCache(
 
     const extraction = await content.extractPageHtml(captureTab.id, ACTIVE_PAGE_CACHE_TIMEOUT_MS, ACTIVE_PAGE_CACHE_MAX_HTML_CHARS);
     if (extraction.status !== "READ" || typeof extraction.html !== "string" || extraction.html.length === 0) {
+      log("active page cache extraction not readable", {
+        tabId: captureTab.id,
+        reason,
+        key,
+        status: extraction.status,
+        error: extraction.error,
+        sourceHtmlChars: extraction.sourceHtmlChars,
+        sourceTextChars: extraction.sourceTextChars,
+        documentReadyState: extraction.documentReadyState,
+        truncatedHtml: extraction.truncatedHtml,
+      });
+      if (extraction.status === "NOT_LOADED") {
+        const url = activePageCacheUrl(captureTab);
+        setActivePageCacheDiagnostic(captureTab.id, url, "waiting", "page still loading");
+        void setCacheWaitingIndicator(captureTab.id, url, "page still loading");
+      } else {
+        const detail = typeof extraction.status === "string" ? extraction.status.toLowerCase().replace(/_/g, " ") : "capture failed";
+        const url = activePageCacheUrl(captureTab);
+        setActivePageCacheDiagnostic(captureTab.id, url, "error", detail);
+        void setCacheErrorIndicator(captureTab.id, url, detail);
+      }
       void requestPageCacheStatusForTab(captureTab.id, `${reason}:capture-failed`);
       return false;
     }
@@ -620,6 +724,9 @@ async function captureActivePageCache(
     return true;
   } catch (error) {
     log("active page cache capture failed", { tabId: tab.id, reason, error });
+    const url = activePageCacheUrl(tab);
+    setActivePageCacheDiagnostic(tab.id, url, "error", "capture exception");
+    void setCacheErrorIndicator(tab.id, url, "capture exception");
     void requestPageCacheStatusForTab(tab.id, `${reason}:capture-error`);
     return false;
   } finally {
@@ -758,6 +865,7 @@ function registerBrowserStateListeners() {
       changeInfo,
     });
     if ("url" in changeInfo || "status" in changeInfo || "discarded" in changeInfo) {
+      clearActivePageCacheDiagnosticsForTab(tabId);
       void clearCacheAvailableIndicator(tabId);
     }
     if (tab.active && ("url" in changeInfo || "status" in changeInfo || "discarded" in changeInfo)) {
@@ -801,6 +909,7 @@ function registerBrowserStateListeners() {
         activePageCache.statusRequests.delete(requestId);
       }
     });
+    clearActivePageCacheDiagnosticsForTab(tabId);
     void clearCacheAvailableIndicator(tabId);
   });
 
