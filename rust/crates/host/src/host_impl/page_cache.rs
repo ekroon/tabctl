@@ -21,6 +21,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 const MAX_HTML_CHARS_PER_ENTRY: usize = 10 * 1024 * 1024;
 const MAX_ENTRIES: usize = 250;
 const MAX_TOTAL_HTML_BYTES: usize = 512 * 1024 * 1024;
+const MAX_OPEN_TAB_CLEANUP_FILE_READS: usize = 16;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct CacheKey {
@@ -58,6 +59,24 @@ pub(crate) struct PageCacheEntry {
     pub(crate) source_text_chars: i64,
     pub(crate) document_ready_state: Option<String>,
     pub(crate) captured_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PageCacheFileMetadata {
+    profile: String,
+    tab_id: i64,
+    url_key: String,
+    #[serde(default)]
+    canonical_url_key: String,
+}
+
+#[derive(Debug)]
+struct PageCacheFileSummary {
+    path: PathBuf,
+    key: CacheKey,
+    captured_at: i64,
+    html_bytes: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -179,12 +198,19 @@ impl PageCache {
             })
     }
 
-    pub(crate) fn has_exact_open_tab(&self, profile: Option<&str>, tab_id: i64, url: &str) -> bool {
-        self.entries.contains_key(&CacheKey {
-            profile: profile_key(profile),
-            tab_id,
-            url_key: url_key(url),
-        })
+    pub(crate) fn exact_file_available(
+        path: &Path,
+        profile: Option<&str>,
+        tab_id: i64,
+        url: &str,
+    ) -> Result<bool, String> {
+        let profile = profile_key(profile);
+        let url_key = url_key(url);
+        let file_path = cache_file_path_for_key(path, &profile, tab_id, &url_key);
+        let Some(entry) = read_exact_file_entry(&file_path, &profile, tab_id, &url_key)? else {
+            return Ok(false);
+        };
+        Ok(is_usable_entry(&entry))
     }
 
     #[cfg(test)]
@@ -218,39 +244,73 @@ impl PageCache {
         incognito: bool,
         captured_at: i64,
     ) {
-        if incognito
-            || truncated_html
-            || html.is_empty()
-            || html.chars().count() > MAX_HTML_CHARS_PER_ENTRY
-        {
-            return;
-        }
-
-        let profile = profile_key(profile);
-        let url_key = url_key(url);
-        let canonical_url_key = canonical_url_key(url);
-        let key = CacheKey {
-            profile: profile.clone(),
+        let Some(entry) = build_success_entry(
+            profile,
             tab_id,
-            url_key: url_key.clone(),
+            url,
+            title,
+            html,
+            source_html_chars,
+            source_text_chars,
+            document_ready_state,
+            truncated_html,
+            incognito,
+            captured_at,
+        ) else {
+            return;
         };
-        self.entries.insert(
-            key,
-            PageCacheEntry {
-                profile,
-                tab_id,
-                url_key,
-                canonical_url_key,
-                title: title.map(str::to_string),
-                html: html.to_string(),
-                source_html_chars,
-                source_text_chars,
-                document_ready_state: document_ready_state.map(str::to_string),
-                captured_at,
-            },
-        );
+
+        let key = CacheKey {
+            profile: entry.profile.clone(),
+            tab_id: entry.tab_id,
+            url_key: entry.url_key.clone(),
+        };
+        self.entries.insert(key, entry);
         self.dirty = true;
         self.enforce_caps();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn store_success_file(
+        path: &Path,
+        profile: Option<&str>,
+        tab_id: i64,
+        url: &str,
+        title: Option<&str>,
+        html: &str,
+        source_html_chars: i64,
+        source_text_chars: i64,
+        document_ready_state: Option<&str>,
+        truncated_html: bool,
+        incognito: bool,
+        captured_at: i64,
+        open_tabs: Option<&[OpenTabCacheKey]>,
+    ) -> Result<bool, String> {
+        let Some(entry) = build_success_entry(
+            profile,
+            tab_id,
+            url,
+            title,
+            html,
+            source_html_chars,
+            source_text_chars,
+            document_ready_state,
+            truncated_html,
+            incognito,
+            captured_at,
+        ) else {
+            return Ok(false);
+        };
+
+        fs::create_dir_all(path).map_err(|err| format!("create page cache directory: {err}"))?;
+        set_private_dir_permissions(path)?;
+        write_cache_entry(path, &entry)?;
+        remove_replaced_files_for_current_tab(path, &entry)?;
+        if let Some(open_tabs) = open_tabs {
+            remove_stale_files_to_open_tabs(path, &entry.profile, open_tabs)?;
+        }
+        enforce_file_caps(path)?;
+        Self::exact_file_available(path, Some(&entry.profile), entry.tab_id, &entry.url_key)
     }
 
     pub(crate) fn prune_to_open_tabs(
@@ -307,23 +367,7 @@ impl PageCache {
         let mut entries: Vec<_> = self.entries.values().cloned().collect();
         entries.sort_by_key(|entry| (entry.captured_at, entry.profile.clone(), entry.tab_id));
         for entry in entries {
-            let file_path = cache_file_path(path, &entry);
-            let tmp_path = file_path.with_extension(format!(
-                "json.tmp.{}.{}",
-                std::process::id(),
-                crate::host_impl::protocol::now_ms()
-            ));
-            let bytes = serde_json::to_vec_pretty(&entry)
-                .map_err(|err| format!("serialize page cache: {err}"))?;
-            write_private_file(&tmp_path, &bytes).map_err(|err| {
-                let _ = fs::remove_file(&tmp_path);
-                err
-            })?;
-            fs::rename(&tmp_path, &file_path).map_err(|err| {
-                let _ = fs::remove_file(&tmp_path);
-                format!("replace page cache: {err}")
-            })?;
-            set_private_file_permissions(&file_path)?;
+            write_cache_entry(path, &entry)?;
         }
         self.dirty = false;
         Ok(())
@@ -364,11 +408,288 @@ impl PageCache {
 }
 
 fn cache_file_path(dir: &Path, entry: &PageCacheEntry) -> PathBuf {
+    cache_file_path_for_key(dir, &entry.profile, entry.tab_id, &entry.url_key)
+}
+
+fn cache_file_path_for_key(dir: &Path, profile: &str, tab_id: i64, url_key: &str) -> PathBuf {
     dir.join(format!(
         "tab-{}-{}.json",
-        entry.tab_id,
-        cache_file_hash(&entry.profile, entry.tab_id, &entry.url_key)
+        tab_id,
+        cache_file_hash(profile, tab_id, url_key)
     ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_success_entry(
+    profile: Option<&str>,
+    tab_id: i64,
+    url: &str,
+    title: Option<&str>,
+    html: &str,
+    source_html_chars: i64,
+    source_text_chars: i64,
+    document_ready_state: Option<&str>,
+    truncated_html: bool,
+    incognito: bool,
+    captured_at: i64,
+) -> Option<PageCacheEntry> {
+    if incognito
+        || truncated_html
+        || html.is_empty()
+        || html.chars().count() > MAX_HTML_CHARS_PER_ENTRY
+    {
+        return None;
+    }
+
+    let profile = profile_key(profile);
+    let url_key = url_key(url);
+    Some(PageCacheEntry {
+        profile,
+        tab_id,
+        canonical_url_key: canonical_url_key(url),
+        url_key,
+        title: title.map(str::to_string),
+        html: html.to_string(),
+        source_html_chars,
+        source_text_chars,
+        document_ready_state: document_ready_state.map(str::to_string),
+        captured_at,
+    })
+}
+
+fn read_exact_file_entry(
+    file_path: &Path,
+    profile: &str,
+    tab_id: i64,
+    url_key: &str,
+) -> Result<Option<PageCacheEntry>, String> {
+    let bytes = match fs::read(file_path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(format!("read page cache: {err}")),
+    };
+    let Ok(entry) = serde_json::from_slice::<PageCacheEntry>(&bytes) else {
+        let _ = fs::remove_file(file_path);
+        return Ok(None);
+    };
+    if entry.profile != profile
+        || entry.tab_id != tab_id
+        || entry.url_key != url_key
+        || !is_usable_entry(&entry)
+    {
+        let _ = fs::remove_file(file_path);
+        return Ok(None);
+    }
+    Ok(Some(entry))
+}
+
+fn is_usable_entry(entry: &PageCacheEntry) -> bool {
+    !entry.html.is_empty() && entry.html.chars().count() <= MAX_HTML_CHARS_PER_ENTRY
+}
+
+fn write_cache_entry(dir: &Path, entry: &PageCacheEntry) -> Result<(), String> {
+    let file_path = cache_file_path(dir, entry);
+    let tmp_path = file_path.with_extension(format!(
+        "json.tmp.{}.{}",
+        std::process::id(),
+        crate::host_impl::protocol::now_ms()
+    ));
+    let bytes =
+        serde_json::to_vec_pretty(entry).map_err(|err| format!("serialize page cache: {err}"))?;
+    write_private_file(&tmp_path, &bytes).map_err(|err| {
+        let _ = fs::remove_file(&tmp_path);
+        err
+    })?;
+    fs::rename(&tmp_path, &file_path).map_err(|err| {
+        let _ = fs::remove_file(&tmp_path);
+        format!("replace page cache: {err}")
+    })?;
+    set_private_file_permissions(&file_path)
+}
+
+fn remove_stale_files_to_open_tabs(
+    dir: &Path,
+    profile: &str,
+    open_tabs: &[OpenTabCacheKey],
+) -> Result<(), String> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(format!("read page cache directory: {err}")),
+    };
+    let open_exact_urls: HashSet<String> = open_tabs.iter().map(|tab| url_key(&tab.url)).collect();
+    let open_canonical_urls: HashSet<String> = open_tabs
+        .iter()
+        .map(|tab| canonical_url_key(&tab.url))
+        .collect();
+
+    let mut files_read = 0usize;
+    for dir_entry in entries.filter_map(Result::ok) {
+        if files_read >= MAX_OPEN_TAB_CLEANUP_FILE_READS {
+            break;
+        }
+        let file_path = dir_entry.path();
+        if file_path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let bytes = match fs::read(&file_path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(format!("read page cache: {err}")),
+        };
+        files_read += 1;
+        let Ok(entry) = serde_json::from_slice::<PageCacheFileMetadata>(&bytes) else {
+            continue;
+        };
+        if entry.profile != profile {
+            continue;
+        }
+        let canonical_url_key = if entry.canonical_url_key.is_empty() {
+            canonical_url_key(&entry.url_key)
+        } else {
+            entry.canonical_url_key.clone()
+        };
+        if !open_exact_urls.contains(&entry.url_key)
+            && !open_canonical_urls.contains(&canonical_url_key)
+        {
+            let _ = fs::remove_file(&file_path);
+        }
+    }
+    Ok(())
+}
+
+fn remove_replaced_files_for_current_tab(
+    dir: &Path,
+    current: &PageCacheEntry,
+) -> Result<(), String> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(format!("read page cache directory: {err}")),
+    };
+    let current_path = cache_file_path(dir, current);
+    let tab_prefix = format!("tab-{}-", current.tab_id);
+
+    for dir_entry in entries.filter_map(Result::ok) {
+        let file_path = dir_entry.path();
+        if file_path == current_path
+            || file_path.extension().and_then(|ext| ext.to_str()) != Some("json")
+            || !dir_entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&tab_prefix)
+        {
+            continue;
+        }
+
+        let bytes = match fs::read(&file_path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(format!("read page cache: {err}")),
+        };
+        let Ok(entry) = serde_json::from_slice::<PageCacheFileMetadata>(&bytes) else {
+            continue;
+        };
+        if entry.profile != current.profile || entry.tab_id != current.tab_id {
+            continue;
+        }
+        let canonical_url_key = if entry.canonical_url_key.is_empty() {
+            canonical_url_key(&entry.url_key)
+        } else {
+            entry.canonical_url_key
+        };
+        if entry.url_key != current.url_key && canonical_url_key != current.canonical_url_key {
+            let _ = fs::remove_file(&file_path);
+        }
+    }
+    Ok(())
+}
+
+fn enforce_file_caps(dir: &Path) -> Result<(), String> {
+    enforce_file_caps_with_limits(dir, MAX_ENTRIES, MAX_TOTAL_HTML_BYTES)
+}
+
+fn enforce_file_caps_with_limits(
+    dir: &Path,
+    max_entries: usize,
+    max_total_html_bytes: usize,
+) -> Result<(), String> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(format!("read page cache directory: {err}")),
+    };
+
+    let mut file_paths = Vec::new();
+    let mut total_file_bytes = 0usize;
+    for dir_entry in entries.filter_map(Result::ok) {
+        let file_path = dir_entry.path();
+        if file_path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(metadata) = dir_entry.metadata() {
+            total_file_bytes = total_file_bytes.saturating_add(metadata.len() as usize);
+        }
+        file_paths.push(file_path);
+    }
+
+    if file_paths.len() <= max_entries && total_file_bytes <= max_total_html_bytes {
+        return Ok(());
+    }
+
+    let mut summaries = Vec::new();
+    for file_path in file_paths {
+        match read_cache_file_summary(&file_path)? {
+            Some(summary) => summaries.push(summary),
+            None => {
+                let _ = fs::remove_file(file_path);
+            }
+        }
+    }
+
+    summaries.sort_by_key(|summary| summary.captured_at);
+    let mut keep = HashSet::new();
+    let mut total_html_bytes = 0usize;
+    for summary in summaries.iter().rev() {
+        if keep.len() >= max_entries
+            || total_html_bytes.saturating_add(summary.html_bytes) > max_total_html_bytes
+        {
+            continue;
+        }
+        total_html_bytes += summary.html_bytes;
+        keep.insert(summary.key.clone());
+    }
+
+    for summary in summaries {
+        if !keep.contains(&summary.key) {
+            let _ = fs::remove_file(summary.path);
+        }
+    }
+    Ok(())
+}
+
+fn read_cache_file_summary(file_path: &Path) -> Result<Option<PageCacheFileSummary>, String> {
+    let bytes = match fs::read(file_path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(format!("read page cache: {err}")),
+    };
+    let Ok(entry) = serde_json::from_slice::<PageCacheEntry>(&bytes) else {
+        return Ok(None);
+    };
+    if !is_usable_entry(&entry) {
+        return Ok(None);
+    }
+    Ok(Some(PageCacheFileSummary {
+        path: file_path.to_path_buf(),
+        key: CacheKey {
+            profile: entry.profile,
+            tab_id: entry.tab_id,
+            url_key: entry.url_key,
+        },
+        captured_at: entry.captured_at,
+        html_bytes: entry.html.len(),
+    }))
 }
 
 fn cache_file_hash(profile: &str, tab_id: i64, url_key: &str) -> String {
@@ -417,9 +738,7 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|err| format!("create page cache temp file: {err}"))?;
 
     file.write_all(bytes)
-        .map_err(|err| format!("write page cache: {err}"))?;
-    file.sync_all()
-        .map_err(|err| format!("sync page cache: {err}"))
+        .map_err(|err| format!("write page cache: {err}"))
 }
 
 fn set_private_dir_permissions(path: &Path) -> Result<(), String> {
@@ -452,6 +771,7 @@ fn set_private_file_permissions(path: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
 
     fn cache_path(name: &str) -> std::path::PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1022,5 +1342,375 @@ mod tests {
             .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
             .collect();
         assert_eq!(files.len(), 1);
+    }
+
+    #[test]
+    fn fast_store_writes_single_exact_file_without_rewriting_unrelated_entries() {
+        let path = cache_path("fast-store");
+        let mut cache = PageCache::default();
+        store(
+            &mut cache,
+            Some("other"),
+            1,
+            "https://example.com/other",
+            "other",
+            1,
+        );
+        cache.save_if_dirty(&path).expect("seed cache");
+        let unrelated_path = fs::read_dir(&path)
+            .expect("read cache dir")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .expect("unrelated cache file");
+        let before = fs::metadata(&unrelated_path)
+            .expect("metadata before")
+            .modified()
+            .expect("modified before");
+
+        PageCache::store_success_file(
+            &path,
+            Some("work"),
+            42,
+            "https://example.com/page",
+            Some("Page"),
+            "<html>fast</html>",
+            17,
+            4,
+            Some("complete"),
+            false,
+            false,
+            2,
+            None,
+        )
+        .expect("fast store");
+
+        assert_eq!(
+            fs::metadata(&unrelated_path)
+                .expect("metadata after")
+                .modified()
+                .expect("modified after"),
+            before
+        );
+        assert!(PageCache::exact_file_available(
+            &path,
+            Some("work"),
+            42,
+            "https://example.com/page"
+        )
+        .expect("exact status"));
+        assert_eq!(
+            fs::read_dir(&path)
+                .expect("read cache dir")
+                .filter_map(Result::ok)
+                .filter(
+                    |entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json")
+                )
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn fast_store_enforces_max_entries_without_rewriting_retained_files() {
+        let path = cache_path("fast-store-entry-cap");
+        let mut cache = PageCache::default();
+        for i in 0..MAX_ENTRIES {
+            store(
+                &mut cache,
+                Some("work"),
+                i as i64,
+                &format!("https://example.com/{i}"),
+                "seed",
+                i as i64,
+            );
+        }
+        cache.save_if_dirty(&path).expect("seed cache");
+        let retained_path = cache_file_path_for_key(
+            &path,
+            "work",
+            (MAX_ENTRIES - 1) as i64,
+            &format!("https://example.com/{}", MAX_ENTRIES - 1),
+        );
+        let before = fs::metadata(&retained_path)
+            .expect("metadata before")
+            .modified()
+            .expect("modified before");
+        std::thread::sleep(Duration::from_millis(20));
+
+        PageCache::store_success_file(
+            &path,
+            Some("work"),
+            MAX_ENTRIES as i64,
+            "https://example.com/new",
+            Some("Page"),
+            "<html>new</html>",
+            16,
+            3,
+            Some("complete"),
+            false,
+            false,
+            MAX_ENTRIES as i64,
+            None,
+        )
+        .expect("fast store");
+
+        assert_eq!(
+            fs::read_dir(&path)
+                .expect("read cache dir")
+                .filter_map(Result::ok)
+                .filter(
+                    |entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json")
+                )
+                .count(),
+            MAX_ENTRIES
+        );
+        assert!(
+            !PageCache::exact_file_available(&path, Some("work"), 0, "https://example.com/0")
+                .expect("oldest evicted")
+        );
+        assert!(PageCache::exact_file_available(
+            &path,
+            Some("work"),
+            MAX_ENTRIES as i64,
+            "https://example.com/new"
+        )
+        .expect("new retained"));
+        assert_eq!(
+            fs::metadata(&retained_path)
+                .expect("metadata after")
+                .modified()
+                .expect("modified after"),
+            before
+        );
+    }
+
+    #[test]
+    fn exact_file_status_deletes_known_stale_exact_file_only() {
+        let path = cache_path("exact-stale");
+        fs::create_dir_all(&path).expect("create dir");
+        let exact_path = cache_file_path_for_key(&path, "work", 42, "https://example.com/page");
+        let unrelated_path = cache_file_path_for_key(&path, "work", 43, "https://example.com/page");
+        fs::write(&exact_path, b"not-json").expect("write corrupt exact cache");
+        fs::write(&unrelated_path, b"not-json").expect("write corrupt unrelated cache");
+
+        assert!(!PageCache::exact_file_available(
+            &path,
+            Some("work"),
+            42,
+            "https://example.com/page"
+        )
+        .expect("exact status"));
+        assert!(!exact_path.exists());
+        assert!(unrelated_path.exists());
+    }
+
+    #[test]
+    fn fast_store_removes_stale_files_for_closed_tabs_from_open_snapshot() {
+        let path = cache_path("fast-closed-tab-cleanup");
+        let mut cache = PageCache::default();
+        store(
+            &mut cache,
+            Some("work"),
+            10,
+            "https://example.com/keep",
+            "keep",
+            1,
+        );
+        store(
+            &mut cache,
+            Some("work"),
+            11,
+            "https://example.com/closed",
+            "closed",
+            2,
+        );
+        store(
+            &mut cache,
+            Some("other"),
+            11,
+            "https://example.com/closed",
+            "other",
+            3,
+        );
+        cache.save_if_dirty(&path).expect("seed cache");
+
+        PageCache::store_success_file(
+            &path,
+            Some("work"),
+            12,
+            "https://example.com/current",
+            Some("Page"),
+            "<html>current</html>",
+            20,
+            3,
+            Some("complete"),
+            false,
+            false,
+            4,
+            Some(&[
+                OpenTabCacheKey::new(10, "https://example.com/keep"),
+                OpenTabCacheKey::new(12, "https://example.com/current"),
+            ]),
+        )
+        .expect("fast store");
+
+        let loaded = PageCache::load(&path);
+        assert!(loaded
+            .lookup_exact_open_tab(Some("work"), 10, "https://example.com/keep")
+            .is_some());
+        assert!(loaded
+            .lookup_exact_open_tab(Some("work"), 11, "https://example.com/closed")
+            .is_none());
+        assert!(loaded
+            .lookup_exact_open_tab(Some("work"), 12, "https://example.com/current")
+            .is_some());
+        assert!(loaded
+            .lookup_exact_open_tab(Some("other"), 11, "https://example.com/closed")
+            .is_some());
+    }
+
+    #[test]
+    fn fast_store_removes_replaced_url_cache_and_keeps_new_entry() {
+        let path = cache_path("fast-replaced-url-cleanup");
+        let mut cache = PageCache::default();
+        store(
+            &mut cache,
+            Some("work"),
+            42,
+            "https://example.com/old#section",
+            "old",
+            1,
+        );
+        cache.save_if_dirty(&path).expect("seed cache");
+
+        PageCache::store_success_file(
+            &path,
+            Some("work"),
+            42,
+            "https://example.com/new#section",
+            Some("Page"),
+            "<html>new</html>",
+            16,
+            3,
+            Some("complete"),
+            false,
+            false,
+            2,
+            Some(&[OpenTabCacheKey::new(42, "https://example.com/new#section")]),
+        )
+        .expect("fast store");
+
+        let loaded = PageCache::load(&path);
+        assert!(loaded
+            .lookup_exact_open_tab(Some("work"), 42, "https://example.com/old#section")
+            .is_none());
+        assert!(loaded
+            .lookup_exact_open_tab(Some("work"), 42, "https://example.com/new#section")
+            .is_some());
+        assert!(PageCache::exact_file_available(
+            &path,
+            Some("work"),
+            42,
+            "https://example.com/new#section"
+        )
+        .expect("exact status"));
+    }
+
+    #[test]
+    fn fast_store_does_not_rewrite_retained_profile_files() {
+        let path = cache_path("fast-retained-no-rewrite");
+        let mut cache = PageCache::default();
+        store(
+            &mut cache,
+            Some("work"),
+            10,
+            "https://example.com/retained",
+            "retained",
+            1,
+        );
+        cache.save_if_dirty(&path).expect("seed cache");
+        let retained_path =
+            cache_file_path_for_key(&path, "work", 10, "https://example.com/retained");
+        let before = fs::metadata(&retained_path)
+            .expect("metadata before")
+            .modified()
+            .expect("modified before");
+        std::thread::sleep(Duration::from_millis(20));
+
+        PageCache::store_success_file(
+            &path,
+            Some("work"),
+            12,
+            "https://example.com/current",
+            Some("Page"),
+            "<html>current</html>",
+            20,
+            3,
+            Some("complete"),
+            false,
+            false,
+            2,
+            Some(&[
+                OpenTabCacheKey::new(10, "https://example.com/retained"),
+                OpenTabCacheKey::new(12, "https://example.com/current"),
+            ]),
+        )
+        .expect("fast store");
+
+        assert_eq!(
+            fs::metadata(&retained_path)
+                .expect("metadata after")
+                .modified()
+                .expect("modified after"),
+            before
+        );
+        let loaded = PageCache::load(&path);
+        assert!(loaded
+            .lookup_exact_open_tab(Some("work"), 10, "https://example.com/retained")
+            .is_some());
+    }
+
+    #[test]
+    fn exact_file_status_remains_exact_not_canonical_or_duplicate() {
+        let path = cache_path("exact-status-exact-only");
+        PageCache::store_success_file(
+            &path,
+            Some("work"),
+            42,
+            "https://example.com/page#section",
+            Some("Page"),
+            "<html>exact</html>",
+            18,
+            3,
+            Some("complete"),
+            false,
+            false,
+            1,
+            None,
+        )
+        .expect("store exact");
+
+        assert!(PageCache::exact_file_available(
+            &path,
+            Some("work"),
+            42,
+            "https://example.com/page#section"
+        )
+        .expect("exact hit"));
+        assert!(!PageCache::exact_file_available(
+            &path,
+            Some("work"),
+            42,
+            "https://example.com/page#other"
+        )
+        .expect("canonical miss"));
+        assert!(!PageCache::exact_file_available(
+            &path,
+            Some("work"),
+            7,
+            "https://example.com/page#section"
+        )
+        .expect("duplicate-tab miss"));
     }
 }
