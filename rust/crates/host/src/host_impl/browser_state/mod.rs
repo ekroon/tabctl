@@ -137,6 +137,7 @@ fn open_db(db_path: &Path) -> Result<Connection, String> {
             browser_window_id INTEGER,
             browser_group_id INTEGER,
             browser_tab_id INTEGER,
+            browser_tab_url TEXT,
             payload_json TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_browser_state_events_profile_recorded
@@ -146,7 +147,39 @@ fn open_db(db_path: &Path) -> Result<Connection, String> {
         "#,
     )
     .map_err(|e| format!("Failed to initialize browser-state schema: {e}"))?;
+    ensure_event_tab_url_column(&conn)?;
     Ok(conn)
+}
+
+fn ensure_event_tab_url_column(conn: &Connection) -> Result<(), String> {
+    let has_column = conn
+        .query_row(
+            "SELECT 1
+             FROM pragma_table_info('browser_state_events')
+             WHERE name = 'browser_tab_url'
+             LIMIT 1",
+            [],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to inspect browser-state event schema: {e}"))?
+        .is_some();
+
+    if !has_column {
+        conn.execute(
+            "ALTER TABLE browser_state_events ADD COLUMN browser_tab_url TEXT",
+            [],
+        )
+        .map_err(|e| format!("Failed to migrate browser-state event schema: {e}"))?;
+    }
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_browser_state_events_tab_url
+         ON browser_state_events(profile_name, browser_tab_url, after_snapshot_id DESC)",
+        [],
+    )
+    .map_err(|e| format!("Failed to index browser-state event URLs: {e}"))?;
+    Ok(())
 }
 
 fn previous_snapshot_meta(
@@ -165,6 +198,18 @@ fn previous_snapshot_meta(
     )
     .optional()
     .map_err(|e| format!("Failed to load latest browser-state snapshot: {e}"))
+}
+
+fn snapshot_by_id(conn: &Connection, snapshot_id: i64) -> Result<Value, String> {
+    let snapshot_json: String = conn
+        .query_row(
+            "SELECT snapshot_json FROM browser_state_snapshots WHERE id = ?1",
+            params![snapshot_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Failed to load browser-state snapshot {snapshot_id}: {e}"))?;
+    serde_json::from_str::<Value>(&snapshot_json)
+        .map_err(|e| format!("Invalid stored snapshot JSON for {snapshot_id}: {e}"))
 }
 
 fn previous_groups(
@@ -510,6 +555,149 @@ fn sanitized_events(snapshot: &Value, events: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+fn tab_urls_by_id(snapshot: &Value) -> HashMap<i64, String> {
+    let mut urls = HashMap::new();
+    for window in snapshot
+        .get("windows")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        for tab in window
+            .get("tabs")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(tab_id) = tab.get("tabId").and_then(Value::as_i64) else {
+                continue;
+            };
+            let Some(url) = tab.get("url").and_then(Value::as_str) else {
+                continue;
+            };
+            if !url.is_empty() {
+                urls.insert(tab_id, normalize_url(url));
+            }
+        }
+    }
+    urls
+}
+
+fn normalized_event_tab_url(
+    event: &Value,
+    current_tab_urls: &HashMap<i64, String>,
+    previous_tab_urls: &HashMap<i64, String>,
+) -> Option<String> {
+    let explicit_url = event
+        .get("url")
+        .and_then(Value::as_str)
+        .or_else(|| event.get("pendingUrl").and_then(Value::as_str))
+        .or_else(|| {
+            event
+                .get("changeInfo")
+                .and_then(|change| change.get("url"))
+                .and_then(Value::as_str)
+        });
+    if let Some(url) = explicit_url {
+        return (!url.is_empty()).then(|| normalize_url(url));
+    }
+
+    let tab_id = event.get("tabId").and_then(Value::as_i64)?;
+    current_tab_urls
+        .get(&tab_id)
+        .or_else(|| previous_tab_urls.get(&tab_id))
+        .cloned()
+}
+
+fn normalized_event_prune_urls(
+    event: &Value,
+    current_tab_urls: &HashMap<i64, String>,
+    previous_tab_urls: &HashMap<i64, String>,
+) -> HashSet<String> {
+    let mut urls = HashSet::new();
+    if let Some(url) = normalized_event_tab_url(event, current_tab_urls, previous_tab_urls) {
+        urls.insert(url);
+    }
+    if let Some(tab_id) = event.get("tabId").and_then(Value::as_i64) {
+        if let Some(url) = current_tab_urls.get(&tab_id) {
+            urls.insert(url.clone());
+        }
+        if let Some(url) = previous_tab_urls.get(&tab_id) {
+            urls.insert(url.clone());
+        }
+    }
+    urls
+}
+
+fn prune_replaced_event_snapshots(
+    tx: &rusqlite::Transaction<'_>,
+    profile: &str,
+    current_snapshot_id: i64,
+    event_urls: &HashSet<String>,
+    open_urls: &HashSet<String>,
+) -> Result<usize, String> {
+    let mut protected_snapshot_ids = HashSet::new();
+    protected_snapshot_ids.insert(current_snapshot_id);
+    for open_url in open_urls {
+        let latest = tx
+            .query_row(
+                "SELECT MAX(after_snapshot_id)
+                 FROM browser_state_events
+                 WHERE profile_name = ?1 AND browser_tab_url = ?2",
+                params![profile, open_url],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .map_err(|e| format!("Failed to find latest open browser-state snapshot: {e}"))?;
+        if let Some(snapshot_id) = latest {
+            protected_snapshot_ids.insert(snapshot_id);
+        }
+    }
+
+    let mut pruned = 0;
+    for event_url in event_urls {
+        let url_is_open = open_urls.contains(event_url);
+        let mut stmt = tx
+            .prepare(
+                "SELECT DISTINCT old.after_snapshot_id
+                 FROM browser_state_events old
+                 WHERE old.profile_name = ?1
+                   AND old.browser_tab_url = ?2
+                   AND (?3 = 0 OR old.after_snapshot_id != ?4)",
+            )
+            .map_err(|e| format!("Failed to prepare replaced browser-state snapshot query: {e}"))?;
+        let rows = stmt
+            .query_map(
+                params![
+                    profile,
+                    event_url,
+                    if url_is_open { 1 } else { 0 },
+                    current_snapshot_id,
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|e| format!("Failed to query replaced browser-state snapshots: {e}"))?;
+        let mut candidates = Vec::new();
+        for row in rows {
+            let snapshot_id =
+                row.map_err(|e| format!("Failed to read replaced browser-state snapshot: {e}"))?;
+            if !protected_snapshot_ids.contains(&snapshot_id) {
+                candidates.push(snapshot_id);
+            }
+        }
+        drop(stmt);
+
+        for snapshot_id in candidates {
+            pruned += tx
+                .execute(
+                    "DELETE FROM browser_state_snapshots WHERE profile_name = ?1 AND id = ?2",
+                    params![profile, snapshot_id],
+                )
+                .map_err(|e| format!("Failed to prune replaced browser-state snapshot: {e}"))?;
+        }
+    }
+    Ok(pruned)
+}
+
 pub(super) fn ingest_sync(
     db_path: &Path,
     profile: Option<&str>,
@@ -561,6 +749,25 @@ pub(super) fn ingest_sync(
             "snapshotHash": snapshot_hash,
         }));
     }
+
+    let previous_snapshot = previous
+        .as_ref()
+        .map(|prev| snapshot_by_id(&conn, prev.snapshot_id))
+        .transpose()?;
+    let current_tab_urls = tab_urls_by_id(&snapshot);
+    let previous_tab_urls = previous_snapshot
+        .as_ref()
+        .map(tab_urls_by_id)
+        .unwrap_or_default();
+    let open_urls = current_tab_urls.values().cloned().collect::<HashSet<_>>();
+    let event_tab_urls = events
+        .iter()
+        .map(|event| normalized_event_tab_url(event, &current_tab_urls, &previous_tab_urls))
+        .collect::<Vec<_>>();
+    let event_prune_urls = events
+        .iter()
+        .flat_map(|event| normalized_event_prune_urls(event, &current_tab_urls, &previous_tab_urls))
+        .collect::<HashSet<_>>();
 
     let previous_groups_list = match previous.as_ref() {
         Some(prev) => previous_groups(&conn, profile, prev.snapshot_id)?,
@@ -649,7 +856,7 @@ pub(super) fn ingest_sync(
         .map_err(|e| format!("Failed to insert browser-state group: {e}"))?;
     }
 
-    for event in &events {
+    for (index, event) in events.iter().enumerate() {
         let kind = event
             .get("kind")
             .and_then(Value::as_str)
@@ -660,8 +867,9 @@ pub(super) fn ingest_sync(
         tx.execute(
             "INSERT INTO browser_state_events (
                 profile_name, recorded_at, reason, before_snapshot_id, after_snapshot_id,
-                kind, browser_window_id, browser_group_id, browser_tab_id, payload_json
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                kind, browser_window_id, browser_group_id, browser_tab_id, browser_tab_url,
+                payload_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 profile,
                 event
@@ -675,11 +883,15 @@ pub(super) fn ingest_sync(
                 event.get("windowId").and_then(Value::as_i64),
                 event.get("groupId").and_then(Value::as_i64),
                 event.get("tabId").and_then(Value::as_i64),
+                event_tab_urls.get(index).and_then(Option::as_deref),
                 payload_json,
             ],
         )
         .map_err(|e| format!("Failed to insert browser-state event: {e}"))?;
     }
+
+    let pruned_snapshots =
+        prune_replaced_event_snapshots(&tx, profile, snapshot_id, &event_prune_urls, &open_urls)?;
 
     tx.commit()
         .map_err(|e| format!("Failed to commit browser-state transaction: {e}"))?;
@@ -694,6 +906,7 @@ pub(super) fn ingest_sync(
         "groupCount": group_count,
         "tabCount": tab_count,
         "previousSnapshotId": previous.map(|prev| prev.snapshot_id),
+        "prunedSnapshots": pruned_snapshots,
     }))
 }
 
@@ -840,7 +1053,8 @@ pub(super) fn list_events(
         let mut stmt = conn
             .prepare(
                 "SELECT id, recorded_at, reason, before_snapshot_id, after_snapshot_id, kind,
-                        browser_window_id, browser_group_id, browser_tab_id, payload_json
+                        browser_window_id, browser_group_id, browser_tab_id, browser_tab_url,
+                        payload_json
                  FROM browser_state_events
                  WHERE profile_name = ?1 AND kind = ?2
                  ORDER BY id DESC
@@ -857,7 +1071,8 @@ pub(super) fn list_events(
         let mut stmt = conn
             .prepare(
                 "SELECT id, recorded_at, reason, before_snapshot_id, after_snapshot_id, kind,
-                        browser_window_id, browser_group_id, browser_tab_id, payload_json
+                        browser_window_id, browser_group_id, browser_tab_id, browser_tab_url,
+                        payload_json
                  FROM browser_state_events
                  WHERE profile_name = ?1
                  ORDER BY id DESC
@@ -885,7 +1100,8 @@ fn map_event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "browserWindowId": row.get::<_, Option<i64>>(6)?,
         "browserGroupId": row.get::<_, Option<i64>>(7)?,
         "browserTabId": row.get::<_, Option<i64>>(8)?,
-        "payloadJson": row.get::<_, String>(9)?,
+        "browserTabUrl": row.get::<_, Option<String>>(9)?,
+        "payloadJson": row.get::<_, String>(10)?,
     }))
 }
 
@@ -1251,5 +1467,289 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["kind"], "tabs.onRemoved");
         assert_eq!(items[0]["browserTabId"].as_i64(), Some(999));
+    }
+
+    #[test]
+    fn migrates_existing_events_table_with_tab_url_column() {
+        let db = TempDbPath::new();
+        let conn = Connection::open(db.as_path()).expect("create old db");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE browser_state_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_name TEXT NOT NULL,
+                recorded_at INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                before_snapshot_id INTEGER,
+                after_snapshot_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                browser_window_id INTEGER,
+                browser_group_id INTEGER,
+                browser_tab_id INTEGER,
+                payload_json TEXT NOT NULL
+            );
+            "#,
+        )
+        .expect("create old events table");
+        drop(conn);
+
+        let conn = open_db(db.as_path()).expect("migrate db");
+        let has_column: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0
+                 FROM pragma_table_info('browser_state_events')
+                 WHERE name = 'browser_tab_url'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("column check");
+        let has_index: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0
+                 FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_browser_state_events_tab_url'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("index check");
+
+        assert!(has_column);
+        assert!(has_index);
+    }
+
+    #[test]
+    fn prunes_replaced_event_snapshots_by_normalized_url() {
+        let db = TempDbPath::new();
+        for idx in 0..3 {
+            ingest_sync(
+                db.as_path(),
+                Some("edge"),
+                &serde_json::json!({
+                    "reason": "event",
+                    "recordedAt": 1000 + idx as i64,
+                    "events": [{
+                        "kind": "tabs.onUpdated",
+                        "tabId": 1,
+                        "changeInfo": { "title": format!("tick-{idx}") }
+                    }],
+                    "snapshot": sample_snapshot("Work", &["https://example.com/page#frag", "https://example.org/other"])
+                }),
+            )
+            .expect("ingest");
+        }
+        ingest_sync(
+            db.as_path(),
+            Some("edge"),
+            &serde_json::json!({
+                "reason": "event",
+                "recordedAt": 2000,
+                "events": [{
+                    "kind": "tabs.onUpdated",
+                    "tabId": 2,
+                    "changeInfo": { "title": "other page" }
+                }],
+                "snapshot": sample_snapshot("Work", &["https://example.com/page#later", "https://example.org/other"])
+            }),
+        )
+        .expect("ingest distinct URL");
+        ingest_sync(
+            db.as_path(),
+            Some("edge"),
+            &serde_json::json!({
+                "reason": "event",
+                "recordedAt": 3000,
+                "events": [{
+                    "kind": "tabs.onUpdated",
+                    "tabId": 1,
+                    "changeInfo": { "title": "latest page" }
+                }],
+                "snapshot": sample_snapshot("Work", &["https://example.com/page#latest", "https://example.org/other"])
+            }),
+        )
+        .expect("ingest latest URL");
+
+        let conn = open_db(db.as_path()).expect("open db");
+        let snapshot_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM browser_state_snapshots WHERE profile_name = 'edge'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count snapshots");
+        let window_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM browser_state_windows WHERE profile_name = 'edge'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count windows");
+        let group_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM browser_state_groups WHERE profile_name = 'edge'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count groups");
+        let event_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM browser_state_events WHERE profile_name = 'edge'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count events");
+
+        assert_eq!(snapshot_count, 2);
+        assert_eq!(window_count, 2);
+        assert_eq!(group_count, 2);
+        assert_eq!(event_count, 2);
+
+        let events = list_events(db.as_path(), Some("edge"), Some(10), None).expect("events");
+        let items = events.as_array().expect("event items");
+        let urls = items
+            .iter()
+            .filter_map(|item| item["browserTabUrl"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(urls, vec!["example.com/page", "example.org/other"]);
+    }
+
+    #[test]
+    fn removes_snapshots_for_closed_normalized_url() {
+        let db = TempDbPath::new();
+        ingest_sync(
+            db.as_path(),
+            Some("edge"),
+            &serde_json::json!({
+                "reason": "event",
+                "recordedAt": 1000,
+                "events": [{
+                    "kind": "tabs.onUpdated",
+                    "tabId": 1,
+                    "changeInfo": { "title": "open" }
+                }],
+                "snapshot": sample_snapshot("Work", &["https://closed.example/page#open", "https://open.example/other"])
+            }),
+        )
+        .expect("open ingest");
+
+        ingest_sync(
+            db.as_path(),
+            Some("edge"),
+            &serde_json::json!({
+                "reason": "event",
+                "recordedAt": 2000,
+                "events": [{
+                    "kind": "tabs.onRemoved",
+                    "tabId": 1,
+                    "windowId": 100
+                }],
+                "snapshot": {
+                    "generatedAt": 1_700_000_000_001_i64,
+                    "windows": [{
+                        "windowId": 100,
+                        "focused": true,
+                        "state": "normal",
+                        "tabs": [{
+                            "tabId": 2,
+                            "windowId": 100,
+                            "index": 0,
+                            "url": "https://open.example/other",
+                            "title": "Still open",
+                            "active": true,
+                            "pinned": false,
+                            "groupId": -1
+                        }],
+                        "groups": []
+                    }]
+                }
+            }),
+        )
+        .expect("close ingest");
+
+        let conn = open_db(db.as_path()).expect("open db");
+        let snapshot_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM browser_state_snapshots WHERE profile_name = 'edge'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count snapshots");
+        let event_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM browser_state_events WHERE profile_name = 'edge'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count events");
+
+        assert_eq!(snapshot_count, 1);
+        assert_eq!(event_count, 1);
+
+        let latest = latest_snapshot(db.as_path(), Some("edge")).expect("latest");
+        let tabs = latest["snapshot"]["windows"][0]["tabs"]
+            .as_array()
+            .expect("latest tabs");
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0]["url"].as_str(), Some("https://open.example/other"));
+    }
+
+    #[test]
+    fn removes_snapshots_for_replaced_tab_url() {
+        let db = TempDbPath::new();
+        ingest_sync(
+            db.as_path(),
+            Some("edge"),
+            &serde_json::json!({
+                "reason": "event",
+                "recordedAt": 1000,
+                "events": [{
+                    "kind": "tabs.onUpdated",
+                    "tabId": 1,
+                    "changeInfo": { "title": "old page" }
+                }],
+                "snapshot": sample_snapshot("Work", &["https://old.example/page#old", "https://open.example/other"])
+            }),
+        )
+        .expect("old URL ingest");
+
+        ingest_sync(
+            db.as_path(),
+            Some("edge"),
+            &serde_json::json!({
+                "reason": "event",
+                "recordedAt": 2000,
+                "events": [{
+                    "kind": "tabs.onUpdated",
+                    "tabId": 1,
+                    "changeInfo": { "url": "https://new.example/page#new" }
+                }],
+                "snapshot": sample_snapshot("Work", &["https://new.example/page#new", "https://open.example/other"])
+            }),
+        )
+        .expect("new URL ingest");
+
+        let conn = open_db(db.as_path()).expect("open db");
+        let snapshot_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM browser_state_snapshots WHERE profile_name = 'edge'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count snapshots");
+        let old_url_events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM browser_state_events WHERE profile_name = 'edge' AND browser_tab_url = 'old.example/page'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count old URL events");
+
+        assert_eq!(snapshot_count, 1);
+        assert_eq!(old_url_events, 0);
+
+        let latest = latest_snapshot(db.as_path(), Some("edge")).expect("latest");
+        assert_eq!(
+            latest["snapshot"]["windows"][0]["tabs"][0]["url"].as_str(),
+            Some("https://new.example/page#new")
+        );
     }
 }

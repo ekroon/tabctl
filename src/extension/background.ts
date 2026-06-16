@@ -23,7 +23,12 @@ const KEEPALIVE_ALARM = "tabctl-keepalive";
 const RECONNECT_ALARM = "tabctl-reconnect";
 const KEEPALIVE_INTERVAL_MINUTES = 1;
 const BROWSER_STATE_SYNC_DEBOUNCE_MS = 750;
-const ACTIVE_PAGE_CACHE_DEBOUNCE_MS = 1_000;
+const ACTIVE_PAGE_CACHE_LOADING_RETRY_MS = 100;
+const ACTIVE_PAGE_CACHE_SETTLING_RETRY_MS = 150;
+const ACTIVE_PAGE_CACHE_FIRST_QUIESCENT_TIMEOUT_MS = 750;
+const ACTIVE_PAGE_CACHE_FIRST_QUIESCENT_SAMPLE_MS = 75;
+const ACTIVE_PAGE_CACHE_FIRST_LOADING_MAX_ATTEMPTS = 300;
+const ACTIVE_PAGE_CACHE_FIRST_SETTLING_MAX_ATTEMPTS = 200;
 const ACTIVE_PAGE_CACHE_TIMEOUT_MS = 5_000;
 const MAX_PAGE_HTML_CHARS = 10 * 1024 * 1024;
 const ACTIVE_PAGE_CACHE_MAX_HTML_CHARS = MAX_PAGE_HTML_CHARS;
@@ -73,7 +78,7 @@ const browserState = {
 const activePageCache = {
   nextId: 1,
   timer: null as ReturnType<typeof setTimeout> | null,
-  pending: null as { tab: chrome.tabs.Tab & { id: number }; reason: string; key: string } | null,
+  pending: null as { tabId: number; reason: string; key: string; attempts: number } | null,
   quiescentTimer: null as ReturnType<typeof setTimeout> | null,
   quiescentPending: null as {
     tabId: number;
@@ -86,7 +91,22 @@ const activePageCache = {
   lastQuiescentCapturedKey: null as string | null,
   lastQuiescentCapturedAt: 0,
   statusRequests: new Map<string, { tabId: number; url: string }>(),
-  diagnostics: new Map<string, { kind: "waiting" | "error"; detail: string }>(),
+  states: new Map<string, ActivePageCacheState>(),
+};
+
+type ActivePageCacheStateKind = "checking" | "loading" | "settling" | "capturing" | "cached" | "error";
+type ActivePageCacheState = {
+  kind: ActivePageCacheStateKind;
+  detail: string;
+};
+
+const ACTIVE_PAGE_CACHE_STATE_DETAILS: Record<ActivePageCacheStateKind, string> = {
+  checking: "checking status",
+  loading: "page still loading",
+  settling: "waiting for page settle",
+  capturing: "capture pending",
+  cached: "page cache available",
+  error: "capture failed",
 };
 
 function log(...args: Array<unknown>) {
@@ -325,21 +345,60 @@ function hasPendingActivePageCacheWork(tabId: number, url: string) {
     || activePageCache.quiescentPending?.key === key;
 }
 
-function setActivePageCacheDiagnostic(tabId: number, url: string, kind: "waiting" | "error", detail: string) {
-  activePageCache.diagnostics.set(activePageCacheKeyForTabId(tabId, url), { kind, detail });
+function setActivePageCacheState(
+  tabId: number,
+  url: string,
+  kind: ActivePageCacheStateKind,
+  detail = ACTIVE_PAGE_CACHE_STATE_DETAILS[kind],
+) {
+  activePageCache.states.set(activePageCacheKeyForTabId(tabId, url), { kind, detail });
 }
 
-function clearActivePageCacheDiagnostic(tabId: number, url: string) {
-  activePageCache.diagnostics.delete(activePageCacheKeyForTabId(tabId, url));
+function activePageCacheState(tabId: number, url: string) {
+  return activePageCache.states.get(activePageCacheKeyForTabId(tabId, url));
 }
 
-function clearActivePageCacheDiagnosticsForTab(tabId: number) {
+function clearActivePageCacheState(tabId: number, url: string) {
+  activePageCache.states.delete(activePageCacheKeyForTabId(tabId, url));
+}
+
+function clearActivePageCacheStatesForTab(tabId: number) {
   const prefix = `${tabId}:`;
-  for (const key of activePageCache.diagnostics.keys()) {
+  for (const key of activePageCache.states.keys()) {
     if (key.startsWith(prefix)) {
-      activePageCache.diagnostics.delete(key);
+      activePageCache.states.delete(key);
     }
   }
+}
+
+function clearPendingFirstActivePageCacheCapture(key: string) {
+  if (activePageCache.pending?.key === key) {
+    activePageCache.pending = null;
+  }
+}
+
+function failFirstActivePageCacheCapture(
+  pending: { tabId: number; key: string },
+  tab: chrome.tabs.Tab & { id: number },
+  url: string,
+  detail: string,
+) {
+  clearPendingFirstActivePageCacheCapture(pending.key);
+  setActivePageCacheState(tab.id, url, "error", detail);
+  void setCacheErrorIndicator(tab.id, url, detail);
+  void requestPageCacheStatusForTab(tab.id, `first-capture:${detail.replace(/\s+/g, "-")}`);
+}
+
+function waitingDetailForActivePageCacheState(state: ActivePageCacheState | undefined) {
+  if (
+    state?.kind === "checking"
+    || state?.kind === "loading"
+    || state?.kind === "settling"
+    || state?.kind === "capturing"
+  ) {
+    return state.detail;
+  }
+  return null;
 }
 
 async function applyPageCacheStatus(tabId: number, expectedUrl: string, available: boolean) {
@@ -353,23 +412,26 @@ async function applyPageCacheStatus(tabId: number, expectedUrl: string, availabl
       return;
     }
     if (!available) {
-      const diagnostic = activePageCache.diagnostics.get(activePageCacheKeyForTabId(tabId, expectedUrl));
-      if (diagnostic?.kind === "waiting") {
-        await setCacheWaitingIndicator(tabId, expectedUrl, diagnostic.detail);
+      const cacheState = activePageCacheState(tabId, expectedUrl);
+      const waitingDetail = waitingDetailForActivePageCacheState(cacheState);
+      if (waitingDetail) {
+        await setCacheWaitingIndicator(tabId, expectedUrl, waitingDetail);
         return;
       }
-      if (diagnostic?.kind === "error") {
-        await setCacheErrorIndicator(tabId, expectedUrl, diagnostic.detail);
+      if (cacheState?.kind === "error") {
+        await setCacheErrorIndicator(tabId, expectedUrl, cacheState.detail);
         return;
       }
       if (hasPendingActivePageCacheWork(tabId, expectedUrl)) {
-        await setCacheWaitingIndicator(tabId, expectedUrl, "capture pending");
+        setActivePageCacheState(tabId, expectedUrl, "capturing");
+        await setCacheWaitingIndicator(tabId, expectedUrl, ACTIVE_PAGE_CACHE_STATE_DETAILS.capturing);
         return;
       }
+      clearActivePageCacheState(tabId, expectedUrl);
       await clearCacheAvailableIndicator(tabId);
       return;
     }
-    clearActivePageCacheDiagnostic(tabId, expectedUrl);
+    setActivePageCacheState(tabId, expectedUrl, "cached");
     await setCacheAvailableIndicator(tabId, expectedUrl);
   } catch {
     await clearCacheAvailableIndicator(tabId);
@@ -410,6 +472,7 @@ function requestPageCacheStatus(tab: chrome.tabs.Tab, reason: string) {
   const port = state.port;
   if (!port) {
     connectNative();
+    setActivePageCacheState(tab.id, url, "checking", "native host reconnecting");
     void setCacheWaitingIndicator(tab.id, url, "native host reconnecting");
     return;
   }
@@ -473,7 +536,6 @@ function isEligibleActivePageCacheTab(tab: chrome.tabs.Tab): tab is chrome.tabs.
     && !browserState.incognitoTabIds.has(tab.id)
     && (typeof tab.windowId !== "number" || !browserState.incognitoWindowIds.has(tab.windowId))
     && tab.discarded !== true
-    && tab.status !== "loading"
     && isScriptableUrl(url);
 }
 
@@ -520,6 +582,21 @@ function scheduleQuiescentActivePageCacheCapture(tab: chrome.tabs.Tab & { id: nu
   }, ACTIVE_PAGE_CACHE_QUIESCENT_DELAY_MS);
 }
 
+function scheduleFirstActivePageCacheRetry(
+  pending: { tabId: number; reason: string; key: string; attempts: number },
+  delayMs: number,
+) {
+  clearPendingActivePageCacheCapture();
+  activePageCache.pending = pending;
+  activePageCache.timer = setTimeout(() => {
+    activePageCache.timer = null;
+    const retry = activePageCache.pending;
+    if (retry) {
+      void captureFirstSettledActivePageCache(retry);
+    }
+  }, delayMs);
+}
+
 function scheduleActivePageCacheCapture(tab: chrome.tabs.Tab, reason: string) {
   if (!isEligibleActivePageCacheTab(tab)) {
     if (typeof tab.id === "number") {
@@ -532,24 +609,28 @@ function scheduleActivePageCacheCapture(tab: chrome.tabs.Tab, reason: string) {
 
   const url = activePageCacheUrl(tab);
   const key = activePageCacheKey(tab, url);
-  clearActivePageCacheDiagnostic(tab.id, url);
-  void setCacheWaitingIndicator(tab.id, url, "checking status");
+
+  if (tab.status === "loading") {
+    setActivePageCacheState(tab.id, url, "loading");
+    void setCacheWaitingIndicator(tab.id, url, ACTIVE_PAGE_CACHE_STATE_DETAILS.loading);
+    if (activePageCache.pending?.key !== key) {
+      scheduleFirstActivePageCacheRetry({ tabId: tab.id, reason, key, attempts: 0 }, ACTIVE_PAGE_CACHE_LOADING_RETRY_MS);
+    }
+    return;
+  }
+
+  setActivePageCacheState(tab.id, url, "checking");
+  void setCacheWaitingIndicator(tab.id, url, ACTIVE_PAGE_CACHE_STATE_DETAILS.checking);
   requestPageCacheStatus(tab, reason);
   scheduleQuiescentActivePageCacheCapture(tab, reason, key);
   if (activePageCache.inFlightKeys.has(key) || activePageCache.lastCapturedKey === key) {
     return;
   }
+  if (activePageCache.pending?.key === key) {
+    return;
+  }
 
-  clearPendingActivePageCacheCapture();
-  activePageCache.pending = { tab, reason, key };
-  activePageCache.timer = setTimeout(() => {
-    activePageCache.timer = null;
-    const pending = activePageCache.pending;
-    activePageCache.pending = null;
-    if (pending) {
-      void captureActivePageCache(pending.tab, pending.reason, pending.key);
-    }
-  }, ACTIVE_PAGE_CACHE_DEBOUNCE_MS);
+  scheduleFirstActivePageCacheRetry({ tabId: tab.id, reason, key, attempts: 0 }, 0);
 }
 
 async function scheduleActivePageCacheCaptureForTab(tabId: number, reason: string) {
@@ -588,6 +669,95 @@ async function currentActivePageCacheTab(tabId: number, key: string) {
   }
 }
 
+async function getPageCacheOpenTabs() {
+  const tabs = await chrome.tabs.query({});
+  return tabs
+    .filter((tab): tab is chrome.tabs.Tab & { id: number } => typeof tab.id === "number")
+    .filter((tab) => tab.incognito !== true)
+    .map((tab) => ({ tabId: tab.id, url: activePageCacheUrl(tab) }))
+    .filter((tab) => tab.url.length > 0 && isScriptableUrl(tab.url));
+}
+
+async function captureFirstSettledActivePageCache(
+  pending: { tabId: number; key: string; reason: string; attempts: number },
+) {
+  if (activePageCache.inFlightKeys.has(pending.key) || activePageCache.lastCapturedKey === pending.key) {
+    if (activePageCache.pending?.key === pending.key) {
+      activePageCache.pending = null;
+    }
+    return;
+  }
+
+  const tab = await currentActivePageCacheTab(pending.tabId, pending.key);
+  if (!tab) {
+    if (activePageCache.pending?.key === pending.key) {
+      activePageCache.pending = null;
+    }
+    return;
+  }
+
+  const tabUrl = activePageCacheUrl(tab);
+  if (tab.status === "loading") {
+    setActivePageCacheState(tab.id, tabUrl, "loading");
+    void setCacheWaitingIndicator(tab.id, tabUrl, ACTIVE_PAGE_CACHE_STATE_DETAILS.loading);
+    if (pending.attempts < ACTIVE_PAGE_CACHE_FIRST_LOADING_MAX_ATTEMPTS) {
+      scheduleFirstActivePageCacheRetry(
+        { ...pending, attempts: pending.attempts + 1 },
+        ACTIVE_PAGE_CACHE_LOADING_RETRY_MS,
+      );
+    } else {
+      failFirstActivePageCacheCapture(pending, tab, tabUrl, "loading attempts exhausted");
+    }
+    return;
+  }
+
+  setActivePageCacheState(tab.id, tabUrl, "settling");
+  void setCacheWaitingIndicator(tab.id, tabUrl, ACTIVE_PAGE_CACHE_STATE_DETAILS.settling);
+  const probe = await content.probePageQuiescence(
+    tab.id,
+    ACTIVE_PAGE_CACHE_FIRST_QUIESCENT_TIMEOUT_MS,
+    ACTIVE_PAGE_CACHE_FIRST_QUIESCENT_SAMPLE_MS,
+  );
+  if (activePageCache.pending?.key !== pending.key) {
+    return;
+  }
+  if (!probe.quiet) {
+    if (probe.error || probe.documentReadyState === null) {
+      failFirstActivePageCacheCapture(
+        pending,
+        tab,
+        tabUrl,
+        probe.reason || "page settle probe failed",
+      );
+      return;
+    }
+    const loading = probe.documentReadyState !== "interactive" && probe.documentReadyState !== "complete";
+    setActivePageCacheState(tab.id, tabUrl, loading ? "loading" : "settling");
+    void setCacheWaitingIndicator(
+      tab.id,
+      tabUrl,
+      loading ? ACTIVE_PAGE_CACHE_STATE_DETAILS.loading : ACTIVE_PAGE_CACHE_STATE_DETAILS.settling,
+    );
+    if (pending.attempts < ACTIVE_PAGE_CACHE_FIRST_SETTLING_MAX_ATTEMPTS) {
+      scheduleFirstActivePageCacheRetry(
+        { ...pending, attempts: pending.attempts + 1 },
+        loading ? ACTIVE_PAGE_CACHE_LOADING_RETRY_MS : ACTIVE_PAGE_CACHE_SETTLING_RETRY_MS,
+      );
+    } else {
+      failFirstActivePageCacheCapture(
+        pending,
+        tab,
+        tabUrl,
+        loading ? "loading attempts exhausted" : "settling attempts exhausted",
+      );
+    }
+    return;
+  }
+
+  clearPendingFirstActivePageCacheCapture(pending.key);
+  await captureActivePageCache(tab, pending.reason, pending.key);
+}
+
 async function rescheduleQuiescentActivePageCacheCapture(
   pending: { tabId: number; key: string; reason: string; attempts: number },
 ) {
@@ -619,6 +789,9 @@ async function captureQuiescentActivePageCache(pending: { tabId: number; key: st
     return;
   }
 
+  const tabUrl = activePageCacheUrl(tab);
+  setActivePageCacheState(tab.id, tabUrl, "settling");
+  void setCacheWaitingIndicator(tab.id, tabUrl, ACTIVE_PAGE_CACHE_STATE_DETAILS.settling);
   const probe = await content.probePageQuiescence(
     tab.id,
     ACTIVE_PAGE_CACHE_QUIESCENT_TIMEOUT_MS,
@@ -645,7 +818,7 @@ async function captureActivePageCache(
     connectNative();
     return false;
   }
-  if (!isEligibleActivePageCacheTab(tab) || activePageCache.inFlightKeys.has(key)) {
+  if (!isEligibleActivePageCacheTab(tab) || tab.status === "loading" || activePageCache.inFlightKeys.has(key)) {
     return false;
   }
 
@@ -656,6 +829,15 @@ async function captureActivePageCache(
       return false;
     }
 
+    const captureUrl = activePageCacheUrl(captureTab);
+    if (captureTab.status === "loading") {
+      setActivePageCacheState(captureTab.id, captureUrl, "loading");
+      void setCacheWaitingIndicator(captureTab.id, captureUrl, ACTIVE_PAGE_CACHE_STATE_DETAILS.loading);
+      scheduleFirstActivePageCacheRetry({ tabId: captureTab.id, reason, key, attempts: 0 }, ACTIVE_PAGE_CACHE_LOADING_RETRY_MS);
+      return false;
+    }
+    setActivePageCacheState(captureTab.id, captureUrl, "capturing");
+    void setCacheWaitingIndicator(captureTab.id, captureUrl, ACTIVE_PAGE_CACHE_STATE_DETAILS.capturing);
     const extraction = await content.extractPageHtml(captureTab.id, ACTIVE_PAGE_CACHE_TIMEOUT_MS, ACTIVE_PAGE_CACHE_MAX_HTML_CHARS);
     if (extraction.status !== "READ" || typeof extraction.html !== "string" || extraction.html.length === 0) {
       log("active page cache extraction not readable", {
@@ -671,12 +853,16 @@ async function captureActivePageCache(
       });
       if (extraction.status === "NOT_LOADED") {
         const url = activePageCacheUrl(captureTab);
-        setActivePageCacheDiagnostic(captureTab.id, url, "waiting", "page still loading");
-        void setCacheWaitingIndicator(captureTab.id, url, "page still loading");
+        setActivePageCacheState(captureTab.id, url, "loading");
+        void setCacheWaitingIndicator(captureTab.id, url, ACTIVE_PAGE_CACHE_STATE_DETAILS.loading);
+        scheduleFirstActivePageCacheRetry(
+          { tabId: captureTab.id, reason, key, attempts: 0 },
+          ACTIVE_PAGE_CACHE_LOADING_RETRY_MS,
+        );
       } else {
         const detail = typeof extraction.status === "string" ? extraction.status.toLowerCase().replace(/_/g, " ") : "capture failed";
         const url = activePageCacheUrl(captureTab);
-        setActivePageCacheDiagnostic(captureTab.id, url, "error", detail);
+        setActivePageCacheState(captureTab.id, url, "error", detail);
         void setCacheErrorIndicator(captureTab.id, url, detail);
       }
       void requestPageCacheStatusForTab(captureTab.id, `${reason}:capture-failed`);
@@ -693,6 +879,7 @@ async function captureActivePageCache(
       return false;
     }
 
+    const openTabs = await getPageCacheOpenTabs();
     const id = nextActivePageCacheId();
     trackPageCacheStatusRequest(id, verifiedTab.id, activePageCacheUrl(verifiedTab));
     port.postMessage({
@@ -702,6 +889,7 @@ async function captureActivePageCache(
       data: {
         reason,
         capturedAt: Date.now(),
+        openTabs,
         tab: {
           tabId: verifiedTab.id,
           windowId: verifiedTab.windowId,
@@ -725,7 +913,7 @@ async function captureActivePageCache(
   } catch (error) {
     log("active page cache capture failed", { tabId: tab.id, reason, error });
     const url = activePageCacheUrl(tab);
-    setActivePageCacheDiagnostic(tab.id, url, "error", "capture exception");
+    setActivePageCacheState(tab.id, url, "error", "capture exception");
     void setCacheErrorIndicator(tab.id, url, "capture exception");
     void requestPageCacheStatusForTab(tab.id, `${reason}:capture-error`);
     return false;
@@ -865,7 +1053,7 @@ function registerBrowserStateListeners() {
       changeInfo,
     });
     if ("url" in changeInfo || "status" in changeInfo || "discarded" in changeInfo) {
-      clearActivePageCacheDiagnosticsForTab(tabId);
+      clearActivePageCacheStatesForTab(tabId);
       void clearCacheAvailableIndicator(tabId);
     }
     if (tab.active && ("url" in changeInfo || "status" in changeInfo || "discarded" in changeInfo)) {
@@ -909,7 +1097,7 @@ function registerBrowserStateListeners() {
         activePageCache.statusRequests.delete(requestId);
       }
     });
-    clearActivePageCacheDiagnosticsForTab(tabId);
+    clearActivePageCacheStatesForTab(tabId);
     void clearCacheAvailableIndicator(tabId);
   });
 

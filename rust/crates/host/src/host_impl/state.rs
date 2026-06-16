@@ -158,11 +158,9 @@ impl HostState {
             .unwrap_or_else(|| now_ms() as i64);
         let title = tab.get("title").and_then(Value::as_str);
 
-        let mut cache = PageCache::load(&self.page_cache_path);
-        if let Some(open_tabs) = page_cache_open_tabs_from_payload(root) {
-            cache.prune_to_open_tabs(self.profile_name.as_deref(), &open_tabs);
-        }
-        cache.store_success(
+        let open_tabs = page_cache_open_tabs_from_payload(root);
+        PageCache::store_success_file(
+            &self.page_cache_path,
             self.profile_name.as_deref(),
             tab_id,
             url,
@@ -174,10 +172,8 @@ impl HostState {
             truncated_html,
             incognito,
             captured_at,
-        );
-        let available = cache.has_exact_open_tab(self.profile_name.as_deref(), tab_id, url);
-        cache.save_if_dirty(&self.page_cache_path)?;
-        Ok(available)
+            open_tabs.as_deref(),
+        )
     }
 
     fn page_cache_status(&self, payload: &Value) -> Value {
@@ -187,12 +183,19 @@ impl HostState {
         if incognito || discarded || is_non_scriptable_url(&url) {
             return page_cache_status_value(Some(tab_id), Some(&url), false);
         }
-        let cache = PageCache::load(&self.page_cache_path);
-        page_cache_status_value(
-            Some(tab_id),
-            Some(&url),
-            cache.has_exact_open_tab(self.profile_name.as_deref(), tab_id, &url),
-        )
+        let available = match PageCache::exact_file_available(
+            &self.page_cache_path,
+            self.profile_name.as_deref(),
+            tab_id,
+            &url,
+        ) {
+            Ok(available) => available,
+            Err(err) => {
+                log_line(&format!("page-cache status failed: {err}"));
+                false
+            }
+        };
+        page_cache_status_value(Some(tab_id), Some(&url), available)
     }
 
     fn page_cache_status_effect(&self, id: String, payload: &Value, available: bool) -> HostEffect {
@@ -1132,6 +1135,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
 
     fn state_path(name: &str) -> PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1360,6 +1364,82 @@ mod tests {
         assert_eq!(
             message.data.as_ref().expect("status data")["available"],
             false
+        );
+    }
+
+    #[test]
+    fn page_cache_capture_with_many_existing_files_has_fast_post_settle_contract() {
+        let (mut state, page_cache_path) = page_cache_test_state("many-existing-fast-contract");
+        let mut cache = PageCache::default();
+        for i in 0..200 {
+            let html = format!("<html>unrelated {i}</html>");
+            cache.store_success(
+                Some("other-profile"),
+                i,
+                &format!("https://unrelated.example/{i}"),
+                Some("Unrelated"),
+                &html,
+                html.chars().count() as i64,
+                i,
+                Some("complete"),
+                false,
+                false,
+                i,
+            );
+        }
+        cache
+            .save_if_dirty(&page_cache_path)
+            .expect("seed cache files");
+
+        let before_files: Vec<_> = fs::read_dir(&page_cache_path)
+            .expect("read seeded cache")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .map(|path| {
+                let modified = fs::metadata(&path)
+                    .expect("metadata before")
+                    .modified()
+                    .expect("modified before");
+                (path, modified)
+            })
+            .collect();
+        assert_eq!(before_files.len(), 200);
+        std::thread::sleep(Duration::from_millis(20));
+
+        let started = Instant::now();
+        let effects = state.handle_native_message(page_cache_capture(
+            "READ",
+            false,
+            false,
+            "<html>ok</html>",
+        ));
+        let elapsed = started.elapsed();
+
+        assert_cache_status_effect(&effects, true);
+        let modified_existing = before_files
+            .iter()
+            .filter(|(path, before)| {
+                fs::metadata(path)
+                    .and_then(|metadata| metadata.modified())
+                    .map(|after| after != *before)
+                    .unwrap_or(true)
+            })
+            .count();
+        let after_file_count = fs::read_dir(&page_cache_path)
+            .expect("read cache after capture")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .count();
+
+        assert_eq!(
+            modified_existing, 0,
+            "post-settle capture should not rewrite unrelated cache files"
+        );
+        assert_eq!(after_file_count, before_files.len() + 1);
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "post-settle cache capture should complete under 0.3s, got {elapsed:?}"
         );
     }
 
