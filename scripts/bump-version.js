@@ -32,7 +32,7 @@ execSync("npm install --package-lock-only --ignore-scripts", {
   cwd: root,
   stdio: "ignore",
 });
-execSync("cargo generate-lockfile --manifest-path rust/Cargo.toml", {
+execSync("cargo update --workspace --manifest-path rust/Cargo.toml", {
   cwd: root,
   stdio: "ignore",
 });

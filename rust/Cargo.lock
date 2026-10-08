@@ -1344,7 +1344,7 @@ dependencies = [
 
 [[package]]
 name = "tabctl"
-version = "0.6.0-rc.12"
+version = "0.6.0-rc.13"
 dependencies = [
  "clap",
  "dirs",
@@ -1359,7 +1359,7 @@ dependencies = [
 
 [[package]]
 name = "tabctl-graphql"
-version = "0.6.0-rc.12"
+version = "0.6.0-rc.13"
 dependencies = [
  "indexmap",
  "juniper",
@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "tabctl-host"
-version = "0.6.0-rc.12"
+version = "0.6.0-rc.13"
 dependencies = [
  "html-to-markdown-rs",
  "rusqlite",
@@ -1382,7 +1382,7 @@ dependencies = [
 
 [[package]]
 name = "tabctl-shared"
-version = "0.6.0-rc.12"
+version = "0.6.0-rc.13"
 dependencies = [
  "serde",
  "serde_json",
