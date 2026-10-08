@@ -1,11 +1,14 @@
 # tabctl CLI
 
 Supports macOS (Apple Silicon and Intel), Edge and Chrome, and local Unix-domain
-sockets only. Install with mise/GitHub releases or build the Rust binary from source.
+sockets only. Install with npm, mise/GitHub releases, or build the Rust binary from source.
+The npm package bundles the universal macOS binary and extension and requires Node.js 24+.
 
 ## Quick start
 ```bash
 mise use -g github:ekroon/tabctl   # or: cargo install --path rust/crates/tabctl
+# npm alternative: npm install -g tabctl
+# current release candidate: npm install -g tabctl@rc
 
 tabctl setup --browser edge --extension-id <extension-id>
 tabctl ping
