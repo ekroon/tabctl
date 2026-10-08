@@ -13,11 +13,11 @@ Run the full end-of-task verification sequence with the automated smoke runner:
 npm run test:smoke
 ```
 
-Do not manually reproduce the smoke test with ad hoc `tabctl` commands during normal verification. The runner is the contract: it builds, verifies Rust, runs browser integration tests, starts an isolated Edge/Chrome instance, performs GraphQL read/mutation/undo checks, validates `readTabs`, cleans up smoke-created tabs/windows, removes the smoke profile, stops the browser, and removes the temp smoke root.
+Do not manually reproduce the smoke test with ad hoc `tabctl` commands during normal verification. The runner is the contract: it builds, runs extension byte-budget tests, verifies Rust, runs browser integration tests, starts an isolated Edge/Chrome instance, performs GraphQL read/mutation/undo checks, validates `readTabs`, cleans up smoke-created tabs/windows, removes the smoke profile, stops the browser, and removes the temp smoke root.
 
 ## Isolation guarantees
 
-The smoke browser uses `scripts/smoke-browser.js`, which creates a dedicated temp root containing:
+Smoke and integration entrypoints share `scripts/lib/browser-fixture.js`, which uses production setup with an explicit disposable user-data directory and creates a dedicated temp root containing:
 
 - an isolated tabctl config dir (`TABCTL_CONFIG_DIR`)
 - an isolated tabctl data dir (`TABCTL_DATA_DIR`)
@@ -26,10 +26,15 @@ The smoke browser uses `scripts/smoke-browser.js`, which creates a dedicated tem
 
 The user's normal Edge/Chrome browser profile, tabctl profile registry, active extension directory, and native messaging manifest must not be mutated by the smoke test.
 
+The fixture verifies the production setup extension ID against the browser's runtime ID and checks that normal native-host manifests remain unchanged. Test browsers use `--use-mock-keychain` and `--password-store=basic`; never reset or unlock the user's keychain for a test. Only setup and CLI subprocesses use the disposable `HOME`.
+
+CDP fixture controls arrange test state and clean it up; behavior assertions go through the real CLI and host. Public `p:*` requests are intentionally rejected and must not be re-enabled for tests.
+
 ## Supported overrides
 
 - `TABCTL_BIN=./rust/target/debug/tabctl` to choose the binary.
-- `EDGE_PATH=/path/to/browser` to choose the browser executable.
+- `TABCTL_TEST_BROWSER=chrome` or `edge` to select the browser for both integration and smoke.
+- `EDGE_PATH=/path/to/browser` or `CHROME_PATH=/path/to/browser` to choose the browser executable.
 - `TABCTL_EXTENSION_DIR=dist/extension` to choose the extension build.
 - `SMOKE_BROWSER_TIMEOUT_MS=60000` to extend browser startup time.
 - `SMOKE_BROWSER_VISIBLE=1` to show the isolated smoke browser for debugging. By default the smoke browser runs headless and should not create windows in the user's window manager.
@@ -41,11 +46,11 @@ If `npm run test:smoke` fails, inspect the runner output first. Manual GraphQL c
 
 ## Success criteria
 
-- `npm run build`, Rust verification, and integration tests complete.
+- `npm run build`, extension and macOS packaging tests, Rust verification, and integration tests complete.
 - The smoke browser emits ready metadata for a `smoke-*` profile under a temp root without showing normal browser windows by default.
 - `ping` and GraphQL `ping` succeed against that smoke profile.
 - Read-only GraphQL checks return data without unexpected errors.
-- `readTabs` extracts non-empty Markdown.
-- Close/undo and archive/undo round-trips succeed only on smoke-created tabs/windows.
+- `readTabs` extracts the expected local fixture content; large escaped/Unicode pages report transport truncation without disconnecting the host.
+- Close/undo and archive/undo round-trips restore tab order, active state and group metadata only on smoke-created tabs/windows.
 - Screenshot and inspect checks return successful GraphQL data.
 - Cleanup removes smoke-created tabs/windows and tears down the smoke browser without manual commands.

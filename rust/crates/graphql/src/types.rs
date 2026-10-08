@@ -70,12 +70,31 @@ pub(crate) struct Group {
 /// Result of a closeTabs mutation.
 #[derive(Debug, Clone, GraphQLObject)]
 pub(crate) struct CloseResult {
-    /// Transaction identifier — pass to `undo` to reverse the close.
-    pub txid: String,
+    /// Transaction identifier — pass to `undoAction` to reverse the close.
+    pub txid: Option<String>,
+    /// Reason durable undo is unavailable for a completed close, otherwise null.
+    pub undo_unavailable: Option<String>,
     /// Number of tabs actually closed.
     pub closed_tabs: i32,
+    /// Whether this result is a non-mutating preview.
+    pub dry_run: bool,
+    /// Number of eligible tabs selected by the close plan.
+    pub planned_tabs: i32,
+    /// Number of tabs excluded from the plan or actual close.
+    pub skipped_tabs: i32,
+    /// Individual policy exclusions or failed closes.
+    pub skipped: Vec<SkippedTab>,
+    /// Tabs selected by the host's close plan.
+    pub tabs: Vec<Tab>,
     /// Tabs remaining in the browser after the close.
     pub remaining_tabs: Vec<Tab>,
+}
+
+/// A tab excluded from a mutation by policy or a browser failure.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct SkippedTab {
+    pub tab_id: i32,
+    pub reason: String,
 }
 
 /// A URL that was skipped during an openTabs mutation.
@@ -90,6 +109,10 @@ pub(crate) struct SkippedUrl {
 /// Result of an openTabs mutation.
 #[derive(Debug, Clone, GraphQLObject)]
 pub(crate) struct OpenResult {
+    /// Transaction identifier — pass to `undoAction` to reverse this open.
+    pub txid: Option<String>,
+    /// Reason durable undo is unavailable, otherwise null.
+    pub undo_unavailable: Option<String>,
     /// The newly created tabs.
     pub tabs: Vec<Tab>,
     /// URLs that were skipped (e.g. deduplicated or failed to create).
@@ -211,10 +234,16 @@ pub(crate) struct GatherResult {
 /// Result of an archiveTabs mutation.
 #[derive(Debug, Clone, GraphQLObject)]
 pub(crate) struct ArchiveResult {
-    /// Transaction ID — pass to `undo` to reverse the archive.
-    pub txid: String,
+    /// Transaction ID — pass to `undoAction` to reverse the archive.
+    pub txid: Option<String>,
+    /// Reason durable undo is unavailable, otherwise null.
+    pub undo_unavailable: Option<String>,
     /// Number of tabs archived.
     pub archived_tabs: i32,
+    /// Number of tabs excluded from the archive.
+    pub skipped_tabs: i32,
+    /// Individual exclusions with their reasons.
+    pub skipped: Vec<SkippedTab>,
 }
 
 /// Result of an analyze query.
@@ -235,8 +264,14 @@ pub(crate) struct AnalyzeResult {
 pub(crate) struct DedupeResult {
     /// Transaction ID for the close-style undo payload, if tabs were actually closed.
     pub txid: Option<String>,
+    /// Reason durable undo is unavailable, otherwise null.
+    pub undo_unavailable: Option<String>,
     /// Number of duplicate tabs closed.
     pub closed_tabs: i32,
+    /// Number of duplicate tabs excluded from cleanup.
+    pub skipped_tabs: i32,
+    /// Individual exclusions with their reasons.
+    pub skipped: Vec<SkippedTab>,
     /// Number of duplicate groups detected.
     pub duplicate_groups: i32,
     /// Tabs that would be closed (or were closed) by dedupe.
@@ -534,10 +569,23 @@ pub(crate) struct ReadTabResult {
 /// Result of a ping query.
 #[derive(Debug, Clone, GraphQLObject)]
 pub(crate) struct PingResult {
-    /// Whether the host responded.
+    /// Whether a real host-to-extension round trip succeeded.
     pub ok: bool,
     /// Round-trip latency in milliseconds.
     pub latency_ms: f64,
+    /// Extension identity returned by the browser.
+    pub runtime_id: String,
+    /// Extension version.
+    pub version: String,
+    pub base_version: Option<String>,
+    pub git_sha: Option<String>,
+    pub dirty: Option<bool>,
+    pub host_version: Option<String>,
+    pub host_base_version: Option<String>,
+    pub host_git_sha: Option<String>,
+    pub host_dirty: Option<bool>,
+    pub versions_in_sync: Option<bool>,
+    pub native_channel_available: bool,
 }
 
 /// A single history entry.

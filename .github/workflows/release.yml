@@ -13,11 +13,10 @@ on:
 
 permissions:
   contents: write
-  id-token: write
 
 jobs:
   resolve-tag:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
     steps:
@@ -34,7 +33,7 @@ jobs:
 
   validate:
     needs: resolve-tag
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     outputs:
       version: ${{ steps.check.outputs.version }}
       dist_tag: ${{ steps.check.outputs.dist_tag }}
@@ -46,58 +45,31 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Validate tag and resolve channel
+      - name: Validate tag and mirrored versions
         id: check
         shell: bash
         run: |
           tag='${{ needs.resolve-tag.outputs.tag }}'
           version="$(node -e "process.stdout.write(require('./scripts/version-utils').readWorkspaceVersion(process.cwd()))")"
-          expected_tag="v${version}"
-          if [ "$tag" != "$expected_tag" ]; then
-            echo "Release tag ($tag) must match workspace version tag ($expected_tag)." >&2
+          if [ "$tag" != "v${version}" ]; then
+            echo "Release tag ($tag) must match workspace version (v${version})." >&2
             exit 1
           fi
           node - <<'NODE'
           const path = require("path");
           const { readCargoPackageVersion, readJson, readWorkspaceVersion } = require("./scripts/version-utils");
           const root = process.cwd();
-          const workspaceVersion = readWorkspaceVersion(root);
-          const packageJson = readJson(path.join(root, "package.json"));
-          const packageVersion = packageJson.version;
-          const launcherVersion = packageJson.optionalDependencies && packageJson.optionalDependencies["tabctl-win32-x64"];
-          const winPackageVersion = readJson(path.join(root, "packages", "win32-x64", "package.json")).version;
-          const cargoFiles = [
-            "rust/crates/shared/Cargo.toml",
-            "rust/crates/host/Cargo.toml",
-            "rust/crates/graphql/Cargo.toml",
-            "rust/crates/tabctl/Cargo.toml",
-          ];
+          const version = readWorkspaceVersion(root);
           const mismatches = [];
-
-          if (packageVersion !== workspaceVersion) {
-            mismatches.push(`package.json=${packageVersion} (expected ${workspaceVersion})`);
+          for (const file of ["package.json", "package-lock.json"]) {
+            if (readJson(path.join(root, file)).version !== version) mismatches.push(file);
           }
-
-          if (launcherVersion !== workspaceVersion) {
-            mismatches.push(`package.json optionalDependencies.tabctl-win32-x64=${launcherVersion} (expected ${workspaceVersion})`);
+          for (const crate of ["shared", "host", "graphql", "tabctl"]) {
+            const file = `rust/crates/${crate}/Cargo.toml`;
+            if (readCargoPackageVersion(path.join(root, file), version) !== version) mismatches.push(file);
           }
-
-          if (winPackageVersion !== workspaceVersion) {
-            mismatches.push(`packages/win32-x64/package.json=${winPackageVersion} (expected ${workspaceVersion})`);
-          }
-
-          for (const file of cargoFiles) {
-            const cargoVersion = readCargoPackageVersion(path.join(root, file), workspaceVersion);
-            if (cargoVersion !== workspaceVersion) {
-              mismatches.push(`${file}=${cargoVersion} (expected ${workspaceVersion})`);
-            }
-          }
-
-          if (mismatches.length > 0) {
-            console.error("Version drift detected between source manifests:");
-            for (const mismatch of mismatches) {
-              console.error(`- ${mismatch}`);
-            }
+          if (mismatches.length) {
+            console.error(`Version drift from ${version}: ${mismatches.join(", ")}`);
             process.exit(1);
           }
           NODE
@@ -121,26 +93,12 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             asset_suffix: darwin-x86_64
-            archive: tar.gz
           - os: macos-latest
             target: aarch64-apple-darwin
             asset_suffix: darwin-arm64
-            archive: tar.gz
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            asset_suffix: linux-x86_64
-            archive: tar.gz
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            asset_suffix: linux-arm64
-            archive: tar.gz
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            asset_suffix: windows-x86_64
-            archive: zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -152,37 +110,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-
-      - name: Install cross-compilation toolchain (aarch64 Linux)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-
       - name: Build
-        run: cargo build --manifest-path rust/Cargo.toml --release --target ${{ matrix.target }} -p tabctl
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-
-      - name: Package (tar.gz)
-        if: matrix.archive == 'tar.gz'
+        run: cargo build --manifest-path rust/Cargo.toml --locked --release --target ${{ matrix.target }} -p tabctl
+      - name: Package binary
         run: |
           cd rust/target/${{ matrix.target }}/release
           tar czf "$GITHUB_WORKSPACE/tabctl-${{ needs.resolve-tag.outputs.tag }}-${{ matrix.asset_suffix }}.tar.gz" tabctl
-
-      - name: Package (zip)
-        if: matrix.archive == 'zip'
-        shell: pwsh
-        run: |
-          Compress-Archive -Path "rust/target/${{ matrix.target }}/release/tabctl.exe" -DestinationPath "tabctl-${{ needs.resolve-tag.outputs.tag }}-${{ matrix.asset_suffix }}.zip"
-
       - name: Upload packaged binary
         uses: actions/upload-artifact@v4
         with:
           name: tabctl-${{ matrix.asset_suffix }}
-          path: tabctl-${{ needs.resolve-tag.outputs.tag }}-${{ matrix.asset_suffix }}.*
+          path: tabctl-${{ needs.resolve-tag.outputs.tag }}-${{ matrix.asset_suffix }}.tar.gz
 
   extension:
     needs: [resolve-tag, validate]
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -191,8 +133,14 @@ jobs:
         with:
           node-version: '24'
           cache: 'npm'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
       - run: npm ci
-      - run: npm run build
+      - run: npm test
+        env:
+          TABCTL_VERSION_MODE: release
       - name: Package extension
         run: |
           mkdir -p artifacts
@@ -208,8 +156,11 @@ jobs:
 
   npm_publish:
     needs: [resolve-tag, validate, build, extension]
-    runs-on: ubuntu-latest
     if: ${{ vars.PUBLISH_NPM != 'false' }}
+    runs-on: macos-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -219,65 +170,42 @@ jobs:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
           cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - run: npm run test:packaging
+      - uses: actions/download-artifact@v4
         with:
-          targets: x86_64-pc-windows-gnu
-
-      - name: Install MinGW linker
-        run: sudo apt-get update && sudo apt-get install -y mingw-w64
-
-      - name: Build
-        run: npm run build
+          pattern: tabctl-*
+          path: release-artifacts
+          merge-multiple: true
+      - name: Construct universal native npm distribution
         env:
-          TABCTL_VERSION_MODE: release
-
-      - name: Build Windows launcher
-        run: npm run build:launcher
-
-      - name: Run tests
-        run: npm test
-        env:
-          TABCTL_VERSION_MODE: release
-
-      - name: Sync platform package version
+          TAG_NAME: ${{ needs.resolve-tag.outputs.tag }}
         run: |
-          node -e "
-            const version = require('./scripts/version-utils').readWorkspaceVersion(process.cwd());
-            const pkg = require('./package.json');
-            const win = require('./packages/win32-x64/package.json');
-            pkg.version = version;
-            if (pkg.optionalDependencies && pkg.optionalDependencies['tabctl-win32-x64']) {
-              pkg.optionalDependencies['tabctl-win32-x64'] = version;
-            }
-            win.version = version;
-            require('fs').writeFileSync('./package.json', JSON.stringify(pkg, null, 2) + '\n');
-            require('fs').writeFileSync('./packages/win32-x64/package.json', JSON.stringify(win, null, 2) + '\n');
-          "
-      - name: Publish tabctl-win32-x64
-        run: npm publish --provenance --access public --tag '${{ needs.validate.outputs.dist_tag }}'
-        working-directory: packages/win32-x64
-
+          mkdir -p build/npm-arm64 build/npm-x86 dist
+          tar -xzf "release-artifacts/tabctl-${TAG_NAME}-darwin-arm64.tar.gz" -C build/npm-arm64
+          tar -xzf "release-artifacts/tabctl-${TAG_NAME}-darwin-x86_64.tar.gz" -C build/npm-x86
+          expected="$(cut -d ' ' -f 1 release-artifacts/tabctl-extension.zip.sha256)"
+          actual="$(shasum -a 256 release-artifacts/tabctl-extension.zip | cut -d ' ' -f 1)"
+          test "$expected" = "$actual"
+          unzip -q release-artifacts/tabctl-extension.zip -d dist
+          npm run package:npm -- build/npm-arm64/tabctl build/npm-x86/tabctl
+      - name: Pack and verify native npm installation and isolated setup
+        run: npm run verify:npm
       - name: Publish tabctl
-        run: npm publish --provenance --access public --tag '${{ needs.validate.outputs.dist_tag }}'
+        run: npm publish "build/npm-package/tabctl-${{ needs.validate.outputs.version }}.tgz" --ignore-scripts --provenance --access public --tag '${{ needs.validate.outputs.dist_tag }}'
 
   create-release:
     needs: [resolve-tag, validate, build, extension, npm_publish]
     if: ${{ always() && needs.validate.result == 'success' && needs.build.result == 'success' && needs.extension.result == 'success' && (needs.npm_publish.result == 'success' || needs.npm_publish.result == 'skipped') }}
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.resolve-tag.outputs.tag }}
-
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
-
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

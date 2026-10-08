@@ -1,4 +1,6 @@
+use crate::host_impl::policy::Policy;
 use serde_json::{Map, Value};
+use std::sync::Arc;
 
 use super::scope::select_tabs_by_scope;
 use super::OrchStep;
@@ -16,6 +18,7 @@ pub(crate) struct ArchiveOrchestration {
     params: Value,
     phase: Phase,
     state: Option<ArchiveState>,
+    policy: Arc<Policy>,
 }
 
 #[derive(Debug)]
@@ -24,8 +27,8 @@ struct ArchiveState {
     batches: Vec<ArchiveBatch>,
     batch_idx: usize,
     current_group_id: Option<i64>,
-    undo_tabs: Vec<Value>,
     has_incognito: bool,
+    skipped: Vec<Value>,
 }
 
 #[derive(Debug)]
@@ -50,11 +53,29 @@ impl ArchiveOrchestration {
             params: params.clone(),
             phase: Phase::GetSnapshot,
             state: None,
+            policy: Arc::new(Policy::default()),
         }
     }
 }
 
 impl super::Orchestration for ArchiveOrchestration {
+    fn mutation_scope(&self) -> super::MutationScope {
+        self.state
+            .as_ref()
+            .map(|state| super::MutationScope {
+                tab_ids: state
+                    .batches
+                    .iter()
+                    .flat_map(|batch| batch.tab_ids.iter().copied())
+                    .collect(),
+                window_ids: state.archive_window_id.into_iter().collect(),
+                ..super::MutationScope::default()
+            })
+            .unwrap_or_default()
+    }
+    fn set_policy(&mut self, policy: Arc<Policy>) {
+        self.policy = policy;
+    }
     fn start(&mut self) -> OrchStep {
         OrchStep::SendPrimitive {
             action: "p:snapshot".to_string(),
@@ -83,16 +104,33 @@ impl ArchiveOrchestration {
             };
         }
 
-        let tabs = scope_result.tabs;
+        let mut skipped = Vec::new();
+        let tabs: Vec<_> = scope_result
+            .tabs
+            .into_iter()
+            .filter(|tab| {
+                if let Some(reason) = self.policy.reason(tab) {
+                    skipped.push(serde_json::json!({"tabId":tab.tab_id,"reason":reason}));
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect();
         if tabs.is_empty() {
             return OrchStep::Complete {
                 response: serde_json::json!({
-                    "summary": { "archivedTabs": 0, "archivedGroups": 0 },
+                    "summary": { "archivedTabs": 0, "archivedGroups": 0, "skippedTabs": skipped.len() },
+                    "skipped": skipped,
                 }),
-                undo: Some(serde_json::json!({
-                    "action": "archive",
-                    "tabs": [],
-                })),
+                undo: None,
+            };
+        }
+
+        if tabs.iter().any(|tab| tab.incognito) && tabs.iter().any(|tab| !tab.incognito) {
+            return OrchStep::Error {
+                message: "Cannot archive private and regular tabs into the same window".into(),
+                hint: Some("Select a single private or regular window.".into()),
             };
         }
 
@@ -107,7 +145,6 @@ impl ArchiveOrchestration {
         }
 
         let mut batches: Vec<ArchiveBatch> = Vec::new();
-        let mut undo_tabs: Vec<Value> = Vec::new();
 
         for (win_idx, &win_id) in window_ids.iter().enumerate() {
             let win_label = format!("W{}", win_idx + 1);
@@ -129,10 +166,6 @@ impl ArchiveOrchestration {
                 let label_title = title.unwrap_or_else(|| format!("Group {gid}"));
                 let label = format!("{win_label} - {label_title}");
 
-                for t in &group_tabs {
-                    undo_tabs.push(build_undo_tab(t, &group_index));
-                }
-
                 batches.push(ArchiveBatch {
                     label,
                     tab_ids: group_tabs.iter().map(|t| t.tab_id).collect(),
@@ -144,9 +177,6 @@ impl ArchiveOrchestration {
             let ungrouped: Vec<_> = win_tabs.iter().filter(|t| t.group_id == -1).collect();
             if !ungrouped.is_empty() {
                 let label = format!("{win_label} - Ungrouped");
-                for t in &ungrouped {
-                    undo_tabs.push(build_undo_tab(t, &group_index));
-                }
                 batches.push(ArchiveBatch {
                     label,
                     tab_ids: ungrouped.iter().map(|t| t.tab_id).collect(),
@@ -160,8 +190,8 @@ impl ArchiveOrchestration {
             batches,
             batch_idx: 0,
             current_group_id: None,
-            undo_tabs,
             has_incognito: tabs.iter().any(|tab| tab.incognito),
+            skipped,
         });
 
         let state = self.state.as_ref().unwrap();
@@ -171,7 +201,7 @@ impl ArchiveOrchestration {
             self.phase = Phase::CreateArchiveWindow;
             OrchStep::SendPrimitive {
                 action: "p:window-create".to_string(),
-                params: serde_json::json!({"focused": false}),
+                params: serde_json::json!({"focused": false, "incognito": state.has_incognito}),
             }
         }
     }
@@ -280,13 +310,11 @@ impl ArchiveOrchestration {
                     "archivedTabs": total_tabs,
                     "archivedGroups": state.batches.len(),
                     "movedTabs": total_tabs,
+                    "skippedTabs": state.skipped.len(),
                 },
+                "skipped": state.skipped,
             }),
-            undo: Some(serde_json::json!({
-                "action": "archive",
-                "incognito": state.has_incognito,
-                "tabs": state.undo_tabs,
-            })),
+            undo: None,
         }
     }
 }
@@ -314,40 +342,6 @@ fn build_group_index(snapshot: &Value) -> std::collections::HashMap<i64, GroupIn
         }
     }
     idx
-}
-
-fn build_undo_tab(
-    tab: &super::scope::ScopedTab,
-    group_index: &std::collections::HashMap<i64, GroupInfo>,
-) -> Value {
-    let (group_title, group_color, group_collapsed) = if tab.group_id != -1 {
-        group_index
-            .get(&tab.group_id)
-            .map(|g| (g.0.clone(), g.1.clone(), g.2))
-            .unwrap_or((
-                tab.group_title.clone(),
-                tab.group_color.clone(),
-                tab.group_collapsed,
-            ))
-    } else {
-        (None, None, None)
-    };
-
-    serde_json::json!({
-        "tabId": tab.tab_id,
-        "url": tab.url,
-        "title": tab.title,
-        "pinned": tab.pinned,
-        "active": tab.active,
-        "from": {
-            "windowId": tab.window_id,
-            "index": tab.index,
-            "groupId": tab.group_id,
-            "groupTitle": group_title,
-            "groupColor": group_color,
-            "groupCollapsed": group_collapsed,
-        }
-    })
 }
 
 #[cfg(test)]
@@ -436,10 +430,7 @@ mod tests {
         assert_eq!(response["summary"]["archivedGroups"], 2);
         assert_eq!(response["archiveWindowId"], 300);
 
-        let undo = undo.unwrap();
-        assert_eq!(undo["action"], "archive");
-        assert_eq!(undo["tabs"].as_array().unwrap().len(), 2);
-        assert_eq!(undo["tabs"][0]["from"]["groupTitle"], "Dev");
+        assert!(undo.is_none());
     }
 
     #[test]

@@ -1,6 +1,13 @@
 {
   "name": "tabctl",
-  "version": "0.6.0-rc.12",
+  "version": "0.6.0-rc.13",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64",
+    "x64"
+  ],
   "description": "CLI tool to manage and analyze browser tabs",
   "license": "MIT",
   "repository": {
@@ -18,17 +25,18 @@
     "node": ">=24"
   },
   "bin": {
-    "tabctl": "dist/cli/tabctl.js"
+    "tabctl": "dist/npm/tabctl"
   },
   "files": [
-    "dist/cli",
-    "dist/host",
-    "dist/shared",
+    "dist/npm/tabctl",
     "dist/extension"
   ],
   "scripts": {
-    "build": "node scripts/gen-version.js && tsc -p tsconfig.json && node scripts/copy-artifacts.js && node scripts/bundle-extension.js && cargo build --manifest-path rust/Cargo.toml --workspace",
-    "build:launcher": "node scripts/build-launcher.js",
+    "build": "npm run build:extension && cargo build --manifest-path rust/Cargo.toml --workspace",
+    "build:extension": "node scripts/gen-version.js && tsc -p tsconfig.json && node scripts/copy-artifacts.js && node scripts/bundle-extension.js",
+    "package:npm": "node scripts/package-npm.js",
+    "verify:npm": "node scripts/verify-npm-package.js",
+    "prepack": "node scripts/package-npm.js --check",
     "bump:major": "node scripts/bump-version.js major",
     "bump:minor": "node scripts/bump-version.js minor",
     "bump:patch": "node scripts/bump-version.js patch",
@@ -39,8 +47,11 @@
     "rust:check": "cargo check --manifest-path rust/Cargo.toml --workspace --all-targets",
     "rust:test": "cargo test --manifest-path rust/Cargo.toml --workspace --all-targets",
     "rust:verify": "cargo fmt --manifest-path rust/Cargo.toml --all -- --check && cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings && npm run rust:test",
-    "test": "npm run build && npm run rust:verify",
-    "test:unit": "npm run rust:test",
+    "test": "npm run build && npm run test:extension && npm run test:packaging && npm run test:smoke-runner && npm run rust:verify",
+    "test:extension": "node --test dist/extension/lib/native-message.test.js",
+    "test:packaging": "node --test scripts/package-npm.test.js",
+    "test:smoke-runner": "node --test scripts/smoke-test.test.js",
+    "test:unit": "npm run build:extension && npm run test:extension && npm run test:packaging && npm run test:smoke-runner && npm run rust:test",
     "test:integration": "cargo test --manifest-path rust/Cargo.toml --test browser_integration --test browser_coverage --test browser_primitives --test local_commands -- --ignored --nocapture --test-threads=1",
     "test:smoke": "node scripts/smoke-test.js",
     "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" ",
@@ -51,11 +62,5 @@
     "@types/node": "^24",
     "esbuild": "^0.27.3",
     "typescript": "^5.4.5"
-  },
-  "optionalDependencies": {
-    "tabctl-win32-x64": "0.6.0-rc.12"
-  },
-  "dependencies": {
-    "normalize-url": "^8.1.1"
   }
 }

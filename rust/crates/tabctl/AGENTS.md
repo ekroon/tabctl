@@ -4,7 +4,6 @@
 - `src/main.rs`: entrypoint dispatch (`host` subcommand vs CLI).
 - `src/cli/mod.rs`: declarative CLI API surface.
 - `src/cli/impls.rs`: current CLI implementation leaf.
-- `src/launcher.rs`: legacy launcher path.
 
 ## Constraints
 - Keep `cli/mod.rs` thin and forward-only.

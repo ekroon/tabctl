@@ -12,6 +12,6 @@
 ## Constraints
 - Keep crate root thin and forward-only.
 - Preserve request/response protocol behavior and undo semantics.
-- Keep transport behavior stable across unix/windows/tcp paths.
+- Keep macOS Unix-domain socket transport and native messaging behavior stable.
 - Extension primitives use `p:` prefix; params must be flat (never wrapped in nested objects like `createData`).
 - New CLI commands should add orchestration here, never new handlers in the extension.

@@ -4,21 +4,16 @@
 //! bootstrap cost is paid only once across all integration test files.
 
 mod common;
+#[path = "browser_integration/reliability.rs"]
+mod reliability;
 
 use common::*;
-use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::thread::sleep;
 use std::time::Duration;
 
-fn known_markdown_fixture_url() -> String {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind known markdown fixture");
-    let addr = listener.local_addr().expect("read fixture address");
-    std::thread::spawn(move || {
-        if let Ok((mut stream, _)) = listener.accept() {
-            let mut request_buffer = [0_u8; 1024];
-            let _ = stream.read(&mut request_buffer);
-            let body = r#"<!doctype html>
+fn known_markdown_fixture() -> HttpFixture {
+    HttpFixture::html(
+        r#"<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
@@ -43,16 +38,9 @@ fn known_markdown_fixture_url() -> String {
       <a href="https://example.test/fixture-link">Fixture Link</a>
     </main>
   </body>
-</html>"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            let _ = stream.write_all(response.as_bytes());
-        }
-    });
-    format!("http://{addr}/known-markdown")
+</html>"#
+            .into(),
+    )
 }
 
 #[test]
@@ -183,8 +171,8 @@ fn real_browser_integration_harness_passes() {
 #[ignore = "requires built dist artifacts and Chrome"]
 fn read_tabs_returns_markdown_for_known_page() {
     let b = shared_browser();
-    let fixture_url = known_markdown_fixture_url();
-    let (window_id, tab_ids) = b.create_test_window(&[fixture_url.as_str()], None);
+    let fixture = known_markdown_fixture();
+    let (window_id, tab_ids) = b.create_test_window(&[fixture.url.as_str()], None);
     let tab_id = tab_ids[0];
     sleep(Duration::from_secs(1));
 
@@ -262,36 +250,6 @@ fn read_tabs_returns_markdown_for_known_page() {
         !markdown.contains("Navigation Shell Heading") && !markdown.contains("Debug Panel"),
         "expected readTabs to prefer article content over page chrome: {markdown}"
     );
-
-    b.close_test_window(window_id);
-}
-
-#[cfg(windows)]
-#[test]
-#[ignore = "requires built dist artifacts and Chrome"]
-fn named_pipe_graphql_open_tabs_existing_window_returns_on_windows() {
-    let b = shared_browser();
-    let (window_id, _) = b.create_test_window(&["https://example.com"], None);
-
-    let result = run_tabctl_json_with_timeout(
-        &b.tabctl_bin,
-        &b.root,
-        &b.profile_name,
-        &b.config_home,
-        &b.state_home,
-        &["query", &format!(
-            "mutation {{ openTabs(windowId: {window_id}, urls: [\"https://example.org\"]) {{ windowId tabs {{ tabId url }} }} }}"
-        )],
-        Duration::from_secs(20),
-    )
-    .unwrap_or_else(|e| panic!("named-pipe GraphQL openTabs failed: {e}"));
-
-    assert_ok("named-pipe openTabs", &result);
-    let open = &response_data(&result)["openTabs"];
-    let tabs = open["tabs"].as_array().expect("openTabs tabs array");
-    assert_eq!(tabs.len(), 1, "expected one opened tab: {result}");
-    assert_eq!(tabs[0]["url"], "https://example.org/");
-    assert_eq!(open["windowId"].as_i64(), Some(window_id));
 
     b.close_test_window(window_id);
 }

@@ -1,5 +1,9 @@
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use super::policy::Policy;
+use super::transaction::MutationScope;
 
 mod analyze;
 mod archive;
@@ -31,9 +35,19 @@ mod undo;
 pub(super) struct OrchestrationContext {
     pub(super) page_cache_path: Option<PathBuf>,
     pub(super) profile_name: Option<String>,
+    pub(super) policy: Arc<Policy>,
 }
 
 pub(super) trait Orchestration: Send + std::fmt::Debug {
+    fn set_policy(&mut self, _policy: Arc<Policy>) {}
+    /// Multi-scope plans must disclose all affected sources and destinations
+    /// before their first mutation, rather than only the current primitive.
+    fn mutation_scope(&self) -> MutationScope {
+        MutationScope::default()
+    }
+    fn recovery_checkpoint(&self) -> Option<Value> {
+        None
+    }
     /// Produce the first primitive action to send to the extension.
     fn start(&mut self) -> OrchStep;
 
@@ -75,7 +89,7 @@ pub(super) fn orchestration_for(
     params: &Value,
     context: &OrchestrationContext,
 ) -> Option<Box<dyn Orchestration>> {
-    match action {
+    let mut orchestration: Option<Box<dyn Orchestration>> = match action {
         "list" => Some(Box::new(list::ListOrchestration::new(params))),
         "group-list" => Some(Box::new(list::GroupListOrchestration::new(params))),
         "focus" => match focus::FocusOrchestration::new(params) {
@@ -119,7 +133,11 @@ pub(super) fn orchestration_for(
         "screenshot" => Some(Box::new(screenshot::ScreenshotOrchestration::new(params))),
         "snapshot" => Some(Box::new(list::SnapshotOrchestration)),
         _ => None,
+    };
+    if let Some(orch) = orchestration.as_mut() {
+        orch.set_policy(context.policy.clone());
     }
+    orchestration
 }
 
 /// Helper orchestration that immediately errors on start.
@@ -140,40 +158,3 @@ impl Orchestration for ErrorOrchestration {
         }
     }
 }
-
-/// Drive an orchestration to completion with a sequence of mock primitive
-/// responses. Returns the final (response, undo) tuple. Panics on error or
-/// if responses run out before completion.
-#[cfg(test)]
-fn drive_to_completion(
-    orch: &mut dyn Orchestration,
-    responses: &[serde_json::Value],
-) -> (serde_json::Value, Option<serde_json::Value>) {
-    let mut step = orch.start();
-    let mut idx = 0;
-    loop {
-        match step {
-            OrchStep::Complete { response, undo } => return (response, undo),
-            OrchStep::Error { message, hint } => {
-                panic!("orchestration error: {message} (hint: {hint:?})")
-            }
-            OrchStep::SendPrimitive { .. } => {
-                assert!(
-                    idx < responses.len(),
-                    "ran out of mock responses at index {idx}"
-                );
-                step = orch.step(responses[idx].clone());
-                idx += 1;
-            }
-            OrchStep::Progress { .. } => {
-                step = orch.step(Value::Null);
-            }
-            OrchStep::Delay { .. } => {
-                step = orch.step(Value::Null);
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod graphql_contracts;

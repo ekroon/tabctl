@@ -3,8 +3,6 @@ use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
-#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::path::PathBuf;
@@ -12,8 +10,6 @@ use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
-#[cfg(windows)]
-use tabctl_shared::windows_pipe_path;
 use tabctl_shared::{
     normalize_path_for_current_platform, path_to_platform_string, Browser, ProfileEntry,
     ProfileRegistry, RequestEnvelope, ResponseEnvelope, SocketEndpoint,
@@ -21,10 +17,6 @@ use tabctl_shared::{
 
 use sha2::{Digest, Sha256};
 
-const WSL_TCP_PORT_FILENAME: &str = "tcp-port";
-#[cfg(target_os = "linux")]
-const WSL_PIPE_ENDPOINT_FILENAME: &str = "pipe-endpoint";
-const AUTH_TOKEN_FILENAME: &str = "auth-token";
 const CLI_RESPONSE_TIMEOUT_MS: u64 = 35_000;
 const EXTENSION_ACTIVE_DIR_NAME: &str = "extension";
 const EXTENSION_RELEASES_DIR_NAME: &str = "extension-releases";
@@ -586,6 +578,37 @@ mod tests {
     }
 
     #[test]
+    fn packaged_extension_discovery_requires_the_npm_layout_and_complete_assets() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/npm-setup-tests")
+            .join(request_id());
+        let binary = root.join("dist/npm/tabctl");
+        let extension = root.join("dist/extension");
+        fs::create_dir_all(binary.parent().expect("binary directory"))
+            .expect("create npm directory");
+        fs::write(&binary, "native binary fixture").expect("write binary fixture");
+        fs::create_dir_all(&extension).expect("create packaged extension");
+        assert!(resolve_packaged_extension_dir(&binary).is_none());
+        fs::write(extension.join("manifest.json"), "{}").expect("write manifest");
+        assert!(resolve_packaged_extension_dir(&binary).is_none());
+        fs::write(extension.join("background.js"), "(() => {})();").expect("write bundle");
+        assert_eq!(
+            resolve_packaged_extension_dir(&binary),
+            Some(fs::canonicalize(&extension).expect("canonical extension"))
+        );
+        let npm_bin = root.join("node_modules/.bin");
+        fs::create_dir_all(&npm_bin).expect("create npm bin directory");
+        let symlink = npm_bin.join("tabctl");
+        std::os::unix::fs::symlink(&binary, &symlink).expect("create npm executable symlink");
+        assert_eq!(
+            resolve_packaged_extension_dir(&symlink),
+            Some(fs::canonicalize(&extension).expect("canonical extension"))
+        );
+        assert!(resolve_packaged_extension_dir(&root.join("dist/bin/tabctl")).is_none());
+        fs::remove_dir_all(root).expect("cleanup packaged extension");
+    }
+
+    #[test]
     fn parses_setup_release_override_flags() {
         with_env_vars(
             &[
@@ -847,355 +870,6 @@ mod tests {
         });
     }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn discovers_wsl_tcp_port_from_data_dir_file() {
-        let temp_root = std::env::temp_dir().join(format!("tabctl-cli-test-{}", request_id()));
-        std::fs::create_dir_all(&temp_root).expect("create temp directory");
-        let port_file = temp_root.join(WSL_TCP_PORT_FILENAME);
-        std::fs::write(&port_file, "39001\n").expect("write port file");
-        let port = discover_wsl_tcp_port_from_data_dir(
-            temp_root.to_str().expect("temp path should be valid utf-8"),
-        );
-        std::fs::remove_dir_all(&temp_root).expect("remove temp directory");
-        assert_eq!(port, Some(39001));
-    }
-
-    #[test]
-    fn rejects_invalid_wsl_tcp_port_file_values() {
-        let temp_root = std::env::temp_dir().join(format!("tabctl-cli-test-{}", request_id()));
-        std::fs::create_dir_all(&temp_root).expect("create temp directory");
-        let port_file = temp_root.join(WSL_TCP_PORT_FILENAME);
-        std::fs::write(&port_file, "not-a-port").expect("write invalid port");
-        let port = read_tcp_port_file(&port_file);
-        std::fs::remove_dir_all(&temp_root).expect("remove temp directory");
-        assert_eq!(port, None);
-    }
-
-    #[test]
-    fn resolves_windows_username_from_path_env() {
-        with_env_vars(
-            &[(
-                "PATH",
-                Some("/usr/bin:/mnt/c/Users/TestUser/AppData/Local/bin:/usr/local/bin"),
-            )],
-            || {
-                let username = resolve_windows_username_from_path();
-                assert_eq!(username, Some("TestUser".to_string()));
-            },
-        );
-    }
-
-    #[test]
-    fn resolves_windows_username_case_insensitive_prefix() {
-        with_env_vars(
-            &[(
-                "PATH",
-                Some("/usr/bin:/mnt/C/Users/MyUser/AppData/Local/bin"),
-            )],
-            || {
-                let username = resolve_windows_username_from_path();
-                assert_eq!(username, Some("MyUser".to_string()));
-            },
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn resolve_config_dir_uses_windows_roaming_appdata_in_wsl() {
-        with_env_vars(
-            &[
-                ("WSL_INTEROP", Some("1")),
-                ("TABCTL_CONFIG_DIR", None),
-                ("XDG_CONFIG_HOME", None),
-                (
-                    "PATH",
-                    Some("/usr/bin:/mnt/c/Users/TestUser/AppData/Local/Microsoft/WindowsApps"),
-                ),
-            ],
-            || {
-                let config_dir = resolve_config_dir().expect("resolve config dir");
-                assert_eq!(
-                    config_dir,
-                    "/mnt/c/Users/TestUser/AppData/Roaming/tabctl".to_string()
-                );
-            },
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn resolve_data_dir_uses_windows_local_appdata_in_wsl() {
-        with_env_vars(
-            &[
-                ("WSL_INTEROP", Some("1")),
-                ("TABCTL_DATA_DIR", None),
-                ("TABCTL_STATE_DIR", None),
-                ("XDG_STATE_HOME", None),
-                (
-                    "PATH",
-                    Some("/usr/bin:/mnt/c/Users/TestUser/AppData/Local/Microsoft/WindowsApps"),
-                ),
-            ],
-            || {
-                let data_dir = resolve_data_dir(None).expect("resolve data dir");
-                assert_eq!(
-                    data_dir,
-                    "/mnt/c/Users/TestUser/AppData/Local/tabctl".to_string()
-                );
-            },
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn host_wrapper_repair_is_disabled_in_wsl() {
-        with_env_vars(&[("WSL_INTEROP", Some("1"))], || {
-            assert!(!can_repair_host_wrapper());
-        });
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn attempt_profile_repair_fails_fast_in_wsl() {
-        with_env_vars(&[("WSL_INTEROP", Some("1"))], || {
-            let entry = ProfileEntry {
-                browser: Browser::Chrome,
-                extension_id: "dkfnfgfelacbfclhenpgdckfefmfddbd".to_string(),
-                node_path: "/mnt/c/dev/ekroon/tabctl/rust/target/debug/tabctl".to_string(),
-                host_path:
-                    r"C:\Users\TestUser\AppData\Local\tabctl\profiles\chrome\tabctl-host.cmd"
-                        .to_string(),
-                data_dir: r"C:\Users\TestUser\AppData\Local\tabctl\profiles\chrome".to_string(),
-                user_data_dir: None,
-            };
-            let err = attempt_profile_repair("chrome", &entry).expect_err("repair should fail");
-            assert!(
-                err.contains("unsupported from WSL"),
-                "unexpected error: {err}"
-            );
-        });
-    }
-
-    #[test]
-    fn returns_none_when_path_has_no_windows_entry() {
-        with_env_vars(&[("PATH", Some("/usr/bin:/usr/local/bin"))], || {
-            let username = resolve_windows_username_from_path();
-            assert_eq!(username, None);
-        });
-    }
-
-    #[test]
-    fn wsl_file_candidates_returns_data_dir_only_without_tabctl_segment() {
-        with_env_vars(
-            &[("PATH", Some("/mnt/c/Users/TestUser/AppData/Local/bin"))],
-            || {
-                let candidates = wsl_file_candidates("/some/path/without/marker", "tcp-port");
-                assert_eq!(
-                    candidates,
-                    vec![PathBuf::from("/some/path/without/marker/tcp-port")]
-                );
-            },
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn translates_windows_data_dir_into_wsl_candidate() {
-        let candidates = wsl_file_candidates(
-            r"C:\Users\TestUser\AppData\Local\tabctl\profiles\chrome",
-            "pipe-endpoint",
-        );
-        assert!(
-            candidates.iter().any(|path| {
-                path == &PathBuf::from(
-                    "/mnt/c/Users/TestUser/AppData/Local/tabctl/profiles/chrome/pipe-endpoint",
-                )
-            }),
-            "expected translated WSL candidate, got: {candidates:?}"
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn keeps_explicit_pipe_socket_in_wsl() {
-        with_env_vars(
-            &[
-                ("WSL_INTEROP", Some("1")),
-                ("TABCTL_SOCKET", Some("pipe://tabctl-test")),
-            ],
-            || {
-                let endpoint = resolve_socket_endpoint(None).expect("resolve endpoint");
-                assert_eq!(
-                    endpoint,
-                    SocketEndpoint::Pipe {
-                        path: r"\\.\pipe\tabctl-test".to_string(),
-                    }
-                );
-            },
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn rejects_explicit_tcp_socket_in_wsl() {
-        with_env_vars(
-            &[
-                ("WSL_INTEROP", Some("1")),
-                ("TABCTL_SOCKET", Some("tcp://127.0.0.1:39006")),
-                ("TABCTL_TCP_PORT", Some("39007")),
-            ],
-            || {
-                let err = resolve_socket_endpoint(None).expect_err("resolve endpoint should fail");
-                assert!(err.contains("disabled in WSL"), "unexpected error: {err}");
-            },
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn returns_invalid_socket_error_before_wsl_fallback() {
-        with_env_vars(
-            &[
-                ("WSL_INTEROP", Some("1")),
-                ("TABCTL_SOCKET", Some("tcp://127.0.0.1")),
-                ("TABCTL_TCP_PORT", Some("39008")),
-            ],
-            || {
-                let err = resolve_socket_endpoint(None).expect_err("invalid socket should fail");
-                assert!(err.contains("TCP endpoint must include host and port"));
-            },
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn wsl_named_pipe_endpoint_is_required_when_not_discovered() {
-        let temp_root = std::env::temp_dir().join(format!("tabctl-cli-test-{}", request_id()));
-        std::fs::create_dir_all(&temp_root).expect("create temp directory");
-        with_env_vars(
-            &[
-                ("WSL_INTEROP", Some("1")),
-                ("TABCTL_SOCKET", None),
-                ("TABCTL_TCP_PORT", None),
-                (
-                    "TABCTL_DATA_DIR",
-                    Some(temp_root.to_str().expect("temp path should be valid utf-8")),
-                ),
-            ],
-            || {
-                let err = resolve_socket_endpoint(None).expect_err("resolve endpoint should fail");
-                assert!(err.contains("pipe-endpoint"), "unexpected error: {err}");
-            },
-        );
-        if let Err(err) = std::fs::remove_dir_all(&temp_root) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                panic!("remove temp directory: {err}");
-            }
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn resolves_wsl_pipe_endpoint_from_pipe_endpoint_file() {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let temp_root = std::env::temp_dir().join(format!(
-            "tabctl-wsl-pipe-endpoint-test-{}-{}",
-            std::process::id(),
-            id
-        ));
-        let _ = std::fs::remove_dir_all(&temp_root);
-        std::fs::create_dir_all(&temp_root).expect("create temp directory");
-        std::fs::write(
-            temp_root.join(WSL_PIPE_ENDPOINT_FILENAME),
-            "\\\\.\\pipe\\tabctl-test-bridge\n",
-        )
-        .expect("write pipe endpoint file");
-
-        with_env_vars(
-            &[
-                ("WSL_INTEROP", Some("1")),
-                ("TABCTL_SOCKET", None),
-                (
-                    "TABCTL_DATA_DIR",
-                    Some(temp_root.to_str().expect("temp path should be valid utf-8")),
-                ),
-            ],
-            || {
-                let endpoint = resolve_socket_endpoint(None).expect("resolve endpoint");
-                assert_eq!(
-                    endpoint,
-                    SocketEndpoint::Pipe {
-                        path: r"\\.\pipe\tabctl-test-bridge".to_string(),
-                    }
-                );
-            },
-        );
-
-        let _ = std::fs::remove_dir_all(&temp_root);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn pipe_transport_returns_error_without_pipe_endpoint_file() {
-        let temp_root =
-            std::env::temp_dir().join(format!("tabctl-wsl-pipe-missing-{}", request_id()));
-        std::fs::create_dir_all(&temp_root).expect("create temp directory");
-        with_env_vars(
-            &[
-                ("WSL_INTEROP", Some("1")),
-                ("TABCTL_SOCKET", None),
-                (
-                    "TABCTL_DATA_DIR",
-                    Some(temp_root.to_str().expect("temp path should be valid utf-8")),
-                ),
-            ],
-            || {
-                let err =
-                    resolve_socket_endpoint(None).expect_err("missing pipe endpoint should fail");
-                assert!(err.contains("pipe-endpoint"), "unexpected error: {err}");
-            },
-        );
-        let _ = std::fs::remove_dir_all(&temp_root);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn resolves_windows_pipe_endpoint_from_data_dir_hash() {
-        let endpoint = resolve_windows_pipe_endpoint(r"C:\Users\tester\AppData\Local\tabctl");
-        assert_eq!(
-            endpoint,
-            SocketEndpoint::Pipe {
-                path: r"\\.\pipe\tabctl-f9bd75adcc15".to_string()
-            }
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn resolves_windows_pipe_endpoint_for_mixed_separator_variants() {
-        let canonical = resolve_windows_pipe_endpoint(r"C:\Users\tester\AppData\Local\tabctl");
-        let mixed = resolve_windows_pipe_endpoint(r"C:/Users/tester/AppData/Local/tabctl");
-        assert_eq!(canonical, mixed);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_pipe_connect_error_includes_profile_data_dir_and_hint() {
-        let err = std::io::Error::from_raw_os_error(5);
-        let rendered = format_windows_pipe_connect_error(
-            Some("edge"),
-            r"C:\Users\tester\AppData\Local\tabctl\profiles\edge",
-            r"\\.\pipe\tabctl-test",
-            &err,
-        );
-        assert!(rendered.contains(r"\\.\pipe\tabctl-test"));
-        assert!(rendered.contains("profile: edge"));
-        assert!(rendered.contains(r"data dir: C:\Users\tester\AppData\Local\tabctl\profiles\edge"));
-        assert!(rendered.contains("named-pipe ACLs") || rendered.contains("Windows denied access"));
-    }
-
     #[test]
     fn resolve_manifest_dir_rejects_invalid_browser() {
         let result = resolve_manifest_dir("firefox");
@@ -1203,7 +877,6 @@ mod tests {
         assert!(result.unwrap_err().contains("unsupported browser"));
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn resolve_manifest_dir_edge_macos() {
         let path = resolve_manifest_dir("edge").expect("should resolve");
@@ -1214,35 +887,12 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn resolve_manifest_dir_chrome_macos() {
         let path = resolve_manifest_dir("chrome").expect("should resolve");
         let path_str = path.to_string_lossy();
         assert!(
             path_str.ends_with("Library/Application Support/Google/Chrome/NativeMessagingHosts"),
-            "unexpected path: {path_str}"
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn resolve_manifest_dir_edge_linux() {
-        let path = resolve_manifest_dir("edge").expect("should resolve");
-        let path_str = path.to_string_lossy();
-        assert!(
-            path_str.ends_with(".config/microsoft-edge/NativeMessagingHosts"),
-            "unexpected path: {path_str}"
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn resolve_manifest_dir_chrome_linux() {
-        let path = resolve_manifest_dir("chrome").expect("should resolve");
-        let path_str = path.to_string_lossy();
-        assert!(
-            path_str.ends_with(".config/google-chrome/NativeMessagingHosts"),
             "unexpected path: {path_str}"
         );
     }
@@ -1271,7 +921,6 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    #[cfg(unix)]
     #[test]
     fn write_host_wrapper_unix_filename_and_content() {
         let dir =
@@ -1310,34 +959,6 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "wrapper should be executable owner-only");
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn write_host_wrapper_windows_filename_and_content() {
-        let dir =
-            std::env::temp_dir().join(format!("tabctl-test-wrapper-win-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-
-        let path =
-            write_host_wrapper("C:\\Program Files\\tabctl\\tabctl.exe", "personal", &dir).unwrap();
-        assert!(path.to_string_lossy().ends_with("tabctl-host.cmd"));
-
-        let content = fs::read_to_string(&path).unwrap();
-        assert!(
-            content.contains("TABCTL_PROFILE=personal"),
-            "should contain profile name"
-        );
-        assert!(
-            content.contains("\"C:\\Program Files\\tabctl\\tabctl.exe\" host"),
-            "should contain binary path"
-        );
-        assert!(
-            content.starts_with("@echo off\r\n"),
-            "should start with @echo off"
-        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1398,28 +1019,6 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn write_registry_key_creates_and_reads_back() {
-        use winreg::enums::*;
-        use winreg::RegKey;
-
-        let test_subkey = format!("Software\\tabctl-test\\NativeMessagingHosts\\{}", HOST_NAME);
-        let manifest_path = std::path::PathBuf::from("C:\\test\\com.erwinkroon.tabctl.json");
-
-        // Write via our function is browser-specific, so test directly with registry
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let (key, _) = hkcu.create_subkey(&test_subkey).expect("create test key");
-        key.set_value("", &manifest_path.display().to_string())
-            .expect("set test value");
-
-        let readback: String = key.get_value("").expect("read test value");
-        assert_eq!(readback, manifest_path.display().to_string());
-
-        // Cleanup
-        let _ = hkcu.delete_subkey_all("Software\\tabctl-test");
     }
 
     #[test]
@@ -1795,11 +1394,7 @@ mod tests {
                 let wrapper = data_dir
                     .join("profiles")
                     .join("edge")
-                    .join(if cfg!(windows) {
-                        "tabctl-host.cmd"
-                    } else {
-                        "tabctl-host.sh"
-                    });
+                    .join("tabctl-host.sh");
                 assert!(wrapper.exists(), "wrapper script should be created");
 
                 // Native manifest in user-data-dir/NativeMessagingHosts/
@@ -1877,11 +1472,7 @@ mod tests {
                 let wrapper = data_dir
                     .join("profiles")
                     .join("edge")
-                    .join(if cfg!(windows) {
-                        "tabctl-host.cmd"
-                    } else {
-                        "tabctl-host.sh"
-                    });
+                    .join("tabctl-host.sh");
                 assert!(wrapper.exists(), "wrapper script should be created");
 
                 let manifest_path = udd
@@ -1961,11 +1552,7 @@ mod tests {
                 let wrapper = data_dir
                     .join("profiles")
                     .join("edge")
-                    .join(if cfg!(windows) {
-                        "tabctl-host.cmd"
-                    } else {
-                        "tabctl-host.sh"
-                    });
+                    .join("tabctl-host.sh");
                 assert!(
                     !wrapper.exists(),
                     "wrapper script should not be written when setup fails early"
@@ -2169,211 +1756,12 @@ mod tests {
     }
 
     #[test]
-    fn test_read_auth_token_from_file() {
-        let dir = std::env::temp_dir().join(format!("tabctl-test-auth-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(AUTH_TOKEN_FILENAME), "  secret-token-123\n").unwrap();
-
-        with_env_vars(
-            &[
-                ("TABCTL_AUTH_TOKEN", None),
-                ("TABCTL_DATA_DIR", Some(dir.to_str().unwrap())),
-            ],
-            || {
-                let token = read_auth_token(None);
-                assert_eq!(token.as_deref(), Some("secret-token-123"));
-            },
-        );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_read_auth_token_env_override() {
-        let dir = std::env::temp_dir().join(format!("tabctl-test-auth-env-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(AUTH_TOKEN_FILENAME), "file-token").unwrap();
-
-        with_env_vars(
-            &[
-                ("TABCTL_AUTH_TOKEN", Some("env-token-override")),
-                ("TABCTL_DATA_DIR", Some(dir.to_str().unwrap())),
-            ],
-            || {
-                let token = read_auth_token(None);
-                assert_eq!(token.as_deref(), Some("env-token-override"));
-            },
-        );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_read_auth_token_missing_file_returns_none() {
-        let dir =
-            std::env::temp_dir().join(format!("tabctl-test-auth-miss-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-
-        with_env_vars(
-            &[
-                ("TABCTL_AUTH_TOKEN", None),
-                ("TABCTL_DATA_DIR", Some(dir.to_str().unwrap())),
-            ],
-            || {
-                let token = read_auth_token(None);
-                assert!(token.is_none());
-            },
-        );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_wsl_file_candidates_includes_auth_token_filename() {
-        let candidates = wsl_file_candidates("/tmp/tabctl/data", AUTH_TOKEN_FILENAME);
-        assert!(candidates[0].ends_with(AUTH_TOKEN_FILENAME));
-    }
-
-    #[test]
-    fn test_transport_tcp_with_port_env() {
-        with_env_vars(
-            &[
-                ("TABCTL_TRANSPORT", Some("tcp")),
-                ("TABCTL_TCP_PORT", Some("39005")),
-                ("TABCTL_SOCKET", None),
-            ],
-            || {
-                let endpoint = resolve_socket_endpoint(None).expect("resolve endpoint");
-                assert_eq!(
-                    endpoint,
-                    SocketEndpoint::Tcp {
-                        host: "127.0.0.1".to_string(),
-                        port: 39005,
-                    }
-                );
-            },
-        );
-    }
-
-    #[test]
-    fn test_transport_tcp_with_port_file() {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let temp_root = std::env::temp_dir().join(format!(
-            "tabctl-tcp-port-test-{}-{}",
-            std::process::id(),
-            id
-        ));
-        let _ = std::fs::remove_dir_all(&temp_root);
-        std::fs::create_dir_all(&temp_root).expect("create temp directory");
-        let port_file = temp_root.join(WSL_TCP_PORT_FILENAME);
-        std::fs::write(&port_file, "39010\n").expect("write port file");
-        assert!(port_file.exists(), "port file must exist before test");
-        with_env_vars(
-            &[
-                ("TABCTL_TRANSPORT", Some("tcp")),
-                ("TABCTL_TCP_PORT", None),
-                ("TABCTL_SOCKET", None),
-                (
-                    "TABCTL_DATA_DIR",
-                    Some(temp_root.to_str().expect("temp path should be valid utf-8")),
-                ),
-            ],
-            || {
-                let endpoint = resolve_socket_endpoint(None).expect("resolve endpoint");
-                assert_eq!(
-                    endpoint,
-                    SocketEndpoint::Tcp {
-                        host: "127.0.0.1".to_string(),
-                        port: 39010,
-                    }
-                );
-            },
-        );
-        let _ = std::fs::remove_dir_all(&temp_root);
-    }
-
-    #[test]
-    fn test_transport_tcp_missing_port_returns_error() {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let temp_root = std::env::temp_dir().join(format!(
-            "tabctl-tcp-noport-test-{}-{}",
-            std::process::id(),
-            id
-        ));
-        let _ = std::fs::remove_dir_all(&temp_root);
-        std::fs::create_dir_all(&temp_root).expect("create temp directory");
-        with_env_vars(
-            &[
-                ("TABCTL_TRANSPORT", Some("tcp")),
-                ("TABCTL_TCP_PORT", None),
-                ("TABCTL_SOCKET", None),
-                (
-                    "TABCTL_DATA_DIR",
-                    Some(temp_root.to_str().expect("temp path should be valid utf-8")),
-                ),
-            ],
-            || {
-                let err = resolve_socket_endpoint(None).expect_err("should fail without port file");
-                assert!(
-                    err.contains("TABCTL_HOST_TCP"),
-                    "error should mention TABCTL_HOST_TCP, got: {err}"
-                );
-            },
-        );
-        let _ = std::fs::remove_dir_all(&temp_root);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn test_transport_windows_falls_back_to_named_pipe_without_auth_token() {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let temp_root = std::env::temp_dir().join(format!(
-            "tabctl-windows-pipe-fallback-test-{}-{}",
-            std::process::id(),
-            id
-        ));
-        let _ = std::fs::remove_dir_all(&temp_root);
-        std::fs::create_dir_all(&temp_root).expect("create temp directory");
-        std::fs::write(temp_root.join(WSL_TCP_PORT_FILENAME), "39023\n").expect("write port file");
-
-        with_env_vars(
-            &[
-                ("TABCTL_TRANSPORT", None),
-                ("TABCTL_TCP_PORT", None),
-                ("TABCTL_SOCKET", None),
-                ("TABCTL_AUTH_TOKEN", None),
-                (
-                    "TABCTL_DATA_DIR",
-                    Some(temp_root.to_str().expect("temp path should be valid utf-8")),
-                ),
-            ],
-            || {
-                let endpoint = resolve_socket_endpoint(None).expect("resolve endpoint");
-                assert_eq!(
-                    endpoint,
-                    resolve_windows_pipe_endpoint(temp_root.to_str().unwrap())
-                );
-            },
-        );
-
-        let _ = std::fs::remove_dir_all(&temp_root);
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn test_transport_non_tcp_ignored() {
+    fn transport_unix_uses_profile_socket() {
         let temp_root = std::env::temp_dir().join(format!("tabctl-cli-test-{}", request_id()));
         std::fs::create_dir_all(&temp_root).expect("create temp directory");
         with_env_vars(
             &[
                 ("TABCTL_TRANSPORT", Some("socket")),
-                ("TABCTL_TCP_PORT", None),
                 ("TABCTL_SOCKET", None),
                 (
                     "TABCTL_DATA_DIR",
@@ -2392,6 +1780,30 @@ mod tests {
     }
 
     #[test]
+    fn transport_rejects_removed_tcp_selection() {
+        with_env_vars(
+            &[("TABCTL_TRANSPORT", Some("tcp")), ("TABCTL_SOCKET", None)],
+            || {
+                let error = resolve_socket_endpoint(None).expect_err("Unix sockets only");
+                assert!(error.contains("Unix-domain sockets only"), "{error}");
+            },
+        );
+    }
+
+    #[test]
+    fn wrapper_repair_preserves_explicit_identity_and_data_dir() {
+        let dir = std::env::temp_dir().join(format!("tabctl-wrapper-identity-{}", request_id()));
+        let wrapper = dir.join("custom-host.sh");
+        let path = write_host_wrapper_at("/opt/bin/tabctl", "work", &wrapper, "/custom/state/work")
+            .expect("write explicit wrapper");
+        assert_eq!(path, wrapper);
+        let content = fs::read_to_string(&path).expect("read wrapper");
+        assert!(content.contains("TABCTL_DATA_DIR=\"/custom/state/work\""));
+        assert!(content.contains("TABCTL_PROFILE=\"work\""));
+        fs::remove_dir_all(dir).expect("cleanup wrapper");
+    }
+
+    #[test]
     fn connectivity_report_includes_manual_steps_when_ping_fails() {
         let entry = ProfileEntry {
             browser: Browser::Edge,
@@ -2405,7 +1817,7 @@ mod tests {
             user_data_dir: None,
         };
 
-        with_env_vars(&[("TABCTL_SOCKET", Some("tcp://127.0.0.1"))], || {
+        with_env_vars(&[("TABCTL_SOCKET", Some("invalid-endpoint"))], || {
             let report = profile_connectivity_report("edge", &entry);
             assert_eq!(report["healthy"], json!(false));
             assert_eq!(report["checks"]["pingOk"], json!(false));
@@ -2446,16 +1858,12 @@ mod tests {
         let data_dir = dir.join("data");
         let profile_dir = data_dir.join("profiles").join("edge");
         fs::create_dir_all(&profile_dir).expect("create profile dir");
-        let wrapper = profile_dir.join(if cfg!(windows) {
-            "tabctl-host.cmd"
-        } else {
-            "tabctl-host.sh"
-        });
+        let wrapper = profile_dir.join("tabctl-host.sh");
         fs::write(&wrapper, "echo ok\n").expect("write wrapper");
 
         with_env_vars(
             &[
-                ("TABCTL_SOCKET", Some("tcp://127.0.0.1")),
+                ("TABCTL_SOCKET", Some("invalid-endpoint")),
                 (
                     "TABCTL_CONFIG_DIR",
                     Some(config_dir.to_str().expect("config path")),
@@ -2670,73 +2078,13 @@ mod tests {
                 delay: Duration::from_millis(50),
                 writes: Vec::new(),
             };
-            let err =
-                send_request_over_stream(stream, "ping", Value::Object(Map::new()), false, None)
-                    .expect_err("request should time out");
+            let err = send_request_over_stream(stream, "ping", Value::Object(Map::new()), false)
+                .expect_err("request should time out");
             assert!(
                 err.contains("Request timed out after 10ms")
                     || err.contains("No response received"),
                 "unexpected timeout error: {err}"
             );
         });
-    }
-
-    #[test]
-    fn cached_snapshot_from_browser_state_extracts_snapshot_payload() {
-        let response = ResponseEnvelope {
-            ok: true,
-            action: Some("browser-state-latest".to_string()),
-            request_id: Some("req-1".to_string()),
-            component: Some("host".to_string()),
-            version: Some("0.6.0".to_string()),
-            progress: None,
-            data: Some(json!({
-                "snapshotId": 1,
-                "snapshot": {
-                    "generatedAt": 123,
-                    "windows": []
-                }
-            })),
-            error: None,
-        };
-
-        let snapshot = cached_snapshot_from_browser_state(&response).expect("snapshot");
-        assert_eq!(snapshot["generatedAt"], json!(123));
-        assert_eq!(snapshot["windows"], json!([]));
-    }
-
-    #[test]
-    fn cached_snapshot_from_browser_state_returns_none_without_snapshot_field() {
-        let response = ResponseEnvelope {
-            ok: true,
-            action: Some("browser-state-latest".to_string()),
-            request_id: Some("req-1".to_string()),
-            component: Some("host".to_string()),
-            version: Some("0.6.0".to_string()),
-            progress: None,
-            data: Some(json!({ "snapshotId": 1 })),
-            error: None,
-        };
-
-        assert!(cached_snapshot_from_browser_state(&response).is_none());
-    }
-
-    #[test]
-    fn graphql_cache_refresh_is_limited_to_structural_mutations() {
-        assert!(should_refresh_graphql_snapshot_cache(
-            "mutation { updateGroup(groupId: 1, title: \"Work\") { title } }"
-        ));
-        assert!(should_refresh_graphql_snapshot_cache(
-            "mutation { moveTab(tabIds: [1], index: 0) { movedTabs } }"
-        ));
-        assert!(should_refresh_graphql_snapshot_cache(
-            "mutation { undoAction(latest: true) { txid } }"
-        ));
-        assert!(should_refresh_graphql_snapshot_cache(
-            "mutation { closeTabs(tabIds: [1], confirm: true) { txid } }"
-        ));
-        assert!(!should_refresh_graphql_snapshot_cache(
-            "mutation { focusTab(tabId: 1) { success } }"
-        ));
     }
 }

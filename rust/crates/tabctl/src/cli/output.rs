@@ -2,24 +2,9 @@ use super::*;
 
 pub(super) fn render_local_command(
     matches: &ArgMatches,
-    _action: &str,
+    action: &str,
     data: Value,
 ) -> Result<(), String> {
-    if matches.get_flag("json") {
-        if !matches.get_flag("no-pretty") {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?
-            );
-        } else {
-            println!(
-                "{}",
-                serde_json::to_string(&data).map_err(|e| e.to_string())?
-            );
-        }
-        return Ok(());
-    }
-
     if !matches.get_flag("no-pretty") {
         println!(
             "{}",
@@ -30,6 +15,41 @@ pub(super) fn render_local_command(
             "{}",
             serde_json::to_string(&data).map_err(|e| e.to_string())?
         );
+    }
+    local_command_status(action, &data)
+}
+
+fn local_command_status(action: &str, data: &Value) -> Result<(), String> {
+    if action == "query" {
+        if let Some(errors) = data.get("errors").and_then(Value::as_array) {
+            if !errors.is_empty() {
+                return Err(format!(
+                    "GraphQL execution failed with {} error(s)",
+                    errors.len()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn ping_browser_available(data: &Value) -> bool {
+    data.get("nativeChannelAvailable").and_then(Value::as_bool) == Some(true)
+        && ["runtimeId", "version"].iter().all(|field| {
+            data.get(field)
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+        })
+}
+
+fn response_status(response: &ResponseEnvelope) -> Result<(), String> {
+    if !response.ok {
+        return Err("request failed".to_string());
+    }
+    if response.action.as_deref() == Some("ping")
+        && !response.data.as_ref().is_some_and(ping_browser_available)
+    {
+        return Err("Host reachable, but native browser round trip is unavailable".to_string());
     }
     Ok(())
 }
@@ -47,6 +67,10 @@ pub(super) fn render_ping_human(response: &ResponseEnvelope) -> Result<(), Strin
         return Err("request failed".to_string());
     }
 
+    let ping = response.data.as_ref().ok_or("missing ping data")?;
+    if !ping_browser_available(ping) {
+        return Err("Host reachable, but native browser round trip is unavailable".to_string());
+    }
     let data = response
         .data
         .as_ref()
@@ -79,27 +103,7 @@ pub(super) fn render_ping_human(response: &ResponseEnvelope) -> Result<(), Strin
         .get("hostDirty")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let native_channel_available = data
-        .get("nativeChannelAvailable")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-
     let dirty_marker = |d: bool| if d { "+dirty" } else { "" };
-
-    if data.get("version").is_none() {
-        if native_channel_available {
-            println!(
-                "✅ tabctl {} (host reachable; browser channel available)",
-                host_version
-            );
-        } else {
-            println!(
-                "✅ tabctl {} (host reachable; no browser channel)",
-                host_version
-            );
-        }
-        return Ok(());
-    }
 
     if in_sync {
         let has_shas = ext_sha != "unknown" && host_sha != "unknown";
@@ -151,10 +155,7 @@ pub(super) fn render_response(
                 serde_json::to_string(&payload).map_err(|e| e.to_string())?
             );
         }
-        if !response.ok {
-            return Err("request failed".to_string());
-        }
-        return Ok(());
+        return response_status(response);
     }
 
     if response.ok {
@@ -173,7 +174,7 @@ pub(super) fn render_response(
         } else {
             println!("ok");
         }
-        return Ok(());
+        return response_status(response);
     }
 
     if let Some(error) = &response.error {
@@ -194,6 +195,7 @@ pub(super) fn compact_response_payload(response: &ResponseEnvelope) -> Value {
             .clone()
             .unwrap_or_else(|| json!({ "ok": true }));
     }
+
     if let Some(error) = &response.error {
         return json!({
             "ok": false,
@@ -206,4 +208,47 @@ pub(super) fn compact_response_payload(response: &ResponseEnvelope) -> Value {
             "message": "request failed"
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn graphql_errors_fail_after_preserving_the_json_result() {
+        assert!(local_command_status(
+            "query",
+            &json!({ "data": null, "errors": [{ "message": "failed" }] })
+        )
+        .is_err());
+        assert!(local_command_status(
+            "query",
+            &json!({ "data": { "tab": null }, "errors": [{ "message": "failed" }] })
+        )
+        .is_err());
+        assert!(local_command_status("query", &json!({ "data": {}, "errors": [] })).is_ok());
+        assert!(local_command_status("help", &json!({ "errors": ["documentation"] })).is_ok());
+    }
+
+    #[test]
+    fn ping_requires_browser_round_trip_metadata() {
+        assert!(!ping_browser_available(
+            &json!({ "nativeChannelAvailable": false })
+        ));
+        assert!(!ping_browser_available(
+            &json!({ "nativeChannelAvailable": true })
+        ));
+        assert!(ping_browser_available(&json!({
+            "nativeChannelAvailable": true,
+            "runtimeId": "test-extension",
+            "version": "1.0.0"
+        })));
+        let response: ResponseEnvelope = serde_json::from_value(json!({
+            "ok": true,
+            "action": "ping",
+            "data": { "nativeChannelAvailable": true }
+        }))
+        .unwrap();
+        assert!(response_status(&response).is_err());
+    }
 }

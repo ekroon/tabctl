@@ -64,20 +64,31 @@ pub(crate) struct ScopeResult {
 /// Priority: tabIds > groupId > groupTitle > windowId > all > focused window.
 pub(crate) fn select_tabs_by_scope(snapshot: &Value, params: &Value) -> ScopeResult {
     let all_tabs = flatten_tabs(snapshot);
+    if params.get("tabIds").is_some_and(|ids| {
+        ids.as_array().is_none()
+            || ids
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|id| id.as_i64().is_none())
+    }) {
+        return ScopeResult {
+            tabs: Vec::new(),
+            error: Some("tabIds must be an array of integer tab IDs".into()),
+        };
+    }
 
     // By explicit tabIds
     if let Some(tab_ids) = params.get("tabIds").and_then(Value::as_array) {
         let id_set: std::collections::HashSet<i64> =
             tab_ids.iter().filter_map(Value::as_i64).collect();
-        if !id_set.is_empty() {
-            return ScopeResult {
-                tabs: all_tabs
-                    .into_iter()
-                    .filter(|t| id_set.contains(&t.tab_id))
-                    .collect(),
-                error: None,
-            };
-        }
+        return ScopeResult {
+            tabs: all_tabs
+                .into_iter()
+                .filter(|t| id_set.contains(&t.tab_id))
+                .collect(),
+            error: None,
+        };
     }
 
     // By groupId
@@ -177,6 +188,32 @@ fn flatten_tabs(snapshot: &Value) -> Vec<ScopedTab> {
         if let Some(win_tabs) = win.get("tabs").and_then(Value::as_array) {
             for tab in win_tabs {
                 if let Some(st) = ScopedTab::from_value(tab, win_id) {
+                    let mut st = st;
+                    st.incognito |= win.get("incognito").and_then(Value::as_bool) == Some(true);
+                    if let Some(group) =
+                        win.get("groups")
+                            .and_then(Value::as_array)
+                            .and_then(|groups| {
+                                groups
+                                    .iter()
+                                    .find(|group| group["groupId"].as_i64() == Some(st.group_id))
+                            })
+                    {
+                        st.group_title = group
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .map(String::from)
+                            .or(st.group_title);
+                        st.group_color = group
+                            .get("color")
+                            .and_then(Value::as_str)
+                            .map(String::from)
+                            .or(st.group_color);
+                        st.group_collapsed = group
+                            .get("collapsed")
+                            .and_then(Value::as_bool)
+                            .or(st.group_collapsed);
+                    }
                     tabs.push(st);
                 }
             }
@@ -218,6 +255,12 @@ mod tests {
         let r = select_tabs_by_scope(&snapshot(), &serde_json::json!({"tabIds": [2, 3]}));
         assert_eq!(r.tabs.len(), 2);
         assert!(r.error.is_none());
+    }
+
+    #[test]
+    fn explicit_empty_selection_never_falls_back_to_focused_window() {
+        let r = select_tabs_by_scope(&snapshot(), &serde_json::json!({"tabIds": [], "all": true}));
+        assert!(r.tabs.is_empty());
     }
 
     #[test]

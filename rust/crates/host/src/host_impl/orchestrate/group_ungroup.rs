@@ -1,11 +1,12 @@
 use serde_json::{Map, Value};
 
 use super::resolve::{resolve_group, resolve_window_id};
+use super::scope::select_tabs_by_scope;
 use super::OrchStep;
 
 /// Orchestration for the `group-ungroup` command.
 ///
-/// Two steps: p:snapshot → resolve group + capture tabs for undo → p:tab-ungroup.
+/// Resolve explicit tabs or a group; recovery is captured by the host boundary.
 #[derive(Debug)]
 pub(crate) struct GroupUngroupOrchestration {
     params: Value,
@@ -15,14 +16,10 @@ pub(crate) struct GroupUngroupOrchestration {
 
 #[derive(Debug)]
 struct UngroupPreState {
-    group_id: i64,
-    window_id: i64,
-    incognito: bool,
-    group_title: Option<String>,
-    group_color: Option<String>,
-    group_collapsed: Option<bool>,
+    group_id: Option<i64>,
+    window_id: Option<i64>,
     tab_ids: Vec<i64>,
-    undo_tabs: Vec<Value>,
+    skipped: Vec<Value>,
 }
 
 #[derive(Debug)]
@@ -52,64 +49,86 @@ impl super::Orchestration for GroupUngroupOrchestration {
     fn step(&mut self, response: Value) -> OrchStep {
         match self.phase {
             GroupUngroupPhase::GetSnapshot => {
-                let group_id = self.params.get("groupId").and_then(Value::as_i64);
-                let group_title = self.params.get("groupTitle").and_then(Value::as_str);
-
-                if group_id.is_none() && group_title.map_or(true, |s| s.trim().is_empty()) {
-                    return OrchStep::Error {
-                        message: "Missing group identifier".to_string(),
-                        hint: None,
+                let mut skipped = Vec::new();
+                let (group_id, window_id, tab_ids) = if self.params.get("tabIds").is_some() {
+                    let scope = select_tabs_by_scope(&response, &self.params);
+                    if let Some(message) = scope.error {
+                        return OrchStep::Error {
+                            message,
+                            hint: None,
+                        };
+                    }
+                    for id in self.params["tabIds"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_i64)
+                    {
+                        if !scope.tabs.iter().any(|tab| tab.tab_id == id) {
+                            skipped.push(serde_json::json!({"tabId":id,"reason":"not_found"}));
+                        }
+                    }
+                    let tabs: Vec<_> = scope.tabs.into_iter().filter(|tab| {
+                        if tab.group_id == -1 {
+                            skipped.push(serde_json::json!({"tabId":tab.tab_id,"reason":"already_ungrouped"}));
+                            false
+                        } else { true }
+                    }).collect();
+                    let group_id = tabs
+                        .first()
+                        .map(|tab| tab.group_id)
+                        .filter(|id| tabs.iter().all(|tab| tab.group_id == *id));
+                    let window_id = tabs
+                        .first()
+                        .map(|tab| tab.window_id)
+                        .filter(|id| tabs.iter().all(|tab| tab.window_id == *id));
+                    (
+                        group_id,
+                        window_id,
+                        tabs.iter().map(|tab| tab.tab_id).collect::<Vec<_>>(),
+                    )
+                } else {
+                    let group_id = self.params.get("groupId").and_then(Value::as_i64);
+                    let group_title = self.params.get("groupTitle").and_then(Value::as_str);
+                    if group_id.is_none()
+                        && group_title.map_or(true, |title| title.trim().is_empty())
+                    {
+                        return OrchStep::Error {
+                            message: "Missing group identifier".into(),
+                            hint: None,
+                        };
+                    }
+                    let window_id = self
+                        .params
+                        .get("windowId")
+                        .and_then(|id| resolve_window_id(&response, id));
+                    let matched = match resolve_group(&response, group_id, group_title, window_id) {
+                        Ok(matched) => matched,
+                        Err(error) => return error,
                     };
-                }
-
-                let window_id_param = self
-                    .params
-                    .get("windowId")
-                    .and_then(|v| resolve_window_id(&response, v));
-
-                let matched = match resolve_group(&response, group_id, group_title, window_id_param)
-                {
-                    Ok(m) => m,
-                    Err(e) => return e,
+                    (
+                        Some(matched.group_id),
+                        Some(matched.window_id),
+                        matched.tabs.iter().map(|tab| tab.tab_id).collect(),
+                    )
                 };
-
-                let tab_ids: Vec<i64> = matched.tabs.iter().map(|t| t.tab_id).collect();
                 if tab_ids.is_empty() {
                     return OrchStep::Complete {
                         response: serde_json::json!({
-                            "groupId": matched.group_id,
-                            "windowId": matched.window_id,
-                            "summary": { "ungroupedTabs": 0 },
+                            "groupId": group_id,
+                            "windowId": window_id,
+                            "summary": { "ungroupedTabs": 0, "skippedTabs": skipped.len() },
+                            "skipped": skipped,
                         }),
                         undo: None,
                     };
                 }
 
-                let undo_tabs: Vec<Value> = matched
-                    .tabs
-                    .iter()
-                    .map(|t| {
-                        serde_json::json!({
-                            "tabId": t.tab_id,
-                            "windowId": t.window_id,
-                            "index": t.index,
-                            "groupId": t.group_id,
-                            "groupTitle": t.group_title,
-                            "groupColor": t.group_color,
-                            "groupCollapsed": t.group_collapsed,
-                        })
-                    })
-                    .collect();
-
                 self.pre_state = Some(UngroupPreState {
-                    group_id: matched.group_id,
-                    window_id: matched.window_id,
-                    incognito: matched.window_incognito,
-                    group_title: matched.title,
-                    group_color: matched.color,
-                    group_collapsed: matched.collapsed,
+                    group_id,
+                    window_id,
                     tab_ids: tab_ids.clone(),
-                    undo_tabs,
+                    skipped,
                 });
 
                 self.phase = GroupUngroupPhase::Ungroup;
@@ -121,24 +140,14 @@ impl super::Orchestration for GroupUngroupOrchestration {
             GroupUngroupPhase::Ungroup => {
                 let pre = self.pre_state.as_ref().unwrap();
 
-                let undo = serde_json::json!({
-                    "action": "group-ungroup",
-                    "incognito": pre.incognito,
-                    "groupId": pre.group_id,
-                    "windowId": pre.window_id,
-                    "groupTitle": pre.group_title,
-                    "groupColor": pre.group_color,
-                    "groupCollapsed": pre.group_collapsed,
-                    "tabs": pre.undo_tabs,
-                });
-
                 OrchStep::Complete {
                     response: serde_json::json!({
                         "groupId": pre.group_id,
                         "windowId": pre.window_id,
-                        "summary": { "ungroupedTabs": pre.tab_ids.len() },
+                        "summary": { "ungroupedTabs": pre.tab_ids.len(), "skippedTabs": pre.skipped.len() },
+                        "skipped": pre.skipped,
                     }),
-                    undo: Some(undo),
+                    undo: None,
                 }
             }
         }
@@ -168,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn ungroup_by_id_with_undo() {
+    fn ungroup_by_id() {
         let params = serde_json::json!({"groupId": 10});
         let mut orch = GroupUngroupOrchestration::new(&params);
 
@@ -189,13 +198,7 @@ mod tests {
         };
         assert_eq!(response["summary"]["ungroupedTabs"], 2);
 
-        let undo = undo.unwrap();
-        assert_eq!(undo["action"], "group-ungroup");
-        assert_eq!(undo["groupTitle"], "Dev");
-        assert_eq!(undo["groupColor"], "blue");
-        let undo_tabs = undo["tabs"].as_array().unwrap();
-        assert_eq!(undo_tabs.len(), 2);
-        assert_eq!(undo_tabs[0]["tabId"], 1);
+        assert!(undo.is_none());
     }
 
     #[test]
@@ -217,5 +220,24 @@ mod tests {
         let _ = orch.start();
         let step = orch.step(snapshot());
         assert!(matches!(&step, OrchStep::Error { .. }));
+    }
+
+    #[test]
+    fn explicit_tabs_never_ungroup_other_group_members() {
+        let mut orch = GroupUngroupOrchestration::new(&serde_json::json!({"tabIds":[2]}));
+        let _ = orch.start();
+        let OrchStep::SendPrimitive { action, params } = orch.step(snapshot()) else {
+            panic!("expected exact ungroup primitive")
+        };
+        assert_eq!(action, "p:tab-ungroup");
+        assert_eq!(params["tabIds"], serde_json::json!([2]));
+        for ids in [serde_json::json!([]), serde_json::json!([3])] {
+            let mut orch = GroupUngroupOrchestration::new(&serde_json::json!({"tabIds":ids}));
+            let _ = orch.start();
+            let OrchStep::Complete { response, .. } = orch.step(snapshot()) else {
+                panic!("empty or already-ungrouped selection must not mutate")
+            };
+            assert_eq!(response["summary"]["ungroupedTabs"], 0);
+        }
     }
 }

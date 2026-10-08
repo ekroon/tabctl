@@ -1,8 +1,14 @@
 # tabctl CLI
 
+Supports macOS (Apple Silicon and Intel), Edge and Chrome, and local Unix-domain
+sockets only. Install with npm, mise/GitHub releases, or build the Rust binary from source.
+The npm package bundles the universal macOS binary and extension and requires Node.js 24+.
+
 ## Quick start
 ```bash
 mise use -g github:ekroon/tabctl   # or: cargo install --path rust/crates/tabctl
+# npm alternative: npm install -g tabctl
+# current release candidate: npm install -g tabctl@rc
 
 tabctl setup --browser edge --extension-id <extension-id>
 tabctl ping
@@ -18,7 +24,7 @@ Runtime architecture: a single Rust `tabctl` binary serves as both the CLI and t
 ### Browser-facing commands
 - `tabctl query <QUERY>` — execute a GraphQL query or mutation against the current browser snapshot and host actions
 - `tabctl schema` — print the GraphQL SDL
-- `tabctl ping` — convenience health/version check
+- `tabctl ping` — native browser round-trip health check with extension identity and host/extension versions
 - `tabctl history [--limit <n>]` — convenience undo-history query
 
 ### Local/admin commands
@@ -183,6 +189,43 @@ tabctl --json history --limit 10
 ```
 Use this to find `txid` values for `undoAction` mutations.
 
+`closeTabs` previews by default: omit `confirm`, set it to `false`, or set
+`dryRun: true` to leave browser state unchanged. `dryRun` wins over confirmation.
+An explicitly empty selection never falls back to the focused window.
+
+Undoable non-incognito mutations journal recovery before changing browser state, including
+partially completed operations. Undo restores ordering, active/pinned state and
+group metadata where available. A completed undo cannot be replayed, and
+`latest: true` skips consumed records and transactions still running in the host.
+Explicit undo also rejects an active transaction; interrupted transactions from
+a previous host process remain eligible for recovery.
+
+If a tab/window creation has an unknown outcome in either the original action or
+its undo, automatic recovery is blocked rather than inventing IDs, duplicating
+tabs, or declaring success. The journal retains the evidence for manual recovery;
+inspect the browser before proceeding. A malformed or truncated journal blocks
+journaled mutations and undo without altering its bytes. Restore or repair the
+journal before retrying; deleting it discards recovery information. A valid final
+record without a newline is preserved when appending. Incognito actions do not
+persist undo data.
+
+Mutations whose affected tabs or windows mix private and non-private browsing
+are rejected before the first change. Unrelated private windows do not block a
+normal operation; new-window moves preserve the source's privacy.
+
+`openTabs`, `closeTabs`, `archiveTabs`, and `deduplicateTabs` return an optional
+`txid`; retain it for `undoAction(txid: ...)` instead of racing another operation
+with `latest: true`. Successful private-tab mutations return their actual results,
+`txid: null`, and an `undoUnavailable` reason; they do not pretend the mutation
+failed or manufacture a transaction ID. Close, archive, and dedupe also expose
+`skippedTabs` and per-tab `skipped { tabId reason }` policy exclusions. A fully
+protected selection can succeed without changes or a transaction.
+
+```bash
+tabctl query 'mutation { closeTabs(tabIds: [456], confirm: true) { closedTabs txid undoUnavailable } }'
+tabctl query 'mutation { archiveTabs(windowId: 123) { archivedTabs txid undoUnavailable skippedTabs skipped { tabId reason } } }'
+```
+
 ## Configuration
 
 ### Config directory
@@ -203,8 +246,11 @@ Optional file in the config directory.
 ## Policy
 - Policy file: `<configDir>/policy.json`
 - If the file is missing, no policy is applied.
-- Protected tabs are excluded from outputs and actions.
+- Protection is reloaded before mutations. Protected tabs remain visible in reads
+  but are excluded from mutation targets, including close, archive and dedupe.
 - The default policy protects pinned tabs and group title `🔒`.
+- `protect.groupTitles` matches title substrings; `protect.domains` matches the
+  named hostname and its subdomains. Invalid policy files fail explicitly.
 
 Create the default policy file:
 ```bash

@@ -11,5 +11,5 @@ const executables = [
 ];
 
 for (const p of executables) {
-  if (fs.existsSync(p) && process.platform !== "win32") fs.chmodSync(p, 0o755);
+  if (fs.existsSync(p)) fs.chmodSync(p, 0o755);
 }

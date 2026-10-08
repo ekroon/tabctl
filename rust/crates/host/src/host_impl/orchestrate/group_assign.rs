@@ -46,6 +46,16 @@ impl GroupAssignOrchestration {
 }
 
 impl super::Orchestration for GroupAssignOrchestration {
+    fn mutation_scope(&self) -> super::MutationScope {
+        self.state
+            .as_ref()
+            .map(|state| super::MutationScope {
+                tab_ids: state.resolved_tab_ids.clone(),
+                group_ids: state.target_group_id.into_iter().collect(),
+                window_ids: vec![state.target_window_id],
+            })
+            .unwrap_or_default()
+    }
     fn start(&mut self) -> OrchStep {
         OrchStep::SendPrimitive {
             action: "p:snapshot".to_string(),

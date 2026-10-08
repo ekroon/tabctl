@@ -72,6 +72,16 @@ impl MoveGroupOrchestration {
 }
 
 impl super::Orchestration for MoveGroupOrchestration {
+    fn mutation_scope(&self) -> super::MutationScope {
+        self.state
+            .as_ref()
+            .map(|state| super::MutationScope {
+                tab_ids: state.tab_ids.clone(),
+                window_ids: state.target_window_id.into_iter().collect(),
+                ..super::MutationScope::default()
+            })
+            .unwrap_or_default()
+    }
     fn start(&mut self) -> OrchStep {
         OrchStep::SendPrimitive {
             action: "p:snapshot".to_string(),
@@ -245,7 +255,7 @@ impl MoveGroupOrchestration {
             self.phase = Phase::CreateWindow;
             OrchStep::SendPrimitive {
                 action: "p:window-create".to_string(),
-                params: serde_json::json!({"tabId": tab_ids[0], "focused": false}),
+                params: serde_json::json!({"tabId": tab_ids[0], "focused": false, "incognito": gm.window_incognito}),
             }
         } else {
             let tw = target_window_id.unwrap();

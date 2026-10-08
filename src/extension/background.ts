@@ -30,8 +30,8 @@ const ACTIVE_PAGE_CACHE_FIRST_QUIESCENT_SAMPLE_MS = 75;
 const ACTIVE_PAGE_CACHE_FIRST_LOADING_MAX_ATTEMPTS = 300;
 const ACTIVE_PAGE_CACHE_FIRST_SETTLING_MAX_ATTEMPTS = 200;
 const ACTIVE_PAGE_CACHE_TIMEOUT_MS = 5_000;
-const MAX_PAGE_HTML_CHARS = 10 * 1024 * 1024;
-const ACTIVE_PAGE_CACHE_MAX_HTML_CHARS = MAX_PAGE_HTML_CHARS;
+const MAX_PAGE_EXTRACTION_CHARS = 10 * 1024 * 1024;
+const ACTIVE_PAGE_CACHE_MAX_HTML_CHARS = MAX_PAGE_EXTRACTION_CHARS;
 const ACTIVE_PAGE_CACHE_QUIESCENT_DELAY_MS = 6_000;
 const ACTIVE_PAGE_CACHE_QUIESCENT_RETRY_MS = 1_000;
 const ACTIVE_PAGE_CACHE_QUIESCENT_TIMEOUT_MS = 2_500;
@@ -50,6 +50,7 @@ const RECONNECT_ALARM_MIN_DELAY_MS = 30_000;
 const RECONNECT_STABLE_RESET_MS = 5_000;
 const screenshot = require("./lib/screenshot") as typeof import("./lib/screenshot");
 const content = require("./lib/content") as typeof import("./lib/content");
+const { postNativeMessage } = require("./lib/native-message") as typeof import("./lib/native-message");
 const { delay, executeWithTimeout } = content;
 const DESCRIPTION_MAX_LENGTH = 250;
 
@@ -181,14 +182,14 @@ function sendResponse(port: chrome.runtime.Port | null, id: string, ok: boolean,
       const data = typeof payload === "object" && payload !== null
         ? payload
         : { payload };
-      port.postMessage({ id, ok: true, data });
+      postNativeMessage(port, { id, ok: true, data });
       return;
     }
 
     const error = payload instanceof Error
       ? { message: payload.message, stack: payload.stack }
       : payload;
-    port.postMessage({ id, ok: false, error });
+    postNativeMessage(port, { id, ok: false, error });
   } catch (error) {
     log("failed to send native response", { id, ok, error });
   }
@@ -479,7 +480,7 @@ function requestPageCacheStatus(tab: chrome.tabs.Tab, reason: string) {
 
   const id = nextActivePageCacheStatusId();
   trackPageCacheStatusRequest(id, tab.id, url);
-  port.postMessage({
+  postNativeMessage(port, {
     id,
     action: "page-cache-status",
     ok: true,
@@ -882,7 +883,7 @@ async function captureActivePageCache(
     const openTabs = await getPageCacheOpenTabs();
     const id = nextActivePageCacheId();
     trackPageCacheStatusRequest(id, verifiedTab.id, activePageCacheUrl(verifiedTab));
-    port.postMessage({
+    const sent = postNativeMessage(port, {
       id,
       action: "page-cache-capture",
       ok: true,
@@ -908,6 +909,14 @@ async function captureActivePageCache(
         extraction,
       },
     });
+    if (sent.ok !== true) {
+      const detail = "capture exceeds native transport budget";
+      activePageCache.statusRequests.delete(id);
+      setActivePageCacheState(verifiedTab.id, captureUrl, "error", detail);
+      void setCacheErrorIndicator(verifiedTab.id, captureUrl, detail);
+      log(detail, sent.error);
+      return false;
+    }
     activePageCache.lastCapturedKey = key;
     return true;
   } catch (error) {
@@ -989,7 +998,7 @@ async function postBrowserStateSync(reason: string) {
   try {
     const snapshot = await getTabSnapshot();
     updateIncognitoState(snapshot);
-    state.port.postMessage({
+    const sent = postNativeMessage(state.port, {
       id: nextBrowserStateId(),
       action: "browser-state-sync",
       ok: true,
@@ -1000,6 +1009,9 @@ async function postBrowserStateSync(reason: string) {
         snapshot,
       },
     });
+    if (sent.ok !== true) {
+      throw new Error("Browser state sync exceeds native transport budget");
+    }
     browserState.pendingEvents.splice(0, eventCount);
   } catch (error) {
     log("Browser state sync failed", error);
@@ -1216,7 +1228,7 @@ function sendProgress(id: string, payload: Record<string, unknown>) {
   if (!state.port) {
     return;
   }
-  state.port.postMessage({ id, progress: true, data: payload });
+  postNativeMessage(state.port, { id, progress: true, data: payload });
 }
 
 async function handleAction(action: string, params: Record<string, unknown>, requestId: string) {
@@ -1342,8 +1354,8 @@ async function handleAction(action: string, params: Record<string, unknown>, req
       const targetTabId = requireFiniteId(params.tabId, "tabId");
       const expectedUrl = typeof params.expectedUrl === "string" ? params.expectedUrl : "";
       const maxHtmlChars = typeof params.maxHtmlChars === "number"
-        ? Math.max(1, Math.min(params.maxHtmlChars, MAX_PAGE_HTML_CHARS))
-        : MAX_PAGE_HTML_CHARS;
+        ? Math.max(1, Math.min(Number.isFinite(params.maxHtmlChars) ? Math.floor(params.maxHtmlChars) : MAX_PAGE_EXTRACTION_CHARS, MAX_PAGE_EXTRACTION_CHARS))
+        : MAX_PAGE_EXTRACTION_CHARS;
       const timeoutMs = typeof params.timeoutMs === "number"
         ? Math.max(1, params.timeoutMs)
         : 15_000;

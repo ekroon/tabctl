@@ -831,6 +831,7 @@ mod tests {
         OrchestrationContext {
             page_cache_path: Some(path),
             profile_name: Some("test-profile".to_string()),
+            ..OrchestrationContext::default()
         }
     }
 

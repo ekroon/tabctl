@@ -6,7 +6,9 @@
 - `crates/shared`: Shared protocol/config types used by tabctl + host.
 
 ## Data flow
-CLI (`tabctl`) -> local socket/pipe/tcp -> host -> browser extension native messaging.
+CLI (`tabctl`) -> local Unix-domain socket -> host -> browser extension native messaging.
+
+macOS only (Apple Silicon and Intel). The shared crate rejects unsupported build targets.
 
 ## Local constraints
 - Keep top-level Rust modules declarative and forward to deeper files.
