@@ -1,7 +1,8 @@
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use super::scope::{select_tabs_by_scope, ScopedTab};
+use super::analyze::scoped_tab_values;
+use super::scope::select_tabs_by_scope;
 use super::{OrchStep, Orchestration};
 use crate::host_impl::policy::Policy;
 
@@ -14,7 +15,7 @@ pub(crate) struct CloseOrchestration {
 
 #[derive(Debug)]
 struct Plan {
-    tabs: Vec<ScopedTab>,
+    tabs: Vec<Value>,
     skipped: Vec<Value>,
 }
 
@@ -54,8 +55,9 @@ impl Orchestration for CloseOrchestration {
             return OrchStep::Complete {
                 response: json!({
                     "dryRun": false,
-                    "summary": {"closedTabs":plan.tabs.len(),"skippedTabs":plan.skipped.len()},
+                    "summary": {"closedTabs":plan.tabs.len(),"plannedTabs":plan.tabs.len(),"skippedTabs":plan.skipped.len()},
                     "skipped":plan.skipped,
+                    "tabs":plan.tabs,
                 }),
                 undo: None,
             };
@@ -75,14 +77,12 @@ impl Orchestration for CloseOrchestration {
                     "dryRun": self.preview(), "txid":null,
                     "summary": {"closedTabs":0,"plannedTabs":plan.tabs.len(),"skippedTabs":plan.skipped.len()},
                     "skipped":plan.skipped,
-                    "tabs":plan.tabs.iter().map(|tab| json!({
-                        "tabId":tab.tab_id,"windowId":tab.window_id,"url":tab.url,"title":tab.title,
-                    })).collect::<Vec<_>>(),
+                    "tabs":plan.tabs,
                 }),
                 undo: None,
             };
         }
-        let ids: Vec<_> = plan.tabs.iter().map(|tab| tab.tab_id).collect();
+        let ids: Vec<_> = plan.tabs.iter().map(|tab| tab["tabId"].clone()).collect();
         self.plan = Some(plan);
         OrchStep::SendPrimitive {
             action: "p:tab-remove".into(),
@@ -107,7 +107,7 @@ fn plan_close(snapshot: &Value, params: &Value, policy: &Policy) -> Result<Plan,
             skipped.push(json!({"tabId":id,"reason":"not_found"}));
         }
     }
-    let tabs = scope
+    let tabs: Vec<_> = scope
         .tabs
         .into_iter()
         .filter(|tab| {
@@ -127,7 +127,10 @@ fn plan_close(snapshot: &Value, params: &Value, policy: &Policy) -> Result<Plan,
             }
         })
         .collect();
-    Ok(Plan { tabs, skipped })
+    Ok(Plan {
+        tabs: scoped_tab_values(snapshot, &tabs),
+        skipped,
+    })
 }
 
 #[cfg(test)]
@@ -177,5 +180,102 @@ mod tests {
                 json!({"tabId":2,"reason":"protected_pinned"}),
             ]
         );
+    }
+
+    #[test]
+    fn close_returns_full_pre_mutation_metadata_in_preview_and_confirmed_results() {
+        let snapshot = json!({"windows":[{
+            "windowId":7,"incognito":false,"focused":true,
+            "groups":[{"groupId":42,"title":"Work","color":"green","collapsed":true}],
+            "tabs":[{
+                "tabId":1,"index":5,"groupId":42,"url":"https://a.example","title":"Original",
+                "active":true,"pinned":true,"lastAccessedAt":1700000000000.5,
+                "favIconUrl":"https://a.example/icon.png","status":"loading","audible":true,"discarded":true
+            }]
+        }]});
+        let expected = json!([{
+            "tabId":1,"windowId":7,"index":5,"groupId":42,"groupTitle":"Work",
+            "groupColor":"green","groupCollapsed":true,"url":"https://a.example","title":"Original",
+            "active":true,"pinned":true,"incognito":false,"lastAccessedAt":1700000000000.5,
+            "favIconUrl":"https://a.example/icon.png","status":"loading","audible":true,"discarded":true
+        }]);
+        for params in [
+            json!({"tabIds":[1]}),
+            json!({"tabIds":[1],"confirmed":true,"dryRun":true}),
+            json!({"tabIds":[1],"confirmed":true}),
+        ] {
+            let mut orch = CloseOrchestration::new(&params);
+            let _ = orch.start();
+            let step = orch.step(snapshot.clone());
+            let confirmed = params["confirmed"] == true && params["dryRun"] != true;
+            let result = if confirmed {
+                let OrchStep::SendPrimitive { action, params } = step else {
+                    panic!("expected close")
+                };
+                assert_eq!(action, "p:tab-remove");
+                assert_eq!(params["tabIds"], json!([1]));
+                orch.step(json!({"pinned":false,"index":0,"groupId":-1}))
+            } else {
+                step
+            };
+            let OrchStep::Complete { response, .. } = result else {
+                panic!("expected result")
+            };
+            assert_eq!(response["tabs"], expected);
+            assert_eq!(response["summary"]["plannedTabs"], 1);
+            assert_eq!(response["summary"]["closedTabs"], usize::from(confirmed));
+            assert_eq!(response["summary"]["skippedTabs"], 0);
+        }
+    }
+
+    #[test]
+    fn close_projection_excludes_skipped_tabs_and_counts_all_skipped_without_mutation() {
+        let policy: Arc<Policy> =
+            Arc::new(serde_json::from_value(json!({"protect":{"pinned":true}})).unwrap());
+        for all_skipped in [false, true] {
+            for confirmed in [false, true] {
+                let ids = if all_skipped {
+                    json!([2, 3])
+                } else {
+                    json!([1, 2, 3])
+                };
+                let mut orch =
+                    CloseOrchestration::new(&json!({"tabIds":ids,"confirmed":confirmed}));
+                orch.set_policy(Arc::clone(&policy));
+                let _ = orch.start();
+                let step = orch.step(snapshot());
+                let result = if confirmed && !all_skipped {
+                    let OrchStep::SendPrimitive { params, .. } = step else {
+                        panic!("expected eligible close")
+                    };
+                    assert_eq!(params["tabIds"], json!([1]));
+                    orch.step(json!({}))
+                } else {
+                    step
+                };
+                let OrchStep::Complete { response, .. } = result else {
+                    panic!("must not remove skipped tabs")
+                };
+                assert_eq!(
+                    response["summary"]["plannedTabs"],
+                    usize::from(!all_skipped)
+                );
+                assert_eq!(
+                    response["summary"]["closedTabs"],
+                    usize::from(confirmed && !all_skipped)
+                );
+                assert_eq!(response["summary"]["skippedTabs"], 2);
+                assert_eq!(
+                    response["tabs"].as_array().unwrap().len(),
+                    usize::from(!all_skipped)
+                );
+                assert_eq!(
+                    response["skipped"],
+                    json!([
+                        {"tabId":3,"reason":"not_found"},{"tabId":2,"reason":"protected_pinned"}
+                    ])
+                );
+            }
+        }
     }
 }

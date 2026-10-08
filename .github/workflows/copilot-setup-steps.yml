@@ -34,11 +34,21 @@ jobs:
 
       - name: Install dependencies
         if: runner.os == 'macOS'
-        run: npm ci
+        run: |
+          if [ "$(uname -s)" = Darwin ]; then
+            npm ci
+          else
+            echo "Source-only review: skip macOS dependency installation."
+          fi
 
       - name: Build
         if: runner.os == 'macOS'
-        run: npm run build
+        run: |
+          if [ "$(uname -s)" = Darwin ]; then
+            npm run build
+          else
+            echo "Source-only review: skip macOS build."
+          fi
 
       - name: Explain source-only setup on managed non-macOS runners
         if: runner.os != 'macOS'

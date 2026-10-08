@@ -286,19 +286,20 @@ async function cleanupSmokeTabs() {
   }
 }
 
-async function stopSmokeBrowser() {
-  if (!smokeBrowser) return;
-  if (smokeBrowser.exitCode !== null) {
-    if (smokeBrowser.exitCode !== 0) throw new Error(`Browser fixture exited ${smokeBrowser.exitCode}`);
+async function stopSmokeBrowser(child = smokeBrowser, timeoutMs = 15_000) {
+  if (!child) return;
+  if (child.exitCode !== null || child.signalCode !== null) {
+    if (child.exitCode !== 0) throw new Error(`Browser fixture exited ${child.signalCode || child.exitCode}`);
     return;
   }
   log("Stopping isolated smoke browser");
-  smokeBrowser.kill("SIGTERM");
+  child.kill("SIGTERM");
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
-      reject(new Error("Browser fixture did not finish cleanup within 15s"));
-    }, 15_000);
-    smokeBrowser.on("exit", (code, signal) => {
+      child.kill("SIGKILL");
+      reject(new Error(`Browser fixture did not finish cleanup within ${timeoutMs}ms; force-killed fixture`));
+    }, timeoutMs);
+    child.once("exit", (code, signal) => {
       clearTimeout(timeout);
       if (code === 0) resolve();
       else reject(new Error(`Browser fixture cleanup failed (${signal || code})`));
@@ -353,6 +354,7 @@ async function main() {
   await run("npm", ["run", "build"]);
   await run("npm", ["run", "test:extension"]);
   await run("npm", ["run", "test:packaging"]);
+  await run("npm", ["run", "test:smoke-runner"]);
 
   log("Step 2/8: Rust verify");
   await run("npm", ["run", "rust:verify"]);
@@ -446,7 +448,7 @@ async function main() {
   testGroup = null;
 }
 
-main()
+if (require.main === module) main()
   .catch(async (err) => {
     log(`FAILED: ${err instanceof Error ? err.message : String(err)}`);
     process.exitCode = 1;
@@ -460,3 +462,5 @@ main()
       process.exitCode = 1;
     }
   });
+
+module.exports = { stopSmokeBrowser };

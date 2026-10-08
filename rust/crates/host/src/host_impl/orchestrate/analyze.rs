@@ -1,6 +1,6 @@
 use crate::host_impl::policy::Policy;
 use serde_json::{Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tabctl_shared::normalize_url;
 
@@ -12,7 +12,8 @@ const DEFAULT_STALE_DAYS: u64 = 30;
 /// Orchestration for the `analyze` command.
 ///
 /// p:snapshot → pure analysis (staleness, duplicates, domain stats) →
-/// if dedupe confirmed: p:tab-remove → respond with undo.
+/// when dedupe is requested: build a protection-aware plan, then remove only
+/// when confirmed and not dry-run. Recovery belongs to the host boundary.
 #[derive(Debug)]
 pub(crate) struct AnalyzeOrchestration {
     params: Value,
@@ -83,16 +84,18 @@ impl AnalyzeOrchestration {
         let stale_threshold_ms = stale_days * 86_400_000;
 
         // Build tab values and compute staleness
-        let mut tab_values: Vec<Value> = Vec::new();
+        let tab_values = scoped_tab_values(&snapshot, &tabs);
+        let tab_index: HashMap<_, _> = tabs
+            .iter()
+            .zip(&tab_values)
+            .map(|(tab, value)| (tab.tab_id, value))
+            .collect();
         let mut stale_tabs: Vec<Value> = Vec::new();
 
-        for tab in &tabs {
-            let tab_val = tab_to_value(tab);
-            tab_values.push(tab_val.clone());
-
+        for (tab, tab_val) in tabs.iter().zip(&tab_values) {
             if let Some(lfa) = tab.last_accessed_at {
                 if now_ms.saturating_sub(lfa as u64) > stale_threshold_ms {
-                    stale_tabs.push(tab_val);
+                    stale_tabs.push(tab_val.clone());
                 }
             }
         }
@@ -109,7 +112,10 @@ impl AnalyzeOrchestration {
         let mut duplicates: Vec<Value> = Vec::new();
         for (normalized, group) in &url_groups {
             if group.len() > 1 {
-                let group_tabs: Vec<Value> = group.iter().map(|t| tab_to_value(t)).collect();
+                let group_tabs: Vec<Value> = group
+                    .iter()
+                    .map(|tab| tab_index[&tab.tab_id].clone())
+                    .collect();
                 duplicates.push(serde_json::json!({
                     "normalizedUrl": normalized,
                     "tabs": group_tabs,
@@ -169,27 +175,28 @@ impl AnalyzeOrchestration {
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
-        if dedupe && confirm && self.params["dryRun"].as_bool() != Some(true) {
+        if dedupe {
             // Close duplicate tabs, keeping the first in each group
             let mut remove_ids: Vec<i64> = Vec::new();
             let mut skipped = Vec::new();
-
-            for group in url_groups.values() {
-                if group.len() > 1 {
-                    for tab in group.iter().skip(1) {
-                        if let Some(reason) = self.policy.reason(tab) {
-                            skipped.push(serde_json::json!({"tabId":tab.tab_id,"reason":reason}));
-                            continue;
-                        }
-                        remove_ids.push(tab.tab_id);
-                    }
+            let duplicate_ids: HashSet<_> = url_groups
+                .values()
+                .flat_map(|group| group.iter().skip(1).map(|tab| tab.tab_id))
+                .collect();
+            for tab in tabs
+                .iter()
+                .filter(|tab| duplicate_ids.contains(&tab.tab_id))
+            {
+                if let Some(reason) = self.policy.reason(tab) {
+                    skipped.push(serde_json::json!({"tabId":tab.tab_id,"reason":reason}));
+                    continue;
                 }
+                remove_ids.push(tab.tab_id);
             }
 
             analysis["skipped"] = serde_json::json!(skipped);
-            analysis["dedupeSummary"] =
-                serde_json::json!({"closedTabs":0,"skippedTabs":skipped.len()});
-            if remove_ids.is_empty() {
+            analysis["dedupeSummary"] = serde_json::json!({"closedTabs":0,"plannedTabs":remove_ids.len(),"skippedTabs":skipped.len()});
+            if !confirm || self.params["dryRun"].as_bool() == Some(true) || remove_ids.is_empty() {
                 return OrchStep::Complete {
                     response: analysis,
                     undo: None,
@@ -216,35 +223,62 @@ impl AnalyzeOrchestration {
 
     fn handle_dedupe_complete(&self) -> OrchStep {
         let state = self.state.as_ref().unwrap();
-        let mut analysis = state.analysis.as_object().cloned().unwrap_or_else(Map::new);
-
-        analysis.insert(
-            "dedupeSummary".to_string(),
-            serde_json::json!({
-                "closedTabs": state.dedupe_tab_ids.len(),
-                "skippedTabs": state.analysis["skipped"].as_array().map_or(0, Vec::len),
-            }),
-        );
+        let mut analysis = state.analysis.clone();
+        analysis["dedupeSummary"]["closedTabs"] = serde_json::json!(state.dedupe_tab_ids.len());
 
         OrchStep::Complete {
-            response: Value::Object(analysis),
+            response: analysis,
             undo: None,
         }
     }
 }
 
-fn tab_to_value(tab: &ScopedTab) -> Value {
-    serde_json::json!({
-        "tabId": tab.tab_id,
-        "windowId": tab.window_id,
-        "url": tab.url,
-        "title": tab.title,
-        "groupId": tab.group_id,
-        "groupTitle": tab.group_title,
-        "active": tab.active,
-        "pinned": tab.pinned,
-        "lastAccessedAt": tab.last_accessed_at,
-    })
+pub(super) fn scoped_tab_values(snapshot: &Value, tabs: &[ScopedTab]) -> Vec<Value> {
+    let mut originals = HashMap::new();
+    for window in snapshot["windows"].as_array().into_iter().flatten() {
+        let window_id = window["windowId"].as_i64().unwrap_or(0);
+        for tab in window["tabs"].as_array().into_iter().flatten() {
+            if let Some(id) = tab["tabId"].as_i64() {
+                originals.insert((window_id, id), tab);
+            }
+        }
+    }
+    tabs.iter()
+        .map(|tab| tab_to_value(tab, originals.get(&(tab.window_id, tab.tab_id)).copied()))
+        .collect()
+}
+
+fn tab_to_value(tab: &ScopedTab, original: Option<&Value>) -> Value {
+    let mut fields = original
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let last_accessed_at = tab
+        .last_accessed_at
+        .map(Value::from)
+        .or_else(|| original.and_then(|tab| tab.get("lastAccessedAt")).cloned())
+        .unwrap_or(Value::Null);
+    fields.extend(
+        serde_json::json!({
+            "tabId": tab.tab_id,
+            "windowId": tab.window_id,
+            "index": tab.index,
+            "incognito": tab.incognito,
+            "url": tab.url,
+            "title": tab.title,
+            "groupId": tab.group_id,
+            "groupTitle": tab.group_title,
+            "groupColor": tab.group_color,
+            "groupCollapsed": tab.group_collapsed,
+            "active": tab.active,
+            "pinned": tab.pinned,
+            "lastAccessedAt": last_accessed_at,
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    Value::Object(fields)
 }
 
 fn extract_domain(url: &str) -> Option<String> {
@@ -352,6 +386,146 @@ mod tests {
         };
         assert_eq!(response["dedupeSummary"]["closedTabs"], 1);
         assert!(undo.is_none());
+    }
+
+    fn protected_duplicates() -> Value {
+        serde_json::json!({"windows":[{
+            "windowId":100,"focused":true,
+            "groups":[
+                {"groupId":30,"title":"Protected 🔒","color":"red","collapsed":false},
+                {"groupId":40,"title":"Work","color":"blue","collapsed":true}
+            ],
+            "tabs":[
+                {"tabId":1,"index":0,"url":"https://a.example","lastAccessedAt":1},
+                {"tabId":2,"index":1,"url":"https://a.example","pinned":true},
+                {"tabId":3,"index":2,"url":"https://a.example","groupId":30},
+                {"tabId":4,"index":8,"url":"https://a.example","title":"Eligible","groupId":40,"active":true,"lastAccessedAt":2,
+                    "status":"complete","favIconUrl":"https://a.example/icon.png","audible":true,"discarded":true},
+                {"tabId":5,"index":9,"url":"https://blocked.example"},
+                {"tabId":6,"index":10,"url":"https://blocked.example"}
+            ]
+        }]})
+    }
+
+    fn dedupe_with_policy(params: Value) -> AnalyzeOrchestration {
+        let mut orch = AnalyzeOrchestration::new(&params);
+        orch.set_policy(Arc::new(
+            serde_json::from_value(serde_json::json!({
+                "protect":{"pinned":true,"groupTitles":["🔒"],"domains":["blocked.example"]}
+            }))
+            .unwrap(),
+        ));
+        let _ = orch.start();
+        orch
+    }
+
+    fn assert_dedupe_plan(response: &Value, closed: usize) {
+        assert_eq!(
+            response["dedupeSummary"],
+            serde_json::json!({
+                "closedTabs":closed,"plannedTabs":1,"skippedTabs":3
+            })
+        );
+        let candidates: Vec<_> = response["duplicates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|group| group["tabs"].as_array().unwrap().iter().skip(1))
+            .filter(|tab| {
+                !response["skipped"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|skip| skip["tabId"] == tab["tabId"])
+            })
+            .collect();
+        assert_eq!(candidates.len(), 1);
+        let candidate = candidates[0];
+        assert_eq!(candidate["tabId"], 4);
+        assert_eq!(candidate["index"], 8);
+        assert_eq!(candidate["groupId"], 40);
+        assert_eq!(candidate["groupTitle"], "Work");
+        assert_eq!(candidate["groupColor"], "blue");
+        assert_eq!(candidate["groupCollapsed"], true);
+        assert_eq!(candidate["active"], true);
+        assert_eq!(candidate["audible"], true);
+        assert_eq!(candidate["status"], "complete");
+        assert_eq!(
+            response["skipped"],
+            serde_json::json!([
+                {"tabId":2,"reason":"protected_pinned"},
+                {"tabId":3,"reason":"protected_group"},
+                {"tabId":6,"reason":"protected_domain"}
+            ])
+        );
+        assert_eq!(response["duplicates"].as_array().unwrap().len(), 2);
+        let stale_ids: Vec<_> = response["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tab| tab["tabId"].as_i64().unwrap())
+            .collect();
+        assert_eq!(
+            stale_ids,
+            vec![1, 4],
+            "stale candidates must keep their original meaning"
+        );
+    }
+
+    #[test]
+    fn dedupe_previews_and_dry_runs_build_the_same_protected_plan_without_removal() {
+        for params in [
+            serde_json::json!({"dedupe":true}),
+            serde_json::json!({"dedupe":true,"dryRun":true}),
+            serde_json::json!({"dedupe":true,"confirmed":true,"dryRun":true}),
+        ] {
+            let mut orch = dedupe_with_policy(params);
+            let OrchStep::Complete { response, .. } = orch.step(protected_duplicates()) else {
+                panic!("preview must not remove")
+            };
+            assert_dedupe_plan(&response, 0);
+        }
+    }
+
+    #[test]
+    fn confirmed_dedupe_removes_only_planned_eligible_tabs_and_preserves_plan_projection() {
+        let mut orch = dedupe_with_policy(serde_json::json!({"dedupe":true,"confirmed":true}));
+        let OrchStep::SendPrimitive { action, params } = orch.step(protected_duplicates()) else {
+            panic!("expected eligible removal")
+        };
+        assert_eq!(action, "p:tab-remove");
+        assert_eq!(params["tabIds"], serde_json::json!([4]));
+        let OrchStep::Complete { response, .. } = orch.step(serde_json::json!({})) else {
+            panic!("expected result")
+        };
+        assert_dedupe_plan(&response, 1);
+    }
+
+    #[test]
+    fn all_protected_dedupe_plans_are_explicit_empty_no_ops_in_every_mode() {
+        for params in [
+            serde_json::json!({"dedupe":true}),
+            serde_json::json!({"dedupe":true,"confirmed":true}),
+            serde_json::json!({"dedupe":true,"confirmed":true,"dryRun":true}),
+        ] {
+            let mut snapshot = protected_duplicates();
+            snapshot["windows"][0]["tabs"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|tab| tab["tabId"] != 4);
+            let mut orch = dedupe_with_policy(params);
+            let OrchStep::Complete { response, .. } = orch.step(snapshot) else {
+                panic!("must not remove protected tabs")
+            };
+            assert!(response.get("dedupeCandidates").is_none());
+            assert_eq!(
+                response["dedupeSummary"],
+                serde_json::json!({
+                    "closedTabs":0,"plannedTabs":0,"skippedTabs":3
+                })
+            );
+            assert_eq!(response["skipped"].as_array().unwrap().len(), 3);
+        }
     }
 
     #[test]

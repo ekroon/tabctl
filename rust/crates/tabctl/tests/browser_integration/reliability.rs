@@ -78,11 +78,30 @@ fn close_undo_restores_order_surviving_group_and_active_tab_once() {
         tabs[1]
     ));
     let before = without_tab_ids(snapshot(b, id));
+    let planned_tab = snapshot(b, id)["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tab| tab["tabId"] == tabs[1])
+        .unwrap()
+        .clone();
+    let preview = b.run_query(&format!(
+        "mutation {{ closeTabs(tabIds: [{}]) {{ tabs {{ tabId url index active pinned groupId groupTitle }} }} }}",
+        tabs[1]
+    ));
+    assert_eq!(
+        response_data(&preview)["closeTabs"]["tabs"],
+        json!([planned_tab])
+    );
     let close = b.run_query(&format!(
-        "mutation {{ closeTabs(tabIds: [{}], confirm: true) {{ txid closedTabs undoUnavailable }} }}",
+        "mutation {{ closeTabs(tabIds: [{}], confirm: true) {{ txid closedTabs undoUnavailable tabs {{ tabId url index active pinned groupId groupTitle }} }} }}",
         tabs[1]
     ));
     assert_eq!(response_data(&close)["closeTabs"]["closedTabs"], 1);
+    assert_eq!(
+        response_data(&close)["closeTabs"]["tabs"],
+        json!([planned_tab])
+    );
     assert_eq!(
         response_data(&close)["closeTabs"].get("undoUnavailable"),
         Some(&Value::Null)
@@ -248,9 +267,16 @@ fn policy_protects_pinned_tabs_through_the_real_host() {
     )
     .unwrap();
     let before = snapshot(b, id);
+    let preview = b.run_query(&format!(
+        "mutation {{ deduplicateTabs(windowId: {id}) {{ txid closedTabs skippedTabs skipped {{ tabId reason }} candidateTabs {{ tabId }} }} }}"
+    ));
+    let planned = &response_data(&preview)["deduplicateTabs"];
+    assert_eq!(planned["candidateTabs"], json!([]));
+    assert!(planned["skippedTabs"].as_i64().unwrap() > 0);
+    assert_eq!(snapshot(b, id), before);
     for (field, mutation) in [
         ("archiveTabs", format!("archiveTabs(windowId: {id}) {{ txid undoUnavailable archivedTabs skippedTabs skipped {{ tabId reason }} }}")),
-        ("deduplicateTabs", format!("deduplicateTabs(windowId: {id}, confirm: true) {{ txid undoUnavailable closedTabs skippedTabs skipped {{ tabId reason }} }}")),
+        ("deduplicateTabs", format!("deduplicateTabs(windowId: {id}, confirm: true) {{ txid undoUnavailable closedTabs skippedTabs skipped {{ tabId reason }} candidateTabs {{ tabId }} }}")),
         ("closeTabs", format!(
             "closeTabs(tabIds: [{}], confirm: true) {{ closedTabs }}",
             tabs[1]
@@ -268,6 +294,10 @@ fn policy_protects_pinned_tabs_through_the_real_host() {
                 .as_str()
                 .unwrap()
                 .starts_with("protected_")));
+            if field == "deduplicateTabs" {
+                assert_eq!(outcome["candidateTabs"], planned["candidateTabs"]);
+                assert_eq!(outcome["skipped"], planned["skipped"]);
+            }
         }
     }
 }

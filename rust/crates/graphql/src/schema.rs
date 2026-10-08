@@ -767,6 +767,13 @@ fn browser_state_snapshot_from_value(value: &serde_json::Value) -> Option<Browse
 
 fn duplicate_candidate_tabs(response: &serde_json::Value) -> Vec<Tab> {
     let mut result = Vec::new();
+    let skipped: std::collections::HashSet<i64> = response
+        .get("skipped")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|tab| tab.get("tabId").and_then(|id| id.as_i64()))
+        .collect();
     let Some(groups) = response.get("duplicates").and_then(|v| v.as_array()) else {
         return result;
     };
@@ -776,6 +783,13 @@ fn duplicate_candidate_tabs(response: &serde_json::Value) -> Vec<Tab> {
             continue;
         };
         for tab in tabs.iter().skip(1) {
+            if tab
+                .get("tabId")
+                .and_then(|id| id.as_i64())
+                .is_some_and(|id| skipped.contains(&id))
+            {
+                continue;
+            }
             let window_id = tab.get("windowId").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             if let Some(parsed) = tab_from_value(tab, window_id) {
                 result.push(parsed);
