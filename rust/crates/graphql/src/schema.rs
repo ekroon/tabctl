@@ -2,6 +2,9 @@ use juniper::{graphql_object, EmptySubscription, FieldResult, GraphQLEnum, RootN
 
 use crate::context::GqlContext;
 use crate::convert::{tab_from_value, windows_from_snapshot};
+use crate::response::{
+    close_from_response, live_group_result, ping_from_response, undo_from_response,
+};
 use crate::types::*;
 
 pub(crate) type Schema = RootNode<'static, Query, Mutation, EmptySubscription<GqlContext>>;
@@ -131,16 +134,13 @@ impl Query {
             .collect()
     }
 
-    /// Health check — verifies the host is reachable.
+    /// Health check — verifies the host and native browser extension with a round trip.
     fn ping(ctx: &GqlContext) -> FieldResult<PingResult> {
         let start = std::time::Instant::now();
         let result = ctx.sender.send("ping", serde_json::json!({}));
         let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
         match result {
-            Ok(_) => Ok(PingResult {
-                ok: true,
-                latency_ms,
-            }),
+            Ok(response) => ping_from_response(&response, latency_ms),
             Err(e) => Err(juniper::FieldError::new(e, juniper::Value::Null)),
         }
     }
@@ -456,7 +456,7 @@ impl Query {
         #[graphql(description = "Enable content extraction (strip nav/ads). Default: true.")]
         extract: Option<bool>,
         #[graphql(
-            description = "Maximum raw HTML characters to read per tab. Default: 500000, max: 1500000."
+            description = "Maximum raw HTML characters to read per tab. Default: 10485760, max: 10485760. Live reads count UTF-16 code units. HTML may truncate earlier to keep the entire UTF-8 JSON envelope within 10 MiB; see diagnostics.truncatedHtml."
         )]
         max_html_chars: Option<i32>,
         #[graphql(description = "Maximum Markdown characters per tab. Default: 50000.")]
@@ -1174,7 +1174,7 @@ pub(crate) struct Mutation;
 
 #[graphql_object(context = GqlContext)]
 impl Mutation {
-    /// Close tabs by ID. Returns the transaction ID and remaining tabs.
+    /// Close tabs by ID. Returns remaining tabs and either an undo transaction or an unavailability reason.
     fn close_tabs(
         ctx: &GqlContext,
         #[graphql(description = "IDs of the tabs to close.")] tab_ids: Vec<i32>,
@@ -1202,17 +1202,6 @@ impl Mutation {
             .send("close", serde_json::Value::Object(params))
             .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
 
-        let txid = response
-            .get("txid")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let closed_tabs = response
-            .get("summary")
-            .and_then(|s| s.get("closedTabs"))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0) as i32;
-
         // Re-snapshot for remaining tabs
         let remaining_tabs = match ctx.sender.snapshot() {
             Ok(snap) => windows_from_snapshot(&snap)
@@ -1221,17 +1210,16 @@ impl Mutation {
                 .collect(),
             Err(e) => {
                 return Err(juniper::FieldError::new(
-                    format!("Tabs closed (txid: {txid}) but post-mutation snapshot failed: {e}"),
+                    format!(
+                        "Close completed but result snapshot failed (transaction: {}): {e}",
+                        response.get("txid").unwrap_or(&serde_json::Value::Null)
+                    ),
                     juniper::Value::Null,
                 ));
             }
         };
 
-        Ok(CloseResult {
-            txid,
-            closed_tabs,
-            remaining_tabs,
-        })
+        close_from_response(&response, remaining_tabs)
     }
 
     /// Open new tabs. Returns the created tabs.
@@ -1379,20 +1367,7 @@ impl Mutation {
             .send("undo", serde_json::Value::Object(params))
             .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
 
-        let resolved_txid = response
-            .get("txid")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let summary = response
-            .get("summary")
-            .map(|v| v.to_string())
-            .unwrap_or_default();
-
-        Ok(UndoResult {
-            txid: resolved_txid,
-            summary,
-        })
+        undo_from_response(&response)
     }
 
     /// Update a tab group's properties.
@@ -1420,37 +1395,11 @@ impl Mutation {
             params.insert("collapsed".to_string(), serde_json::json!(c));
         }
 
-        let response = ctx
-            .sender
+        ctx.sender
             .send("group-update", serde_json::Value::Object(params))
             .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
 
-        let tab_count = response
-            .get("tabCount")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0) as i32;
-
-        Ok(Group {
-            group_id,
-            title: response
-                .get("title")
-                .and_then(|v| v.as_str())
-                .or(title.as_deref())
-                .unwrap_or("")
-                .to_string(),
-            color: response
-                .get("color")
-                .and_then(|v| v.as_str())
-                .or(color.as_deref())
-                .unwrap_or("")
-                .to_string(),
-            collapsed: response
-                .get("collapsed")
-                .and_then(|v| v.as_bool())
-                .or(collapsed)
-                .unwrap_or(false),
-            tab_count,
-        })
+        live_group_result(ctx, group_id)
     }
 
     /// Remove tabs from their group (ungroup them).
@@ -1500,6 +1449,7 @@ impl Mutation {
             serde_json::json!(tab_ids.iter().map(|&id| id as i64).collect::<Vec<_>>()),
         );
         params.insert("groupTitle".to_string(), serde_json::json!(group_title));
+        params.insert("create".to_string(), serde_json::json!(true));
         if let Some(ref c) = color {
             params.insert("color".to_string(), serde_json::json!(c));
         }
@@ -1515,15 +1465,13 @@ impl Mutation {
         let group_id = response
             .get("groupId")
             .and_then(|v| v.as_i64())
-            .unwrap_or(0) as i32;
-
-        Ok(Group {
-            group_id,
-            title: group_title,
-            color: color.unwrap_or_default(),
-            collapsed: collapsed.unwrap_or(false),
-            tab_count: tab_ids.len() as i32,
-        })
+            .ok_or_else(|| {
+                juniper::FieldError::new(
+                    "Group assignment completed without a group identifier",
+                    juniper::Value::Null,
+                )
+            })? as i32;
+        live_group_result(ctx, group_id)
     }
 
     /// Move tabs to a new position, window, or group.
@@ -1877,11 +1825,9 @@ mod tests {
             params: serde_json::Value,
         ) -> Result<serde_json::Value, String> {
             match action {
-                "close" => Ok(serde_json::json!({
-                    "txid": "tx-test-1",
-                    "summary": { "closedTabs": 2, "skippedTabs": 0 },
-                    "skipped": []
-                })),
+                "close" | "ping" => {
+                    Err("Browser round trips are covered by isolated integration tests".to_string())
+                }
                 "open" => Ok(serde_json::json!({
                     "windowId": 100,
                     "groupId": 10,
@@ -1899,7 +1845,6 @@ mod tests {
                         "grouped": true
                     }
                 })),
-                "ping" => Ok(serde_json::json!({ "ok": true })),
                 "analyze" => {
                     let dedupe = params.get("dedupe").and_then(|v| v.as_bool()) == Some(true);
                     let confirmed = params.get("confirmed").and_then(|v| v.as_bool()) == Some(true);
@@ -2062,14 +2007,6 @@ mod tests {
                         }
                     }]
                 })),
-                "read-markdown" => Ok(serde_json::json!({
-                    "totals": { "tabs": 1, "tasks": 1 },
-                    "entries": [{
-                        "tabId": 1, "windowId": 100, "url": "https://a.com", "title": "A",
-                        "markdown": "# Hello\n\nWorld.", "chars": 16,
-                        "truncated": false, "extracted": true, "error": null
-                    }]
-                })),
                 "report" => Ok(serde_json::json!({
                     "generatedAt": 1700000001234.0,
                     "entries": [{
@@ -2084,29 +2021,6 @@ mod tests {
                         "lastAccessedAt": 1700000000000.0
                     }],
                     "totals": { "tabs": 1 }
-                })),
-                "screenshot" => Ok(serde_json::json!({
-                    "totals": { "tabs": 1, "tiles": 1 },
-                    "entries": [{
-                        "tabId": 1,
-                        "windowId": 100,
-                        "groupId": -1,
-                        "url": "https://a.com",
-                        "title": "A",
-                        "tiles": [{
-                            "index": 0,
-                            "total": 1,
-                            "x": 0,
-                            "y": 0,
-                            "width": 100,
-                            "height": 120,
-                            "scale": 2.0,
-                            "bytes": 1234,
-                            "scaled": false,
-                            "oversized": false,
-                            "dataUrl": "data:image/png;base64,abc"
-                        }]
-                    }]
                 })),
                 "reload" => Ok(serde_json::json!({ "reloading": true })),
                 _ => Ok(serde_json::json!({
@@ -2240,15 +2154,6 @@ mod tests {
     }
 
     #[test]
-    fn mutation_close_tabs() {
-        let result =
-            exec("mutation { closeTabs(tabIds: [1, 2], confirm: true) { txid closedTabs } }");
-        assert!(result.get("errors").is_none());
-        assert_eq!(result["data"]["closeTabs"]["txid"], "tx-test-1");
-        assert_eq!(result["data"]["closeTabs"]["closedTabs"], 2);
-    }
-
-    #[test]
     fn schema_sdl_contains_types() {
         let sdl = crate::schema_sdl();
         assert!(sdl.contains("type Tab"));
@@ -2272,14 +2177,6 @@ mod tests {
         assert!(tab2["groupColor"].is_null());
         assert!(tab2["groupCollapsed"].is_null());
         assert!(tab2["lastAccessedAt"].is_null());
-    }
-
-    #[test]
-    fn query_ping() {
-        let result = exec("{ ping { ok latencyMs } }");
-        assert!(result.get("errors").is_none());
-        assert_eq!(result["data"]["ping"]["ok"], true);
-        assert!(result["data"]["ping"]["latencyMs"].as_f64().unwrap() >= 0.0);
     }
 
     #[test]
@@ -2402,31 +2299,6 @@ mod tests {
     }
 
     #[test]
-    fn query_read_tabs_basic() {
-        let result = exec(
-            r#"{ readTabs(windowId: 100) { totals { tabs tasks } entries { tabId markdown chars truncated extracted cached status emptyReason diagnostics { source cachedAt cacheAgeMs cacheMatch sourceHtmlChars sourceTextChars documentReadyState truncatedHtml } error } } }"#,
-        );
-        assert!(
-            result.get("errors").is_none(),
-            "errors: {:?}",
-            result.get("errors")
-        );
-        assert_eq!(result["data"]["readTabs"]["totals"]["tabs"], 1);
-        let entries = result["data"]["readTabs"]["entries"].as_array().unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0]["tabId"], 1);
-        assert_eq!(entries[0]["markdown"], "# Hello\n\nWorld.");
-        assert_eq!(entries[0]["chars"], 16);
-        assert_eq!(entries[0]["cached"], false);
-        assert_eq!(entries[0]["status"], "READ");
-        assert!(entries[0]["diagnostics"]["source"].is_null());
-        assert!(entries[0]["diagnostics"]["cachedAt"].is_null());
-        assert!(entries[0]["diagnostics"]["cacheAgeMs"].is_null());
-        assert!(entries[0]["diagnostics"]["cacheMatch"].is_null());
-        assert!(entries[0]["error"].is_null());
-    }
-
-    #[test]
     fn parse_read_tabs_cached_contract() {
         let parsed = super::parse_read_result(&serde_json::json!({
             "totals": { "tabs": 1, "tasks": 0 },
@@ -2502,18 +2374,6 @@ mod tests {
     }
 
     #[test]
-    fn query_read_tabs_with_options() {
-        let result = exec(
-            r#"{ readTabs(windowId: 100, extract: false, maxChars: 5000, maxHtmlChars: 200000) { totals { tabs } entries { tabId extracted } } }"#,
-        );
-        assert!(
-            result.get("errors").is_none(),
-            "errors: {:?}",
-            result.get("errors")
-        );
-    }
-
-    #[test]
     fn query_report_tabs() {
         let result = exec(
             "{ reportTabs(windowId: 100) { generatedAt totals { tabs } entries { tabId description groupColor } } }",
@@ -2529,23 +2389,6 @@ mod tests {
     }
 
     #[test]
-    fn query_capture_screenshots() {
-        let result = exec(
-            "{ captureScreenshots(windowId: 100, mode: \"viewport\") { totals { tabs tiles } entries { tabId tiles { width height dataUrl } } } }",
-        );
-        assert!(result.get("errors").is_none());
-        let capture = &result["data"]["captureScreenshots"];
-        assert_eq!(capture["totals"]["tabs"], 1);
-        assert_eq!(capture["totals"]["tiles"], 1);
-        let entries = capture["entries"].as_array().unwrap();
-        assert_eq!(entries.len(), 1);
-        let tiles = entries[0]["tiles"].as_array().unwrap();
-        assert_eq!(tiles.len(), 1);
-        assert_eq!(tiles[0]["width"], 100);
-        assert_eq!(tiles[0]["height"], 120);
-    }
-
-    #[test]
     fn mutation_focus_tab() {
         let result = exec("mutation { focusTab(tabId: 1) { success tabId } }");
         assert!(result.get("errors").is_none());
@@ -2558,23 +2401,6 @@ mod tests {
         let result = exec(r#"mutation { undoAction(txid: "tx-test-1") { txid summary } }"#);
         assert!(result.get("errors").is_none());
         assert_eq!(result["data"]["undoAction"]["txid"], "tx-test-1");
-    }
-
-    #[test]
-    fn mutation_update_group() {
-        let result = exec(
-            r#"mutation { updateGroup(groupId: 10, title: "Updated", color: "red", collapsed: true) { groupId title color collapsed tabCount } }"#,
-        );
-        assert!(result.get("errors").is_none());
-        let group = &result["data"]["updateGroup"];
-        assert_eq!(group["groupId"], 10);
-        // Real orchestration doesn't return title/color/collapsed — resolver
-        // falls back to the input parameters via .or() chains.
-        assert_eq!(group["title"], "Updated");
-        assert_eq!(group["color"], "red");
-        assert_eq!(group["collapsed"], true);
-        // Real orchestration doesn't return tabCount; resolver defaults to 0.
-        assert_eq!(group["tabCount"], 0);
     }
 
     #[test]
@@ -2662,6 +2488,8 @@ mod tests {
         assert!(sdl.contains("type ReadTabResult"));
         assert!(sdl.contains("type ReadTabEntry"));
         assert!(sdl.contains("readTabs"));
+        assert!(sdl.contains("Default: 10485760, max: 10485760."));
+        assert!(sdl.contains("UTF-8 JSON envelope"));
         assert!(sdl.contains("type PingResult"));
         assert!(sdl.contains("type HistoryEntry"));
         assert!(sdl.contains("type ReloadResult"));
@@ -2733,16 +2561,5 @@ mod tests {
         let result = exec("mutation { refreshTabs(tabIds: [1, 2]) { refreshedTabs } }");
         assert!(result.get("errors").is_none());
         assert_eq!(result["data"]["refreshTabs"]["refreshedTabs"], 2);
-    }
-
-    #[test]
-    fn mutation_assign_to_group() {
-        let result = exec(
-            r#"mutation { assignToGroup(tabIds: [1, 2], groupTitle: "Dev") { groupId title } }"#,
-        );
-        assert!(result.get("errors").is_none());
-        let group = &result["data"]["assignToGroup"];
-        assert_eq!(group["groupId"], 20);
-        assert_eq!(group["title"], "Dev");
     }
 }

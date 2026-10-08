@@ -28,15 +28,15 @@ fn test_group_and_window_graphql_workflows() {
         b.create_test_window(&["https://example.com", "https://example.org"], None);
     sleep(Duration::from_secs(2));
 
-    let initial_group = b.send_host_request(
-        "p:tab-group",
+    let initial_group = b.seed_browser(
+        "tab-group",
         json!({"tabIds": tab_ids, "createProperties": {"windowId": window_id}}),
     );
     let initial_group_id = response_data(&initial_group)["groupId"]
         .as_i64()
         .expect("initial group id");
-    b.send_host_request(
-        "p:group-update",
+    b.seed_browser(
+        "group-update",
         json!({"groupId": initial_group_id, "title": group_name, "color": "blue"}),
     );
     sleep(Duration::from_secs(1));
@@ -97,41 +97,41 @@ fn test_group_and_window_graphql_workflows() {
 
     let gather_title = format!("TEST-Gather-{ts}");
     let gather_title_gql = gql_string(&gather_title);
-    let dup_a = b.send_host_request(
-        "p:tab-create",
+    let dup_a = b.seed_browser(
+        "tab-create",
         json!({"windowId": window_id, "url": format!("https://example.com/?g1={ts}"), "active": false}),
     );
     let dup_a_id = response_data(&dup_a)["id"]
         .as_i64()
         .expect("first duplicate tab id");
-    let group_a = b.send_host_request(
-        "p:tab-group",
+    let group_a = b.seed_browser(
+        "tab-group",
         json!({"tabIds": [dup_a_id], "createProperties": {"windowId": window_id}}),
     );
     let group_a_id = response_data(&group_a)["groupId"]
         .as_i64()
         .expect("first duplicate group id");
-    b.send_host_request(
-        "p:group-update",
+    b.seed_browser(
+        "group-update",
         json!({"groupId": group_a_id, "title": gather_title, "color": "blue"}),
     );
 
-    let dup_b = b.send_host_request(
-        "p:tab-create",
+    let dup_b = b.seed_browser(
+        "tab-create",
         json!({"windowId": window_id, "url": format!("https://example.org/?g2={ts}"), "active": false}),
     );
     let dup_b_id = response_data(&dup_b)["id"]
         .as_i64()
         .expect("second duplicate tab id");
-    let group_b = b.send_host_request(
-        "p:tab-group",
+    let group_b = b.seed_browser(
+        "tab-group",
         json!({"tabIds": [dup_b_id], "createProperties": {"windowId": window_id}}),
     );
     let group_b_id = response_data(&group_b)["groupId"]
         .as_i64()
         .expect("second duplicate group id");
-    b.send_host_request(
-        "p:group-update",
+    b.seed_browser(
+        "group-update",
         json!({"groupId": group_b_id, "title": gather_title, "color": "green"}),
     );
     sleep(Duration::from_secs(1));
@@ -163,15 +163,15 @@ fn test_browser_state_history_graphql_workflows() {
         b.create_test_window(&["https://example.com", "https://example.org"], None);
     sleep(Duration::from_secs(2));
 
-    let initial_group = b.send_host_request(
-        "p:tab-group",
+    let initial_group = b.seed_browser(
+        "tab-group",
         json!({"tabIds": tab_ids, "createProperties": {"windowId": window_id}}),
     );
     let group_id = response_data(&initial_group)["groupId"]
         .as_i64()
         .expect("group id");
-    b.send_host_request(
-        "p:group-update",
+    b.seed_browser(
+        "group-update",
         json!({"groupId": group_id, "title": group_name, "color": "blue"}),
     );
 

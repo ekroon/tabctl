@@ -13,20 +13,10 @@ const {
 
 const root = path.resolve(__dirname, "..");
 const pkgPath = path.join(root, "package.json");
-const winPkgPath = path.join(root, "packages", "win32-x64", "package.json");
-const winPackageName = "tabctl-win32-x64";
-
-function syncOptionalDependencyVersion(pkg, dependencyName, version) {
-  pkg.optionalDependencies = pkg.optionalDependencies || {};
-  pkg.optionalDependencies[dependencyName] = version;
-}
 
 function syncJsonPackageVersion(filePath, version) {
   const parsed = readJson(filePath);
   parsed.version = version;
-  if (filePath === pkgPath) {
-    syncOptionalDependencyVersion(parsed, winPackageName, version);
-  }
   writeJson(filePath, parsed);
 }
 
@@ -35,7 +25,6 @@ const current = parseVersion(readWorkspaceVersion(root));
 const next = bump(current, kind);
 const nextVersion = formatVersion(next);
 syncJsonPackageVersion(pkgPath, nextVersion);
-syncJsonPackageVersion(winPkgPath, nextVersion);
 writeWorkspaceVersion(root, nextVersion);
 
 // Sync lockfiles

@@ -60,7 +60,7 @@ fi
 
 if grep -qE '\.(rs)$|(^|/)Cargo\.(toml|lock)$' "${changed_files}"; then
   echo "pre-push: Rust source changes detected — skipping optional local cross-target check."
-  echo "pre-push: run 'npm run check:targets' manually if you have cross-compilers installed."
+  echo "pre-push: run 'npm run check:targets' manually to check Apple Silicon and Intel macOS."
 fi
 
 echo "pre-push: running rust verify…"

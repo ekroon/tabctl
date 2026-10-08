@@ -1,5 +1,7 @@
+use crate::host_impl::policy::Policy;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tabctl_shared::normalize_url;
 
 use super::scope::{select_tabs_by_scope, ScopedTab};
@@ -16,14 +18,13 @@ pub(crate) struct AnalyzeOrchestration {
     params: Value,
     phase: AnalyzePhase,
     state: Option<AnalyzeState>,
+    policy: Arc<Policy>,
 }
 
 #[derive(Debug)]
 struct AnalyzeState {
     analysis: Value,
     dedupe_tab_ids: Vec<i64>,
-    dedupe_undo_tabs: Vec<Value>,
-    has_incognito: bool,
 }
 
 #[derive(Debug)]
@@ -38,11 +39,15 @@ impl AnalyzeOrchestration {
             params: params.clone(),
             phase: AnalyzePhase::GetSnapshot,
             state: None,
+            policy: Arc::new(Policy::default()),
         }
     }
 }
 
 impl super::Orchestration for AnalyzeOrchestration {
+    fn set_policy(&mut self, policy: Arc<Policy>) {
+        self.policy = policy;
+    }
     fn start(&mut self) -> OrchStep {
         OrchStep::SendPrimitive {
             action: "p:snapshot".to_string(),
@@ -137,7 +142,7 @@ impl AnalyzeOrchestration {
             })
             .collect();
 
-        let analysis = serde_json::json!({
+        let mut analysis = serde_json::json!({
             "tabs": tab_values,
             "stale": stale_tabs,
             "duplicates": duplicates,
@@ -164,33 +169,26 @@ impl AnalyzeOrchestration {
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
-        if dedupe && confirm {
+        if dedupe && confirm && self.params["dryRun"].as_bool() != Some(true) {
             // Close duplicate tabs, keeping the first in each group
             let mut remove_ids: Vec<i64> = Vec::new();
-            let mut undo_tabs: Vec<Value> = Vec::new();
+            let mut skipped = Vec::new();
 
             for group in url_groups.values() {
                 if group.len() > 1 {
                     for tab in group.iter().skip(1) {
+                        if let Some(reason) = self.policy.reason(tab) {
+                            skipped.push(serde_json::json!({"tabId":tab.tab_id,"reason":reason}));
+                            continue;
+                        }
                         remove_ids.push(tab.tab_id);
-                        undo_tabs.push(serde_json::json!({
-                            "url": tab.url,
-                            "title": tab.title,
-                            "pinned": tab.pinned,
-                            "active": tab.active,
-                            "from": {
-                                "windowId": tab.window_id,
-                                "index": tab.index,
-                                "groupId": tab.group_id,
-                                "groupTitle": tab.group_title,
-                                "groupColor": tab.group_color,
-                                "groupCollapsed": tab.group_collapsed,
-                            }
-                        }));
                     }
                 }
             }
 
+            analysis["skipped"] = serde_json::json!(skipped);
+            analysis["dedupeSummary"] =
+                serde_json::json!({"closedTabs":0,"skippedTabs":skipped.len()});
             if remove_ids.is_empty() {
                 return OrchStep::Complete {
                     response: analysis,
@@ -201,10 +199,6 @@ impl AnalyzeOrchestration {
             self.state = Some(AnalyzeState {
                 analysis,
                 dedupe_tab_ids: remove_ids.clone(),
-                dedupe_undo_tabs: undo_tabs,
-                has_incognito: url_groups
-                    .values()
-                    .any(|group| group.iter().skip(1).any(|tab| tab.incognito)),
             });
             self.phase = AnalyzePhase::DedupeRemove;
 
@@ -228,16 +222,13 @@ impl AnalyzeOrchestration {
             "dedupeSummary".to_string(),
             serde_json::json!({
                 "closedTabs": state.dedupe_tab_ids.len(),
+                "skippedTabs": state.analysis["skipped"].as_array().map_or(0, Vec::len),
             }),
         );
 
         OrchStep::Complete {
             response: Value::Object(analysis),
-            undo: Some(serde_json::json!({
-                "action": "close",
-                "incognito": state.has_incognito,
-                "tabs": state.dedupe_undo_tabs,
-            })),
+            undo: None,
         }
     }
 }
@@ -354,15 +345,13 @@ mod tests {
         assert_eq!(remove_ids.len(), 1);
         assert_eq!(remove_ids[0], 2);
 
-        // Remove complete → Complete with undo
+        // Transaction recovery is owned by the host mutation boundary.
         let step = orch.step(serde_json::json!({"removed": true}));
         let OrchStep::Complete { response, undo } = step else {
             panic!("expected Complete");
         };
         assert_eq!(response["dedupeSummary"]["closedTabs"], 1);
-        let undo = undo.unwrap();
-        assert_eq!(undo["action"], "close");
-        assert_eq!(undo["tabs"].as_array().unwrap().len(), 1);
+        assert!(undo.is_none());
     }
 
     #[test]

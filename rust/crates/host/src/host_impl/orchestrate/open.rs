@@ -112,18 +112,10 @@ impl super::Orchestration for OpenOrchestration {
         self.state.group_color = group_color;
         self.state.force_new_group = force_new_group;
 
-        if new_window {
-            self.phase = OpenPhase::Init;
-            OrchStep::SendPrimitive {
-                action: "p:window-create".to_string(),
-                params: serde_json::json!({"focused": false}),
-            }
-        } else {
-            self.phase = OpenPhase::Snapshot;
-            OrchStep::SendPrimitive {
-                action: "p:snapshot".to_string(),
-                params: Value::Object(Map::new()),
-            }
+        self.phase = OpenPhase::Snapshot;
+        OrchStep::SendPrimitive {
+            action: "p:snapshot".to_string(),
+            params: Value::Object(Map::new()),
         }
     }
 
@@ -167,6 +159,13 @@ impl OpenOrchestration {
     }
 
     fn handle_snapshot(&mut self, snapshot: Value) -> OrchStep {
+        if self.params["newWindow"].as_bool() == Some(true) {
+            self.phase = OpenPhase::Init;
+            return OrchStep::SendPrimitive {
+                action: "p:window-create".into(),
+                params: serde_json::json!({"focused": false}),
+            };
+        }
         let group_title = self.state.group_title.as_deref();
         let force_new_group = self.state.force_new_group;
 
@@ -637,8 +636,10 @@ mod tests {
         });
         let mut orch = OpenOrchestration::new(&params);
 
-        // start: create window
+        // Snapshot precedes mutations so the host can prepare durable recovery.
         let step = orch.start();
+        assert!(matches!(&step, OrchStep::SendPrimitive { action, .. } if action == "p:snapshot"));
+        let step = orch.step(serde_json::json!({"windows":[]}));
         assert!(
             matches!(&step, OrchStep::SendPrimitive { action, .. } if action == "p:window-create")
         );
@@ -751,6 +752,8 @@ mod tests {
         let mut orch = OpenOrchestration::new(&params);
 
         let step = orch.start();
+        assert!(matches!(&step, OrchStep::SendPrimitive { action, .. } if action == "p:snapshot"));
+        let step = orch.step(serde_json::json!({"windows":[]}));
         assert!(
             matches!(&step, OrchStep::SendPrimitive { action, .. } if action == "p:window-create")
         );
@@ -773,6 +776,9 @@ mod tests {
         let mut orch = OpenOrchestration::new(&params);
 
         assert!(matches!(orch.start(), OrchStep::SendPrimitive { .. }));
+        assert!(
+            matches!(orch.step(serde_json::json!({"windows":[]})), OrchStep::SendPrimitive { action, .. } if action == "p:window-create")
+        );
         assert!(matches!(
             orch.step(serde_json::json!({"id": 100, "tabs": [{"id": 999}]})),
             OrchStep::SendPrimitive { .. }

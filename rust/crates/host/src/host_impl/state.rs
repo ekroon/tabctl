@@ -1,24 +1,32 @@
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::Arc;
 use tabctl_shared::{ClientInfo, NativeMessage, ProtocolError, RequestEnvelope, ResponseEnvelope};
 
 use super::browser_state;
 use super::focus_store;
-use super::orchestrate::{orchestration_for, OrchStep, Orchestration, OrchestrationContext};
+use super::orchestrate::{orchestration_for, Orchestration, OrchestrationContext};
 use super::page_cache::{OpenTabCacheKey, PageCache};
+use super::policy::{default_policy_path, Policy};
 use super::protocol::{
-    add_host_metadata, add_ping_metadata, base_response, create_id, host_ping_data, host_version,
-    local_actions, log_line, now_ms, trace_line, undo_actions, value_object, version_info_value,
+    add_host_metadata, add_ping_metadata, base_response, create_id, host_version, local_actions,
+    log_line, now_ms, trace_line, undo_actions, value_object, version_info_value,
     REQUEST_TIMEOUT_MS,
 };
+use super::transaction::{is_mutating_primitive, Transaction};
+#[cfg(test)]
+use super::undo::read_undo_records;
 use super::undo::{
-    append_undo_record, filter_by_retention, find_latest_undo_record, find_undo_record,
-    read_undo_records, RETENTION_DAYS,
+    append_undo_record, filter_by_retention, find_latest_undo_record_excluding, find_undo_record,
+    is_pending_undo, read_undo_records_checked, unresolved_creation, RETENTION_DAYS,
 };
 
 const HISTORY_LIMIT_DEFAULT: usize = 20;
+mod orchestration;
+mod recovery;
+#[cfg(test)]
+mod regressions;
 
 #[derive(Debug)]
 struct PendingRequest {
@@ -28,6 +36,7 @@ struct PendingRequest {
     txid: Option<String>,
     created_at: u64,
     orchestration: Option<Box<dyn Orchestration>>,
+    primitive: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +54,10 @@ pub(super) struct HostState {
     page_cache_path: PathBuf,
     profile_name: Option<String>,
     native_channel_available: bool,
+    transactions: HashMap<String, Transaction>,
+    policy: Arc<Policy>,
+    policy_error: Option<String>,
+    policy_path: PathBuf,
 }
 
 #[derive(Debug)]
@@ -57,25 +70,6 @@ pub(super) enum HostEffect {
 }
 
 impl HostState {
-    fn error_effect(
-        pending: PendingRequest,
-        message_id: String,
-        message: String,
-        hint: Option<String>,
-    ) -> HostEffect {
-        let resp_id = pending.request_id.clone().unwrap_or(message_id);
-        let mut resp = base_response(false, Some(pending.action), Some(resp_id));
-        resp.error = Some(ProtocolError { message, hint });
-        HostEffect::Respond {
-            client_id: pending.client_id,
-            payload: resp,
-        }
-    }
-
-    fn timeout_effect(pending: PendingRequest, message_id: String) -> HostEffect {
-        Self::error_effect(pending, message_id, "Request timed out".to_string(), None)
-    }
-
     fn ingest_snapshot_response(&self, snapshot: &Value) {
         let payload = serde_json::json!({
             "reason": "snapshot",
@@ -260,6 +254,16 @@ impl HostState {
             .parent()
             .map(|parent| parent.join("state.db"))
             .unwrap_or_else(|| PathBuf::from("state.db"));
+        let policy_path = if cfg!(test) {
+            undo_log
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("policy.json")
+        } else {
+            default_policy_path()
+        };
+        let policy = Policy::load(&policy_path);
+        let policy_error = policy.as_ref().err().cloned();
         Self {
             pending: HashMap::new(),
             analyses: HashMap::new(),
@@ -269,6 +273,10 @@ impl HostState {
             page_cache_path,
             profile_name,
             native_channel_available,
+            transactions: HashMap::new(),
+            policy: Arc::new(policy.unwrap_or_default()),
+            policy_error,
+            policy_path,
         }
     }
 
@@ -276,6 +284,7 @@ impl HostState {
         OrchestrationContext {
             page_cache_path: Some(self.page_cache_path.clone()),
             profile_name: self.profile_name.clone(),
+            policy: self.policy.clone(),
         }
     }
 
@@ -296,14 +305,13 @@ impl HostState {
             .map(|(message_id, _)| message_id.clone())
             .collect();
 
-        expired
-            .into_iter()
-            .filter_map(|message_id| {
-                self.pending
-                    .remove(&message_id)
-                    .map(|pending| Self::timeout_effect(pending, message_id))
-            })
-            .collect()
+        let mut effects = Vec::new();
+        for message_id in expired {
+            if let Some(pending) = self.pending.remove(&message_id) {
+                effects.push(self.timeout_effect(pending, message_id));
+            }
+        }
+        effects
     }
 
     pub(super) fn fail_pending_request(
@@ -312,9 +320,21 @@ impl HostState {
         message: String,
         hint: Option<String>,
     ) -> Option<HostEffect> {
-        self.pending
-            .remove(message_id)
-            .map(|pending| Self::error_effect(pending, message_id.to_string(), message, hint))
+        let pending = self.pending.remove(message_id)?;
+        Some(self.error_effect(pending, message_id.to_string(), message, hint))
+    }
+
+    pub(super) fn fail_all_pending_requests(
+        &mut self,
+        message: String,
+        hint: Option<String>,
+    ) -> Vec<HostEffect> {
+        self.native_channel_available = false;
+        let pending: Vec<_> = self.pending.drain().collect();
+        pending
+            .into_iter()
+            .map(|(id, pending)| self.error_effect(pending, id, message.clone(), hint.clone()))
+            .collect()
     }
 
     fn forward_to_extension_with_orch(
@@ -351,6 +371,7 @@ impl HostState {
                 txid,
                 created_at: now_ms(),
                 orchestration,
+                primitive: None,
             },
         );
         trace_line(&format!(
@@ -387,18 +408,28 @@ impl HostState {
         }
 
         let action = request.action.clone();
-
-        if action == "ping" {
-            let mut resp = base_response(true, Some(action), request.id);
-            add_host_metadata(&mut resp);
-            resp.data = Some(Value::Object(host_ping_data(self.native_channel_available)));
+        if action.starts_with("p:") {
+            let mut resp = base_response(false, Some(action), request.id);
+            resp.error = Some(ProtocolError {
+                message: "Browser primitives are internal-only".into(),
+                hint: Some(
+                    "Use a scoped browser command so protection and recovery are enforced.".into(),
+                ),
+            });
             return vec![HostEffect::Respond {
                 client_id,
                 payload: resp,
             }];
         }
+        if undo_actions().contains(action.as_str()) || action == "analyze" {
+            let policy = Policy::load(&self.policy_path);
+            self.policy_error = policy.as_ref().err().cloned();
+            self.policy = Arc::new(policy.unwrap_or_default());
+        }
 
-        if !self.native_channel_available && !local_actions().contains(action.as_str()) {
+        if !self.native_channel_available
+            && (!local_actions().contains(action.as_str()) || action == "undo")
+        {
             let mut resp = base_response(false, Some(action), request.id);
             resp.error = Some(ProtocolError {
                 message: "Native browser channel unavailable".to_string(),
@@ -429,7 +460,29 @@ impl HostState {
                 .and_then(|v| v.as_u64())
                 .map(|v| v as usize)
                 .unwrap_or(HISTORY_LIMIT_DEFAULT);
-            let records = filter_by_retention(read_undo_records(&self.undo_log), RETENTION_DAYS);
+            let mut records = match read_undo_records_checked(&self.undo_log) {
+                Ok(records) => filter_by_retention(records, RETENTION_DAYS),
+                Err(message) => {
+                    let mut resp = base_response(false, Some(action), request.id);
+                    resp.error = Some(ProtocolError {
+                        message,
+                        hint: None,
+                    });
+                    return vec![HostEffect::Respond {
+                        client_id,
+                        payload: resp,
+                    }];
+                }
+            };
+            for record in &mut records {
+                let active = record
+                    .get("txid")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| self.transactions.contains_key(id));
+                if !active && unresolved_creation(record) {
+                    record.insert("status".into(), Value::String("recovery_uncertain".into()));
+                }
+            }
             let start = records.len().saturating_sub(limit);
             let mut resp = base_response(true, Some(action), request.id);
             resp.data = Some(Value::Array(
@@ -581,17 +634,48 @@ impl HostState {
                 }];
             }
 
+            if txid
+                .as_ref()
+                .is_some_and(|id| self.transactions.contains_key(id))
+            {
+                let mut resp = base_response(false, Some(action), request.id);
+                resp.error = Some(ProtocolError {
+                    message: "Cannot undo an active transaction".into(),
+                    hint: Some("Wait for the original request to finish. Orphaned records can be recovered after the original host process exits.".into()),
+                });
+                return vec![HostEffect::Respond {
+                    client_id,
+                    payload: resp,
+                }];
+            }
             let record = if let Some(tx) = txid {
                 find_undo_record(&self.undo_log, &tx)
             } else {
-                find_latest_undo_record(&self.undo_log)
+                find_latest_undo_record_excluding(
+                    &self.undo_log,
+                    &self.transactions.keys().cloned().collect(),
+                )
+            };
+            let record = match record {
+                Ok(record) => record,
+                Err(message) => {
+                    let mut resp = base_response(false, Some(action), request.id);
+                    resp.error = Some(ProtocolError {
+                        message,
+                        hint: None,
+                    });
+                    return vec![HostEffect::Respond {
+                        client_id,
+                        payload: resp,
+                    }];
+                }
             };
 
-            let Some(record) = record else {
+            let Some(mut record) = record else {
                 let mut resp = base_response(false, Some(action), request.id);
                 resp.error = Some(ProtocolError {
                     message: "Undo record not found".to_string(),
-                    hint: None,
+                    hint: Some("Inspect history: active and uncertain transactions are excluded from latest undo.".into()),
                 });
                 return vec![HostEffect::Respond {
                     client_id,
@@ -599,6 +683,49 @@ impl HostState {
                 }];
             };
 
+            if unresolved_creation(&record)
+                || matches!(
+                    record.get("status").and_then(Value::as_str),
+                    Some("recovery_uncertain" | "undo_uncertain")
+                )
+            {
+                let mut resp = base_response(false, Some(action), request.id);
+                resp.error = Some(ProtocolError {
+                    message: "Recovery is uncertain: a creation reply did not establish the browser effects and IDs".into(),
+                    hint: Some("Preserve the journal and inspect browser state manually. Automatic undo cannot safely guess created IDs or report successful restoration.".into()),
+                });
+                return vec![HostEffect::Respond {
+                    client_id,
+                    payload: resp,
+                }];
+            }
+            if !is_pending_undo(&record) {
+                let mut resp = base_response(false, Some(action), request.id);
+                resp.error = Some(ProtocolError {
+                    message: "Transaction already undone or undo in progress".into(),
+                    hint: None,
+                });
+                return vec![HostEffect::Respond {
+                    client_id,
+                    payload: resp,
+                }];
+            }
+            let undo_txid = record
+                .get("txid")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            record.insert("status".into(), Value::String("undoing".into()));
+            if let Err(message) = append_undo_record(&self.undo_log, &record) {
+                let mut resp = base_response(false, Some(action), request.id);
+                resp.error = Some(ProtocolError {
+                    message: format!("Cannot checkpoint undo: {message}"),
+                    hint: None,
+                });
+                return vec![HostEffect::Respond {
+                    client_id,
+                    payload: resp,
+                }];
+            }
             let undo_params = Value::Object(Map::from_iter([(
                 "record".to_string(),
                 Value::Object(record),
@@ -607,7 +734,8 @@ impl HostState {
                 orchestration_for("undo", &undo_params, &self.orchestration_context())
             {
                 let step = orch.start();
-                return self.process_orch_step(client_id, "undo", request.id, None, step, orch);
+                return self
+                    .process_orch_step(client_id, "undo", request.id, undo_txid, step, orch);
             }
             let undo_request = RequestEnvelope {
                 id: request.id,
@@ -695,6 +823,11 @@ impl HostState {
             params.insert("mode".to_string(), Value::String("apply".to_string()));
             params.insert("tabIds".to_string(), Value::Array(tab_ids));
             params.insert("expectedUrls".to_string(), Value::Object(expected_urls));
+            for field in ["confirmed", "confirm", "dryRun"] {
+                if let Some(value) = request.params.get(field) {
+                    params.insert(field.into(), value.clone());
+                }
+            }
             // Fall through to orchestration below with enriched params
             request = RequestEnvelope {
                 id: request.id,
@@ -708,14 +841,40 @@ impl HostState {
         // Must come before undo_actions legacy forward so migrated commands
         // use the orchestration path. Undo-tracked orchestrated commands get
         // a txid generated here.
+        let mutating_analysis = action == "analyze"
+            && request.params["dedupe"].as_bool() == Some(true)
+            && request
+                .params
+                .get("confirmed")
+                .or_else(|| request.params.get("confirm"))
+                .and_then(Value::as_bool)
+                == Some(true)
+            && request.params["dryRun"].as_bool() != Some(true);
+        if (undo_actions().contains(action.as_str()) || mutating_analysis)
+            && self.policy_error.is_some()
+        {
+            let mut resp = base_response(false, Some(action), request.id);
+            resp.error = Some(ProtocolError {
+                message: self.policy_error.clone().unwrap(),
+                hint: None,
+            });
+            return vec![HostEffect::Respond {
+                client_id,
+                payload: resp,
+            }];
+        }
         if let Some(mut orch) =
             orchestration_for(&action, &request.params, &self.orchestration_context())
         {
-            let txid = if undo_actions().contains(action.as_str()) {
+            let txid = if undo_actions().contains(action.as_str()) || mutating_analysis {
                 Some(create_id("tx"))
             } else {
                 None
             };
+            if let Some(txid) = txid.as_ref() {
+                self.transactions
+                    .insert(txid.clone(), Transaction::new(txid, &action));
+            }
             let step = orch.start();
             return self.process_orch_step(client_id, &action, request.id, txid, step, orch);
         }
@@ -731,6 +890,14 @@ impl HostState {
         let message_id = message.id.clone();
 
         if !self.pending.contains_key(&message_id) {
+            if message.ok == Some(false) {
+                log_line(&format!(
+                    "Rejected failed unsolicited native message {}: {:?}",
+                    message.action.as_deref().unwrap_or("unknown"),
+                    message.error
+                ));
+                return Vec::new();
+            }
             if message.action.as_deref() == Some("browser-state-sync") {
                 let mut payload = message.data.unwrap_or(Value::Object(Map::new()));
                 if let Some(snapshot) = payload.get_mut("snapshot") {
@@ -777,7 +944,7 @@ impl HostState {
                     message_id, pending.action
                 ));
                 let timed_out = self.pending.remove(&message_id).expect("pending exists");
-                return vec![Self::timeout_effect(timed_out, message_id)];
+                return vec![self.timeout_effect(timed_out, message_id)];
             }
         }
 
@@ -803,19 +970,27 @@ impl HostState {
         let Some(mut pending) = self.pending.remove(&message_id) else {
             return Vec::new();
         };
+        if pending.action == "undo"
+            && pending
+                .txid
+                .as_ref()
+                .is_some_and(|id| self.transactions.contains_key(id))
+        {
+            return vec![self.error_effect(
+                pending,
+                message_id,
+                "Cannot undo an active transaction".into(),
+                None,
+            )];
+        }
 
         // Extension error — abort orchestration if active
         if !message.ok.unwrap_or(false) {
-            let resp_id = pending.request_id.clone().unwrap_or(message_id);
-            let mut resp = base_response(false, Some(pending.action), Some(resp_id));
-            resp.error = message.error.or(Some(ProtocolError {
+            let error = message.error.unwrap_or(ProtocolError {
                 message: "Unknown error".to_string(),
                 hint: None,
-            }));
-            return vec![HostEffect::Respond {
-                client_id: pending.client_id,
-                payload: resp,
-            }];
+            });
+            return vec![self.error_effect(pending, message_id, error.message, error.hint)];
         }
 
         let message_data = value_object(message.data.clone());
@@ -831,8 +1006,68 @@ impl HostState {
                     self.profile_name.as_deref(),
                 );
                 self.ingest_snapshot_response(&response_data);
+                if pending.action != "undo" {
+                    if let Some(tx) = pending
+                        .txid
+                        .as_ref()
+                        .and_then(|id| self.transactions.get_mut(id))
+                    {
+                        if tx.snapshot.is_null() {
+                            tx.snapshot = response_data.clone();
+                        }
+                    }
+                }
+            }
+            if let Some(primitive) = pending
+                .primitive
+                .as_ref()
+                .filter(|action| pending.action != "undo" && is_mutating_primitive(action))
+            {
+                if let Some(tx) = pending
+                    .txid
+                    .as_ref()
+                    .and_then(|id| self.transactions.get_mut(id))
+                {
+                    if let Err(message) = tx.acknowledge(primitive, &response_data, &self.undo_log)
+                    {
+                        return vec![self.error_effect(pending, message_id, message, None)];
+                    }
+                }
             }
             let step = orch.step(response_data);
+            if pending.action == "undo" {
+                if let Some(txid) = pending.txid.as_ref() {
+                    if let Some(checkpoint) = orch.recovery_checkpoint() {
+                        let record = find_undo_record(&self.undo_log, txid).and_then(|record| {
+                            record.ok_or_else(|| {
+                                "Undo record disappeared before recovery checkpoint".into()
+                            })
+                        });
+                        let mut record = match record {
+                            Ok(record) => record,
+                            Err(message) => {
+                                return vec![self.error_effect(
+                                    pending,
+                                    message_id,
+                                    message,
+                                    Some("Inspect the journal before retrying restoration.".into()),
+                                )]
+                            }
+                        };
+                        record.insert("undo".into(), checkpoint);
+                        if let Err(message) = append_undo_record(&self.undo_log, &record) {
+                            return vec![self.error_effect(
+                                pending,
+                                message_id,
+                                format!(
+                                    "Restoration applied but cannot checkpoint recovery: {message}"
+                                ),
+                                Some("Do not retry until browser state is inspected.".into()),
+                            )];
+                        }
+                    }
+                }
+            }
             return self.process_orch_step(
                 pending.client_id,
                 &pending.action.clone(),
@@ -913,7 +1148,14 @@ impl HostState {
             let undo_payload = message_data.get("undo").cloned().unwrap_or(Value::Null);
             record.insert("undo".to_string(), undo_payload.clone());
             if !undo_payload.is_null() {
-                append_undo_record(&self.undo_log, &record);
+                if let Err(message) = append_undo_record(&self.undo_log, &record) {
+                    return vec![self.error_effect(
+                        pending,
+                        message_id,
+                        format!("Mutation applied but cannot persist undo: {message}"),
+                        None,
+                    )];
+                }
             }
 
             let mut data = message_data;
@@ -940,115 +1182,6 @@ impl HostState {
             client_id: pending.client_id,
             payload: resp,
         }]
-    }
-
-    /// Process an orchestration step result: send the next primitive, complete,
-    /// or return an error.
-    pub(super) fn process_orch_step(
-        &mut self,
-        client_id: u64,
-        action: &str,
-        request_id: Option<String>,
-        txid: Option<String>,
-        step: OrchStep,
-        mut orch: Box<dyn Orchestration>,
-    ) -> Vec<HostEffect> {
-        match step {
-            OrchStep::SendPrimitive {
-                action: prim_action,
-                params,
-            } => {
-                let new_id = create_id("orch");
-                self.pending.insert(
-                    new_id.clone(),
-                    PendingRequest {
-                        client_id,
-                        action: action.to_string(),
-                        request_id: request_id.clone(),
-                        txid,
-                        created_at: now_ms(),
-                        orchestration: Some(orch),
-                    },
-                );
-                trace_line(&format!(
-                    "pending orch step: client_id={} request_id={} action={} native_action={}",
-                    client_id, new_id, action, prim_action
-                ));
-                vec![HostEffect::SendNative(NativeMessage {
-                    id: new_id,
-                    action: Some(prim_action),
-                    ok: None,
-                    progress: None,
-                    params: Some(params),
-                    data: None,
-                    error: None,
-                })]
-            }
-            OrchStep::Delay { duration_ms } => {
-                std::thread::sleep(Duration::from_millis(duration_ms));
-                let next_step = orch.step(Value::Null);
-                self.process_orch_step(client_id, action, request_id, txid, next_step, orch)
-            }
-            OrchStep::Complete { response, undo } => {
-                if let Some(ref undo_data) = undo {
-                    if let Some(ref txid_str) = txid {
-                        let summary = response
-                            .as_object()
-                            .and_then(|o| o.get("summary"))
-                            .cloned()
-                            .unwrap_or_else(|| Value::Object(Map::new()));
-                        let mut record = Map::new();
-                        record.insert("txid".to_string(), Value::String(txid_str.clone()));
-                        record.insert("createdAt".to_string(), Value::Number(now_ms().into()));
-                        record.insert("action".to_string(), Value::String(action.to_string()));
-                        record.insert("summary".to_string(), summary);
-                        record.insert("undo".to_string(), undo_data.clone());
-                        append_undo_record(&self.undo_log, &record);
-                    }
-                }
-                let mut resp = base_response(true, Some(action.to_string()), request_id);
-                let mut data = value_object(Some(response));
-
-                // Cache analysis for close --apply
-                if action == "analyze" {
-                    let analysis_id = create_id("analysis");
-                    self.analyses
-                        .insert(analysis_id.clone(), AnalysisRecord { data: data.clone() });
-                    data.insert("analysisId".to_string(), Value::String(analysis_id));
-                }
-
-                if let Some(txid_str) = txid {
-                    data.insert("txid".to_string(), Value::String(txid_str));
-                }
-                resp.data = Some(Value::Object(data));
-                vec![HostEffect::Respond {
-                    client_id,
-                    payload: resp,
-                }]
-            }
-            OrchStep::Error { message, hint } => {
-                let mut resp = base_response(false, Some(action.to_string()), request_id);
-                resp.error = Some(ProtocolError { message, hint });
-                vec![HostEffect::Respond {
-                    client_id,
-                    payload: resp,
-                }]
-            }
-            OrchStep::Progress { data } => {
-                let mut resp = base_response(true, Some(action.to_string()), request_id.clone());
-                resp.progress = Some(true);
-                resp.data = Some(data);
-                let mut effects = vec![HostEffect::Respond {
-                    client_id,
-                    payload: resp,
-                }];
-                let next_step = orch.step(Value::Null);
-                effects.extend(
-                    self.process_orch_step(client_id, action, request_id, txid, next_step, orch),
-                );
-                effects
-            }
-        }
     }
 }
 
@@ -1153,6 +1286,135 @@ mod tests {
     fn test_state() -> HostState {
         let path = state_path("default");
         HostState::new(path.join("undo.jsonl"), path.join("focus.db"), None)
+    }
+
+    fn mutation_request() -> RequestEnvelope {
+        RequestEnvelope {
+            id: Some("close-request".into()),
+            action: "close".into(),
+            params: serde_json::json!({"tabIds":[1],"confirmed":true}),
+            auth_token: None,
+        }
+    }
+
+    fn native_reply(id: String, ok: bool, data: Value) -> NativeMessage {
+        NativeMessage {
+            id,
+            action: None,
+            ok: Some(ok),
+            progress: None,
+            params: None,
+            data: Some(data),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn failed_primitive_keeps_scoped_write_ahead_recovery() {
+        let mut state = test_state();
+        let effects = state.handle_cli_request(1, mutation_request());
+        let [HostEffect::SendNative(snapshot)] = effects.as_slice() else {
+            panic!("expected snapshot")
+        };
+        let snapshot_id = snapshot.id.clone();
+        let effects = state.handle_native_message(native_reply(snapshot_id, true, serde_json::json!({
+            "windows":[{"windowId":7,"tabs":[{"tabId":1,"url":"https://a.example","index":0},{"tabId":2,"url":"https://b.example","index":1}]}]
+        })));
+        let [HostEffect::SendNative(remove)] = effects.as_slice() else {
+            panic!("expected removal")
+        };
+        let records = read_undo_records(&state.undo_log);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["status"], "in_progress");
+        assert_eq!(records[0]["undo"]["tabs"].as_array().unwrap().len(), 1);
+        let effects =
+            state.handle_native_message(native_reply(remove.id.clone(), false, Value::Null));
+        let [HostEffect::Respond { payload, .. }] = effects.as_slice() else {
+            panic!("expected failure")
+        };
+        assert!(!payload.ok);
+        assert!(payload.data.as_ref().unwrap()["txid"].as_str().is_some());
+        let records = read_undo_records(&state.undo_log);
+        assert_eq!(records[0]["status"], "failed");
+        assert_eq!(records[0]["inFlight"]["action"], "p:tab-remove");
+        assert!(state.pending.is_empty());
+        fs::remove_dir_all(state.undo_log.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn failed_recovery_write_blocks_mutation_before_send() {
+        let mut state = test_state();
+        fs::create_dir_all(&state.undo_log).unwrap();
+        let effects = state.handle_cli_request(1, mutation_request());
+        let [HostEffect::SendNative(snapshot)] = effects.as_slice() else {
+            panic!("expected snapshot")
+        };
+        let effects = state.handle_native_message(native_reply(
+            snapshot.id.clone(),
+            true,
+            serde_json::json!({
+                "windows":[{"windowId":7,"tabs":[{"tabId":1,"url":"https://a.example","index":0}]}]
+            }),
+        ));
+        let [HostEffect::Respond { payload, .. }] = effects.as_slice() else {
+            panic!("must not issue remove")
+        };
+        assert!(!payload.ok);
+        assert!(payload
+            .error
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("persist undo"));
+        fs::remove_dir_all(state.undo_log.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn ping_without_browser_is_not_healthy() {
+        let mut state = test_state();
+        state.native_channel_available = false;
+        let effects = state.handle_cli_request(
+            1,
+            RequestEnvelope {
+                action: "ping".into(),
+                id: Some("ping".into()),
+                params: serde_json::json!({}),
+                auth_token: None,
+            },
+        );
+        let [HostEffect::Respond { payload, .. }] = effects.as_slice() else {
+            panic!("expected failure")
+        };
+        assert!(!payload.ok);
+        assert_eq!(
+            payload.error.as_ref().unwrap().message,
+            "Native browser channel unavailable"
+        );
+    }
+
+    #[test]
+    fn external_primitives_cannot_bypass_policy_and_recovery() {
+        let mut state = test_state();
+        for action in ["p:snapshot", "p:tab-remove", "p:window-remove"] {
+            let effects = state.handle_cli_request(
+                1,
+                RequestEnvelope {
+                    action: action.into(),
+                    id: None,
+                    params: serde_json::json!({"tabIds":[1],"windowId":7}),
+                    auth_token: None,
+                },
+            );
+            let [HostEffect::Respond { payload, .. }] = effects.as_slice() else {
+                panic!("must not forward primitive")
+            };
+            assert!(!payload.ok);
+            assert_eq!(
+                payload.error.as_ref().unwrap().message,
+                "Browser primitives are internal-only"
+            );
+        }
+        assert!(state.pending.is_empty());
     }
 
     fn page_cache_test_state(name: &str) -> (HostState, PathBuf) {
@@ -1445,9 +1707,10 @@ mod tests {
 
     #[test]
     fn non_ping_browser_actions_fail_fast_without_native_channel() {
+        let path = state_path("no-native");
         let mut state = HostState::new_with_native_channel(
-            std::env::temp_dir().join("tabctl-host-state-test-undo.jsonl"),
-            std::env::temp_dir().join("tabctl-host-state-test-focus.db"),
+            path.join("undo.jsonl"),
+            path.join("focus.db"),
             None,
             false,
         );

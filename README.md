@@ -13,7 +13,7 @@ tabctl setup --browser edge --extension-id <id>   # or: --browser chrome --exten
 tabctl ping
 ```
 
-Setup writes the wrapper script, native messaging manifest, and registers the profile in one step. Works on macOS, Linux, and Windows. If it pings back, the wire is live. You're connected.
+Setup writes the wrapper script, native messaging manifest, and registers the profile in one step. Supports macOS on Apple Silicon and Intel, with Edge and Chrome. If it pings back, the wire is live. You're connected.
 
 ### Alternative: build from source
 
@@ -21,7 +21,23 @@ Setup writes the wrapper script, native messaging manifest, and registers the pr
 cargo install --path rust/crates/tabctl
 ```
 
-> **Legacy:** `npm install -g tabctl` still works for the Node.js-based distribution but is no longer the primary install method. No Node.js or Go is required at runtime — the single `tabctl` binary handles everything.
+### Alternative: npm
+
+```bash
+npm install -g tabctl
+tabctl setup --browser edge   # or: --browser chrome
+```
+
+The macOS npm package contains one universal native executable (Apple Silicon +
+Intel) and the built extension. npm creates a bin symlink directly to that
+executable; there is no JavaScript CLI, platform-package dependency, or postinstall
+download. Setup discovers the packaged extension automatically, while explicit
+`--extension-dir` and release overrides still take priority. mise/GitHub Releases
+remain supported alongside npm.
+
+No Node.js or Go is required when running the installed binary. npm itself
+requires Node.js to install the npm distribution. Windows and Linux packages are
+not published.
 
 ## Agent Skill
 
@@ -61,12 +77,12 @@ When tabctl is installed as a skill, your agent sees what you see. Just talk to 
 
 ---
 
-`tabctl` is a single Rust binary that serves as both the CLI and the native messaging host. The CLI sends commands over a Unix socket (or named pipe on Windows) to the host, which proxies them to the browser extension via native messaging. The `tabctl host` subcommand is the native messaging entry point — invoked automatically by the browser, not manually.
+`tabctl` is a single Rust binary that serves as both the CLI and the native messaging host. The CLI sends commands over a Unix-domain socket to the host, which proxies them to the browser extension via native messaging. The `tabctl host` subcommand is the native messaging entry point — invoked automatically by the browser, not manually.
 
 This repo contains:
 - Chrome/Edge extension (`src/extension/`, the only TypeScript component)
 - Rust workspace (`rust/crates/*`) — single `tabctl` binary for CLI + host + shared runtime
-- Node packaging/build scripts for distribution (legacy)
+- Node build scripts for the browser extension and release metadata
 
 ## Quick Start
 
@@ -108,7 +124,7 @@ tabctl setup --browser chrome
 This will:
 1. Write the native messaging manifest and wrapper script
 2. Register the browser profile in `profiles.json`
-3. Download the version-pinned release extension asset (`tabctl-extension.zip` + `.sha256`) into the tabctl data directory
+3. Use the bundled extension for npm installs, or download the version-pinned release extension asset (`tabctl-extension.zip` + `.sha256`) into the tabctl data directory for binary installs
 4. Sync the managed unpacked extension directory to the tabctl version (`~/.local/state/tabctl/extension/`)
 5. Derive the extension ID from the managed extension path (or use explicit `--extension-id`)
 6. Print the path for loading as an unpacked extension in `chrome://extensions`
@@ -120,7 +136,7 @@ tabctl setup --browser chrome --extension-dir dist/extension
 
 > **Edge?** Use `--browser edge` and load from `edge://extensions` instead.
 >
-> **Cross-platform:** setup works on macOS, Linux, and Windows. On Windows, setup verifies connectivity after writing setup artifacts and checks the runtime extension ID reported by the browser. Connectivity failures and runtime extension ID mismatches exit non-zero and print manual recovery steps (including expected vs runtime IDs).
+> **Platform:** macOS only (Apple Silicon and Intel). Windows, Linux, WSL, named pipes, and TCP transport are not supported.
 
 Optional setup release overrides:
 - Flags: `--extension-dir`, `--release-repo`, `--release-tag` (or `--release-version`), `--release-asset`, `--skip-extension-download`
@@ -245,36 +261,24 @@ See [CLI.md](CLI.md#configuration) for full details.
 - Undo log: `<dataDir>/undo.jsonl` (default: `~/.local/state/tabctl/undo.jsonl`)
 - Browser-state history DB: `<dataDir>/state.db` (default: `~/.local/state/tabctl/state.db`)
 - Profile registry: `<configDir>/profiles.json`
-- Windows pipe endpoint file: `<dataDir>/pipe-endpoint`
 
-## Windows + WSL transport
+## macOS transport
 
-On Windows, the host exposes a named-pipe endpoint model:
-- Windows native clients use a named pipe endpoint (`\\.\pipe\tabctl-<hash>`).
-- WSL/Linux clients use a Windows named-pipe bridge; the Windows host publishes `<dataDir>/pipe-endpoint`, and the WSL CLI relays through `powershell.exe`.
+The host accepts local Unix-domain socket connections only. `TABCTL_SOCKET` can
+override the profile socket with an absolute path or `unix:///absolute/path`.
+TCP and named-pipe endpoints are rejected, as is `TABCTL_TRANSPORT=tcp`.
+Existing macOS profiles, wrapper filenames, and state/config directories are preserved.
 
-WSL endpoint discovery (CLI):
-1. `TABCTL_SOCKET` (explicit endpoint).
-2. `pipe-endpoint` file discovery from resolved data dir (and equivalent `/mnt/c/Users/*/.../tabctl/.../pipe-endpoint` locations).
+## Troubleshooting (setup/ping on macOS)
 
-WSL named-pipe mode:
-- This is the default WSL transport now.
-- The CLI discovers the pipe endpoint from `<dataDir>/pipe-endpoint` (including the mirrored `/mnt/c/Users/*/...` candidate paths used for other WSL bridge files).
-- TCP is disabled for the WSL transport path.
-
-Relevant knobs: `TABCTL_SOCKET`, `TABCTL_PROFILE`, `TABCTL_DATA_DIR`, `TABCTL_STATE_DIR`, `TABCTL_CONFIG_DIR`.
-
-## Troubleshooting (setup/ping on Windows + WSL)
-
-- `tabctl setup` fails with `Windows setup verification failed`: check `data.verification.reason` in JSON output (`ping-timeout`, `socket-not-found`, `socket-refused`, `ping-not-ok`, `extension-id-mismatch`), then follow printed manual steps.
-- Runtime ID mismatch (`extension-id-mismatch`): compare expected vs runtime IDs from setup output, then rerun setup with the runtime ID shown by `edge://extensions` / `chrome://extensions`:
+- Runtime ID mismatch: compare the configured extension ID with the runtime ID shown by `edge://extensions` / `chrome://extensions`, then rerun setup:
   - `tabctl setup --browser <edge|chrome> --extension-id <runtime-id>`
 - Runtime command runs can auto-sync extension files when host/extension versions drift; rerun `tabctl query 'mutation { reloadExtension { reloading } }'` if the browser does not pick up changes immediately.
 - For local release-like testing while developing, force runtime sync behavior with `TABCTL_AUTO_SYNC_MODE=release-like`.
 - Disable runtime sync entirely with `TABCTL_AUTO_SYNC_MODE=off`.
 - `tabctl ping --json` is a host connectivity/health check; use it to confirm the native host is reachable and healthy.
 - Version metadata is intentionally health-only: regular GraphQL payloads do not include version fields unless you explicitly query health surfaces, which may expose fields such as `versionsInSync`, `hostBaseVersion`, and `baseVersion`.
-- `tabctl ping` returns connect errors (`ENOENT`, `ECONNREFUSED`, timeout): ensure extension is loaded and active, rerun `tabctl setup`, and in WSL verify the profile data dir contains a current `pipe-endpoint` file.
+- `tabctl ping` returns connect errors (`ENOENT`, `ECONNREFUSED`, timeout): ensure the extension is loaded and active, and the wrapper/CLI select the same profile and data directory. Run `tabctl doctor --json` for diagnostics.
 - `tabctl doctor --fix --json` includes per-profile connectivity diagnostics in `data.profiles[].connectivity`; if ping remains unhealthy after local repairs, follow `manualSteps`.
 
 Local release-like sync test recipe:
@@ -327,17 +331,21 @@ This writes the manifest to `<user-data-dir>/NativeMessagingHosts/` instead of t
 ### How It Works
 
 Each profile gets its own:
-- Native host manifest and wrapper script
+- Wrapper script
 - Unix socket for CLI-host communication
 - Undo history log
 - Data directory
 
 Policy is shared across all profiles.
 
+Native messaging manifests are per browser user-data directory. For two profiles
+of the same browser, use separate `--user-data-dir` directories; setup refuses to
+overwrite a conflicting manifest unless you explicitly pass `--force`.
+
 ## Security
 - The native host is locked to your extension ID.
 - All data stays local; no external API keys are used.
-- WSL ↔ Windows communication uses a local named-pipe bridge via `powershell.exe`; no TCP fallback is used on that path.
+- The macOS socket is owner-only (`0600`); no TCP listener or named-pipe bridge is created.
 
 ## Development
 
@@ -355,29 +363,22 @@ npm test                          # unit tests
 Rust-only validation:
 ```bash
 npm run rust:verify
-npm run check:targets  # local cross-target cfg/type check
+npm run check:targets  # Apple Silicon + Intel macOS checks
 ```
 
-On macOS, `npm run check:targets` can use Zig for the C cross-compiler needed
-by `libsqlite3-sys`:
-
-```bash
-brew install zig
-```
-
-The script auto-detects Zig outside CI and wires the Linux/Windows C compiler
-environment for the check. The pre-push hook does not run this optional check;
-run it manually when you want local cross-target coverage.
+`npm run check:targets` requires macOS, Xcode command-line tools, and the
+`aarch64-apple-darwin` and `x86_64-apple-darwin` rustup targets. It never installs
+toolchains automatically. The pre-push hook does not run this optional check.
 
 Browser-backed integration harness (requires built dist artifacts and Chrome):
 ```bash
 npm run test:integration
 ```
 
-WSL CI validates the WSL->Windows invocation bridge (`test.yml` `wsl` job) with phases: `prerequisites`, `diagnostics`, `build_and_unit`, `setup_validation`, `windows_invocation`, `integration`. Runtime/build execution is delegated to Windows commands (`cmd.exe`/`powershell.exe`), so WSL-local Rust compilation is not required.
+All CI and release jobs run on macOS, including release preparation, native npm packaging, and publication of GitHub assets.
 
 ### Versioning
-The base version lives in `package.json` and is embedded into the CLI, host, and extension at build time.
+The base version lives in `rust/Cargo.toml` and is mirrored to the npm package manifests and embedded into the CLI, host, and extension at build time.
 
 Commands:
 ```bash
@@ -397,14 +398,28 @@ Pre-release staging flow:
 Release automation:
 - Run the **Prepare Release** workflow to choose or auto-detect the next version and open a release PR.
 - When that PR merges, **Tag Release** creates `v<version>` and dispatches **Release**.
-- The root `package.json` version and `optionalDependencies.tabctl-win32-x64` are kept in sync by `scripts/bump-version.js`.
+- The root `package.json` version is kept in sync with the Rust workspace by `scripts/bump-version.js`.
 
 Release publishing (`.github/workflows/release.yml`) supports both tag pushes and explicit workflow dispatch, and enforces:
-- Git tag must match `package.json` version (`v<version>`)
-- `package.json.optionalDependencies["tabctl-win32-x64"]` must match `package.json` version
-- prerelease tags publish to `alpha`/`rc`; stable publishes to `latest`
-- `npm run build` and `npm test` must pass before publish
-- release assets include `tabctl-extension.zip` plus `tabctl-extension.zip.sha256`
+- Git tag must match the Rust workspace version (`v<version>`), with mirrored package versions checked for drift
+- alpha/RC releases are marked as GitHub prereleases
+- `npm test` (including build and Rust verification) must pass before publishing assets
+- release assets are macOS Intel and Apple Silicon binaries, `tabctl-extension.zip`, and its SHA-256 checksum
+- the root `tabctl` npm package is published with a universal macOS executable and bundled extension; alpha/RC versions use the `alpha`/`rc` npm tags, stable versions use `latest`
+- no Windows or optional platform packages are published
+
+For an offline local check of the npm distribution after building both release targets:
+
+```bash
+npm run build:extension
+npm run package:npm -- rust/target/aarch64-apple-darwin/release/tabctl rust/target/x86_64-apple-darwin/release/tabctl
+npm run verify:npm
+```
+
+`package:npm` validates both input architectures, uses `lipo` to create
+`dist/npm/tabctl`, and verifies each slice. `verify:npm` checks the actual npm
+tarball, installs it offline in a checkout-local sandbox, and verifies the native
+bin's version plus isolated Edge/Chrome setup without launching a browser.
 
 Fetch the extension asset from a release with:
 ```bash

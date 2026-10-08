@@ -33,7 +33,7 @@ permissions:
 
 jobs:
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -159,7 +159,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json packages/win32-x64/package.json rust/Cargo.toml rust/Cargo.lock
+          git add package.json package-lock.json rust/Cargo.toml rust/Cargo.lock
           git commit -m "${PR_TITLE}"
           git push -u origin "${BRANCH_NAME}"
 

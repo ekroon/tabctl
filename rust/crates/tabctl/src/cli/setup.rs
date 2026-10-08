@@ -189,16 +189,6 @@ pub(super) fn derive_extension_id_from_extension_path(path: &Path) -> Result<Str
         )
     })?;
     let normalized = canonical.to_string_lossy().replace('\\', "/");
-    #[cfg(windows)]
-    let normalized = {
-        let mut normalized = normalized;
-        if normalized.len() > 1 && normalized.as_bytes()[1] == b':' {
-            if let Some(first) = normalized.chars().next() {
-                normalized.replace_range(0..1, &first.to_ascii_lowercase().to_string());
-            }
-        }
-        normalized
-    };
     let mut hasher = Sha256::new();
     hasher.update(normalized.as_bytes());
     let digest = hasher.finalize();
@@ -724,9 +714,6 @@ pub(super) fn maybe_runtime_extension_auto_sync(
 /// Check if the host wrapper's binary path is stale and repair it.
 /// Returns `true` if the wrapper was updated.
 fn maybe_auto_repair_wrapper(profile: Option<&str>) -> bool {
-    if !can_repair_host_wrapper() {
-        return false;
-    }
     let profile_name = match resolve_effective_profile(profile) {
         Some(name) => name,
         None => return false,
@@ -822,13 +809,7 @@ pub(super) fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), St
         }
     };
     let data_dir = resolve_data_dir(None)?;
-    let runtime_env = if cfg!(windows) {
-        "native-win32"
-    } else if cfg!(target_os = "macos") {
-        "native-darwin"
-    } else {
-        "native-linux"
-    };
+    let runtime_env = "native-darwin";
     let wrapper_path = resolve_tabctl_binary_path();
     let explicit_extension_id = sub.get_one::<String>("extension-id").cloned();
     let mut sync_active_path = None::<String>;
@@ -933,9 +914,6 @@ pub(super) fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), St
     let mut is_default_profile = false;
     let mut profile_registry = None::<Value>;
 
-    #[cfg(windows)]
-    let mut registry_key_value = None::<String>;
-
     if let Some(ref ext_id) = effective_extension_id {
         let profile_name = sub
             .get_one::<String>("name")
@@ -950,11 +928,6 @@ pub(super) fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), St
         let force = sub.get_flag("force");
         let manifest_path =
             write_native_manifest(browser, &wrapper_file, ext_id, user_data_dir, force)?;
-
-        #[cfg(windows)]
-        {
-            registry_key_value = Some(write_registry_key(browser, &manifest_path)?);
-        }
 
         actual_wrapper_path = wrapper_file.display().to_string();
         actual_manifest_path = manifest_path.display().to_string();
@@ -996,10 +969,6 @@ pub(super) fn run_setup(matches: &ArgMatches, sub: &ArgMatches) -> Result<(), St
         if let Some(ref reg) = profile_registry {
             data["profileRegistry"] = reg.clone();
         }
-        #[cfg(windows)]
-        if let Some(ref rk) = registry_key_value {
-            data["registryKey"] = json!(rk);
-        }
     }
     let setup_payload = json!({
         "ok": true,
@@ -1039,8 +1008,7 @@ pub(super) fn resolve_tabctl_binary_path() -> String {
         return path_str;
     }
     // Fallback: look up "tabctl" in PATH
-    let cmd = if cfg!(windows) { "where" } else { "which" };
-    if let Ok(output) = ProcessCommand::new(cmd).arg("tabctl").output() {
+    if let Ok(output) = ProcessCommand::new("which").arg("tabctl").output() {
         if output.status.success() {
             if let Ok(path) = String::from_utf8(output.stdout) {
                 let trimmed = path.trim().to_string();
@@ -1099,7 +1067,25 @@ pub(super) fn resolve_setup_extension_dir_override(
         .cloned()
         .or_else(|| std::env::var("TABCTL_SETUP_EXTENSION_DIR").ok());
     let Some(local_dir) = local_dir else {
-        return Ok(None);
+        // Explicit release overrides still select release assets. Otherwise an
+        // npm-installed native binary can use its bundled extension offline.
+        if sub.get_one::<String>("release-tag").is_some()
+            || sub.get_one::<String>("release-version").is_some()
+            || sub.get_one::<String>("release-repo").is_some()
+            || sub.get_one::<String>("release-asset").is_some()
+            || [
+                "TABCTL_RELEASE_TAG",
+                "TABCTL_RELEASE_REPO",
+                "TABCTL_RELEASE_ASSET",
+            ]
+            .iter()
+            .any(|key| std::env::var_os(key).is_some())
+        {
+            return Ok(None);
+        }
+        return Ok(std::env::current_exe()
+            .ok()
+            .and_then(|binary| resolve_packaged_extension_dir(&binary)));
     };
     let resolved = fs::canonicalize(&local_dir).map_err(|e| {
         format!(
@@ -1120,6 +1106,19 @@ pub(super) fn resolve_setup_extension_dir_override(
         ));
     }
     Ok(Some(resolved))
+}
+
+pub(super) fn resolve_packaged_extension_dir(binary: &Path) -> Option<PathBuf> {
+    let binary = fs::canonicalize(binary).ok()?;
+    let binary_dir = binary.parent()?;
+    if binary_dir.file_name()? != "npm" {
+        return None;
+    }
+    let extension = binary_dir.parent()?.join("extension");
+    if !extension.join("manifest.json").is_file() || !extension.join("background.js").is_file() {
+        return None;
+    }
+    fs::canonicalize(extension).ok()
 }
 
 pub(super) fn resolve_setup_release_override(
@@ -1199,48 +1198,36 @@ pub(super) fn register_profile(
 
 pub(super) const HOST_NAME: &str = "com.erwinkroon.tabctl";
 
+pub(super) fn resolve_profile_manifest_dir(
+    browser: &str,
+    user_data_dir: Option<&str>,
+) -> Result<PathBuf, String> {
+    match browser {
+        "edge" | "chrome" => {}
+        _ => return Err(format!("unsupported browser: {browser}")),
+    }
+    if let Some(path) = user_data_dir {
+        Ok(PathBuf::from(path).join("NativeMessagingHosts"))
+    } else {
+        resolve_manifest_dir(browser)
+    }
+}
+
 pub(super) fn resolve_manifest_dir(browser: &str) -> Result<PathBuf, String> {
     match browser {
         "edge" | "chrome" => {}
         _ => return Err(format!("unsupported browser: {browser}")),
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        let data_dir = resolve_data_dir(None)?;
-        Ok(PathBuf::from(data_dir))
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let home =
-            dirs::home_dir().ok_or_else(|| "Unable to resolve home directory".to_string())?;
-        let subdir = match browser {
-            "edge" => "Microsoft Edge",
-            _ => "Google/Chrome",
-        };
-        Ok(home
-            .join("Library/Application Support")
-            .join(subdir)
-            .join("NativeMessagingHosts"))
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let home =
-            dirs::home_dir().ok_or_else(|| "Unable to resolve home directory".to_string())?;
-        let subdir = match browser {
-            "edge" => "microsoft-edge",
-            _ => "google-chrome",
-        };
-        Ok(home
-            .join(".config")
-            .join(subdir)
-            .join("NativeMessagingHosts"))
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    Err(format!("unsupported platform"))
+    let home = dirs::home_dir().ok_or_else(|| "Unable to resolve home directory".to_string())?;
+    let subdir = match browser {
+        "edge" => "Microsoft Edge",
+        _ => "Google/Chrome",
+    };
+    Ok(home
+        .join("Library/Application Support")
+        .join(subdir)
+        .join("NativeMessagingHosts"))
 }
 
 pub(super) fn write_host_wrapper(
@@ -1248,60 +1235,39 @@ pub(super) fn write_host_wrapper(
     profile_name: &str,
     wrapper_dir: &Path,
 ) -> Result<PathBuf, String> {
-    fs::create_dir_all(wrapper_dir).map_err(|e| format!("failed to create wrapper dir: {e}"))?;
-    let config_dir = resolve_config_dir()?;
     let data_dir = resolve_data_dir(None)?;
+    write_host_wrapper_at(
+        tabctl_binary_path,
+        profile_name,
+        &wrapper_dir.join("tabctl-host.sh"),
+        &data_dir,
+    )
+}
 
-    #[cfg(unix)]
-    let (filename, content) = {
-        let script = format!(
+pub(super) fn write_host_wrapper_at(
+    tabctl_binary_path: &str,
+    profile_name: &str,
+    wrapper_path: &Path,
+    data_dir: &str,
+) -> Result<PathBuf, String> {
+    if let Some(parent) = wrapper_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("failed to create wrapper dir: {e}"))?;
+    }
+    let config_dir = resolve_config_dir()?;
+    let content = format!(
             "#!/usr/bin/env bash\nset -euo pipefail\nexport TABCTL_PROFILE=\"{profile_name}\"\nexport TABCTL_CONFIG_DIR=\"{config_dir}\"\nexport TABCTL_DATA_DIR=\"{data_dir}\"\nexec \"{tabctl_binary_path}\" host\n"
-        );
-        ("tabctl-host.sh", script)
-    };
+    );
 
-    #[cfg(windows)]
-    let (filename, content) = {
-        let script = format!(
-            "@echo off\r\nset TABCTL_PROFILE={profile_name}\r\nset TABCTL_CONFIG_DIR={config_dir}\r\nset TABCTL_DATA_DIR={data_dir}\r\n\"{tabctl_binary_path}\" host\r\n"
-        );
-        ("tabctl-host.cmd", script)
-    };
-
-    let wrapper_path = wrapper_dir.join(filename);
-    fs::write(&wrapper_path, &content)
+    fs::write(wrapper_path, &content)
         .map_err(|e| format!("failed to write wrapper script: {e}"))?;
 
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&wrapper_path, fs::Permissions::from_mode(0o700))
+        fs::set_permissions(wrapper_path, fs::Permissions::from_mode(0o700))
             .map_err(|e| format!("failed to set wrapper permissions: {e}"))?;
     }
 
-    Ok(wrapper_path)
-}
-
-#[cfg(windows)]
-pub(super) fn write_registry_key(browser: &str, manifest_path: &Path) -> Result<String, String> {
-    use winreg::enums::*;
-    use winreg::RegKey;
-
-    let subkey = match browser {
-        "edge" => format!("Software\\Microsoft\\Edge\\NativeMessagingHosts\\{HOST_NAME}"),
-        "chrome" => format!("Software\\Google\\Chrome\\NativeMessagingHosts\\{HOST_NAME}"),
-        _ => return Err(format!("Unsupported browser for registry: {browser}")),
-    };
-
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let (key, _) = hkcu
-        .create_subkey(&subkey)
-        .map_err(|e| format!("Failed to create registry key: {e}"))?;
-
-    key.set_value("", &path_to_platform_string(manifest_path))
-        .map_err(|e| format!("Failed to set registry value: {e}"))?;
-
-    Ok(format!("HKCU\\{subkey}"))
+    Ok(wrapper_path.to_path_buf())
 }
 
 pub(super) fn write_native_manifest(
@@ -1311,11 +1277,7 @@ pub(super) fn write_native_manifest(
     user_data_dir: Option<&str>,
     force: bool,
 ) -> Result<PathBuf, String> {
-    let manifest_dir = if let Some(udd) = user_data_dir {
-        PathBuf::from(udd).join("NativeMessagingHosts")
-    } else {
-        resolve_manifest_dir(browser)?
-    };
+    let manifest_dir = resolve_profile_manifest_dir(browser, user_data_dir)?;
     fs::create_dir_all(&manifest_dir).map_err(|e| format!("failed to create manifest dir: {e}"))?;
 
     let abs_wrapper =

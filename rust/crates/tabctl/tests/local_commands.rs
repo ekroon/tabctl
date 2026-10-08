@@ -51,6 +51,8 @@ fn test_profile_lifecycle() {
 
     let profile_a = "test-profile-a";
     let profile_b = "test-profile-b";
+    let browser_a = sandbox.join("chrome-profile");
+    let browser_b = sandbox.join("edge-profile");
 
     // ── Setup two profiles ──
     let setup_a = run_tabctl_json(
@@ -67,6 +69,8 @@ fn test_profile_lifecycle() {
             profile_a,
             "--extension-dir",
             ext_str,
+            "--user-data-dir",
+            browser_a.to_str().unwrap(),
             "--force",
         ],
     )
@@ -87,6 +91,8 @@ fn test_profile_lifecycle() {
             profile_b,
             "--extension-dir",
             ext_str,
+            "--user-data-dir",
+            browser_b.to_str().unwrap(),
             "--force",
         ],
     )
@@ -184,7 +190,8 @@ fn test_doctor_command() {
 
     // Setup a profile first
     let profile = "test-doctor";
-    let _ = run_tabctl_json(
+    let browser_dir = sandbox.join("browser-profile");
+    run_tabctl_json(
         &bin,
         &root,
         profile,
@@ -198,9 +205,12 @@ fn test_doctor_command() {
             profile,
             "--extension-dir",
             ext_str,
+            "--user-data-dir",
+            browser_dir.to_str().unwrap(),
             "--force",
         ],
-    );
+    )
+    .expect("setup isolated doctor profile");
 
     // Run doctor (without --fix) — should not crash
     let doctor = run_tabctl_json(&bin, &root, profile, &config_home, &state_home, &["doctor"]);
@@ -229,7 +239,8 @@ fn test_policy_command() {
     let ext_str = extension_dir.to_str().expect("extension path to utf8");
 
     let profile = "test-policy";
-    let _ = run_tabctl_json(
+    let browser_dir = sandbox.join("browser-profile");
+    run_tabctl_json(
         &bin,
         &root,
         profile,
@@ -243,9 +254,12 @@ fn test_policy_command() {
             profile,
             "--extension-dir",
             ext_str,
+            "--user-data-dir",
+            browser_dir.to_str().unwrap(),
             "--force",
         ],
-    );
+    )
+    .expect("setup isolated policy profile");
 
     // Show policy
     let policy = run_tabctl_json(&bin, &root, profile, &config_home, &state_home, &["policy"]);

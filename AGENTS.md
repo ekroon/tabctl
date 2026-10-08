@@ -12,10 +12,10 @@ npm run test:integration  # Run integration tests (requires Chrome)
 ```
 
 A **split hook gate** is active via `core.hooksPath=.githooks` (set by `npm install`):
-- **pre-commit** (`.githooks/pre-commit`) runs fast unit checks (`npm run test:unit`).
+- **pre-commit** (`.githooks/pre-commit`) builds/bundles the extension and runs its pure byte-budget tests plus Rust unit checks (`npm run test:unit`).
 - **pre-push** (`.githooks/pre-push`) runs heavier checks (`npm run rust:verify` and `npm run test:integration`) when Rust/build/hook-related files changed.
-- **local cross-target checks** are opt-in via `npm run check:targets` / `make dev-check-targets`; they are not mandatory in pre-push because this workspace's SQLite dependency chain compiles C code during cross-target `cargo check`.
-- CI `wsl` job validates the WSL -> Windows invocation bridge (setup + Windows command/native-host invocation + integration handoff); it does not compile Rust inside WSL.
+- **local cross-target checks** are opt-in via `npm run check:targets` / `make dev-check-targets`; they check Apple Silicon and Intel macOS and require both rustup targets plus Xcode command-line tools.
+- Product support is macOS only, Edge and Chrome, with Unix-domain sockets. All CI and release jobs run on macOS.
 
 ## Project architecture
 
@@ -26,7 +26,7 @@ rust/
   crates/
     tabctl/      # Single binary: CLI + host entry point
     host/        # Native messaging host logic + command orchestration
-    shared/      # Shared utilities (config, profiles, WSL support)
+    shared/      # Shared utilities (config, profiles, protocol)
 src/
   extension/     # Chrome extension (background service worker) — only TypeScript component
     lib/
@@ -37,54 +37,68 @@ src/
 
 **Architecture:** The extension is a thin primitive layer (~16 Chrome API wrappers with `p:` prefix). All command orchestration lives in the Rust host (`rust/crates/host/src/host_impl/orchestrate/`), which sequences primitives per CLI request. This makes orchestration logic unit-testable without a browser.
 
-**Data flow:** CLI → Unix socket/named pipe → Host (`tabctl host`) → orchestration → primitive sequence → Native messaging → Extension → Chrome APIs
+**Data flow:** CLI → Unix-domain socket → Host (`tabctl host`) → orchestration → primitive sequence → Native messaging → Extension → Chrome APIs
 
 ## CLI Usage Rules for Agents
 
 ### Scope-First Rule
-Always specify scope options **before** running any query or mutation command. This ensures predictable results and avoids accidental broad operations.
+Choose and verify the scope **before** executing a browser query or mutation. Browser operations use `tabctl query`; scope is expressed as GraphQL field arguments, not legacy CLI flags.
 
 **Required scoping pattern:**
 ```bash
-# Good: Explicit scope
-tabctl list --window 123
-tabctl list --group "Work"
-tabctl list --tab 456 --tab 789
-tabctl close --tab 456 --confirm
+# Read only the intended window, group, or tab
+tabctl query '{ tabs(windowId: 123) { total hasMore items { tabId title url pinned groupId } } }'
+tabctl query '{ tabs(windowId: 123, groupTitle: "TEST-Work") { items { tabId title url } } }'
+tabctl query '{ tab(id: 456) { tabId windowId title url pinned groupId } }'
 
-# Bad: No scope (defaults to all, risky for mutations)
-tabctl close --confirm  # NEVER do this
+# Preview an explicitly selected, test-created tab in an isolated test profile
+tabctl --profile test-profile query 'mutation { closeTabs(tabIds: [456], dryRun: true) { txid dryRun plannedTabs skippedTabs tabs { tabId title url } skipped { tabId reason } } }'
 ```
 
-**Scope options (in order of specificity):**
-1. `--tab <id>` - Most specific, target individual tabs
-2. `--group <name>` or `--group-id <id>` - Target a group
-3. `--window <id>` - Target a window
-4. `--all` - Explicit "all" (only for read operations)
+Example IDs and `test-profile` are placeholders. Mutation examples must target only tabs created by the test, never normal user tabs.
+
+**Scope arguments (prefer the narrowest supported scope):**
+1. A specific tab: `tab(id: ...)` for reads; `tabIds: [...]` for mutations that accept them.
+2. A group: `groupId` or `groupTitle`, constrained by `windowId` where supported.
+3. A window: `windowId`.
+4. An intentionally unfiltered inventory read, such as `windows`; never an unscoped mutation.
+
+Arguments differ by field. In particular, `closeTabs` requires explicit `tabIds`; it does not accept window/group selectors. Inspect with a scoped read first, then pass the verified IDs. Use `tabctl schema` to check supported arguments.
 
 ### Required Scope Usage
-Always include an explicit scope option when running commands that accept scope (list, analyze, dedupe, inspect, report, close, archive, group-list). Use `--all` when you truly intend to target everything.
+Always scope reads such as `tabs`, `analyze`, `inspectTabs`, `readTabs`, and `reportTabs` to the intended window/group/tabs where supported. Select IDs explicitly for destructive mutations. There is no `--all` flag for GraphQL queries; an unfiltered read must be deliberate.
 
-### Confirmation Rule for Destructive Commands
-Destructive commands (`close`, `archive`, `dedupe --confirm`) require explicit confirmation AND explicit scope:
+### Preview and Confirmation Rules
+`closeTabs` and `deduplicateTabs` preview when `confirm` is omitted or false. `closeTabs(dryRun: true)` remains a preview even with `confirm: true`. Close previews return `dryRun: true`, no transaction ID, and planned/skipped targets; review the IDs and exclusion reasons before executing.
 
 ```bash
-# Pattern: scope first, then --confirm
-tabctl close --tab 456 --confirm
-tabctl close --group "Temp" --window 123 --confirm
-tabctl archive --window 123
+# After reviewing the preview, close only those test-created IDs
+tabctl --profile test-profile query 'mutation { closeTabs(tabIds: [456], confirm: true) { txid dryRun closedTabs skippedTabs skipped { tabId reason } } }'
 
-# For dedupe, always preview first:
-tabctl dedupe --window 123           # Preview plan
-tabctl dedupe --window 123 --confirm # Execute after review
+# Dedupe only a test-created window: preview first, then confirm
+tabctl --profile test-profile query 'mutation { deduplicateTabs(windowId: 123) { txid closedTabs candidateTabs { tabId title url } } }'
+tabctl --profile test-profile query 'mutation { deduplicateTabs(windowId: 123, confirm: true) { txid closedTabs } }'
+```
+
+`archiveTabs` executes immediately and has no `confirm` or `dryRun` argument. Inspect the selected test-created tabs first, then archive explicit IDs:
+
+```bash
+tabctl --profile test-profile query 'mutation { archiveTabs(tabIds: [456, 789]) { txid archivedTabs } }'
 ```
 
 ### Command Workflow
-1. **List first** - Use `tabctl list` with scope to see what will be affected
-2. **Verify IDs** - Confirm window/group/tab IDs before mutations
-3. **Execute with scope** - Run mutation with explicit `--tab`, `--group`, or `--window`
-4. **Check result** - Verify with `tabctl list` or `tabctl history`
-5. **Undo if needed** - Use `tabctl undo --latest` or `tabctl undo <txid>`
+1. **Read first** — Query scoped tabs/groups and follow pagination (`hasMore`/`offset`) when needed.
+2. **Verify IDs and ownership** — Confirm the selected profile, window/group/tab IDs, and that every mutation target was created by the test.
+3. **Preview where supported** — Review `closeTabs` planned/skipped targets or `deduplicateTabs` candidates.
+4. **Execute with explicit scope** — Confirm close/dedupe only after review; retain the returned `txid` for recovery.
+5. **Check the result** — Use fresh scoped GraphQL reads and `tabctl history`. A nonzero exit or GraphQL `errors` means failure, not success.
+6. **Undo by transaction ID** — Prefer the exact transaction over `latest`, which is safe only in a fully isolated test profile:
+
+```bash
+tabctl --profile test-profile query 'mutation { undoAction(txid: "tx-from-mutation") { txid summary } }'
+```
+
+Undo restores window placement, grouping, and ordering. Do not blindly replay an already-undone or uncertain transaction; stop and inspect its history/recovery error.
 
 ## Commit message style
 - Use Conventional Commits (`type(scope): subject`), with scope optional.
@@ -111,17 +125,18 @@ npm run bump:major    # major bump
 2. `npm test` + `npm run build`
 3. Commit, push, open PR
 4. `scripts/ci-wait-merge.sh <PR#> --tag v{NEW}` — waits for CI, merges (normal merge, not squash), tags, creates GitHub release
-5. The `release.yml` workflow builds binaries and publishes to npm
+5. The `release.yml` workflow publishes macOS Intel/Apple Silicon binaries and extension assets to GitHub Releases, and the root `tabctl` npm package with a universal macOS native executable and bundled extension. Both mise/GitHub and npm installation remain supported.
 
 **Merge strategy:** Always use normal merge for release PRs (not squash) to preserve commit identity.
 
 ## Scripts
 
 - `scripts/bump-version.js` — bumps `rust/Cargo.toml`, mirrors package versions, and refreshes lockfiles
-- `scripts/check-targets.sh` — optional local cross-target cargo check; requires extra host toolchains for Linux/Windows targets
+- `scripts/check-targets.sh` — optional cargo check of both macOS architectures
 - `scripts/ci-wait-merge.sh` — waits for CI, merges PR, tags, creates GitHub release
-- `scripts/test-mise-release.sh` — integration test comparing npm stable vs mise alpha channels
 - `scripts/gen-version.js` — generates extension manifest version at build time
+- `scripts/package-npm.js` — validates arm64/x86_64 release inputs and creates/verifies `dist/npm/tabctl` with `lipo`; no optional platform packages or postinstall download
+- `scripts/verify-npm-package.js` — verifies the actual tarball, offline npm bin link, version, and sandboxed setup without launching a browser
 
 ## Skills
 
@@ -134,9 +149,9 @@ The `skills/` directory contains agent skills installable via the Skills CLI (`n
 
 ## Principles (read first)
 - Only mutate tabs that the test itself created.
-- Never run `archive --all` or `close --apply` in a normal browsing session.
+- Never run unscoped destructive GraphQL mutations or mutate normal user tabs.
 - Use a unique, recognizable prefix for test groups and windows, e.g. `TEST-Tabctl-<timestamp>`.
-- Prefer `list`, `analyze`, and `report` for smoke tests; use `close` and `archive` only in a controlled test window.
+- Prefer scoped GraphQL `tabs`, `analyze`, and `reportTabs` reads for smoke tests; use `closeTabs` and `archiveTabs` only on test-created tabs in a controlled test window.
 - Always add or update tests for new features.
 - Always end work by running unit tests and a minimal smoke test in a new window you create (see Required end-of-task checks).
 
@@ -161,21 +176,24 @@ tabctl profile-show --json
 Check the `name` and `browser` fields in the output. To target a specific browser for a single command, use `--profile <name>`:
 
 ```bash
-tabctl list --profile chrome-work --all
+tabctl --profile chrome-work query '{ tabs(windowId: 123) { total items { tabId title url } } }'
 ```
 
 When creating smoke tests, ensure you are connected to the correct profile. Use `tabctl profile-list` to see all available profiles.
 
 ## Unit tests (no browser required)
-These tests validate the CLI/host helpers using a mocked socket and extension logic using a chrome API stub. No browser needed.
+These tests validate CLI/host helpers and the extension's pure native-message byte-budget boundary. No browser needed.
 
 Run:
-- `npm test` (builds first, then runs all unit tests)
+- `npm test` (builds/bundles first, then runs extension/packaging tests and Rust verification)
+- `npm run test:unit` (extension build and pure extension/packaging tests plus Rust tests; pre-commit gate)
+- `npm run test:extension` (compiled native-message tests only; requires a prior extension build)
+- `npm run test:packaging` (real tiny clang/lipo executables; no browser, Rust release build, or publishing)
 
 Notes:
-- Source in `src/tests/unit/`, compiled to `dist/tests/unit/`.
-- CLI tests use a mock socket to avoid browser interaction.
-- Extension tests (e.g., `extension.tabs.test.ts`) use a lightweight chrome stub on `globalThis.chrome` that records API calls and returns predictable results.
+- Extension byte-budget tests are in `src/extension/lib/native-message.test.ts`, compiled to `dist/extension/lib/native-message.test.js`, and run with Node's built-in test runner.
+- Browser behavior belongs in the isolated real-browser integration harness.
+- For type checks without a build, use `tsc -p tsconfig.json --noEmit`. Never leave `dist` with an unbundled background script: use `npm run build:extension` or `npm run build` before browser tests.
 
 ## Required end-of-task checks
 
@@ -183,7 +201,7 @@ Always finish by running the `/smoke-test` skill (`.github/skills/smoke-test/SKI
 1. `npm test` — unit tests
 2. `npm run test:integration` — integration tests (if Chrome is available)
 3. Isolated smoke profile verification
-4. Read-only live browser checks (`ping`, `list`, `analyze`, `report`)
+4. Read-only live browser checks (`ping` and scoped GraphQL `tabs`, `analyze`, `reportTabs`)
 5. Mutation round-trips (close + undo, archive + undo) in a disposable `TEST-Smoke-<timestamp>` window
 6. Automated cleanup of smoke-created tabs/windows and browser teardown
 
@@ -193,13 +211,13 @@ Always finish by running the `/smoke-test` skill (`.github/skills/smoke-test/SKI
 
 See `.github/skills/smoke-test/SKILL.md` for the full automated procedure — safe read-only checks, controlled mutation tests (close + undo, archive + undo) in a disposable `TEST-Smoke-*` window, and synthetic undo sanity checks. Do not run ad hoc live-browser smoke mutations outside the automated runner unless debugging a specific runner failure.
 
-Integration tests run against an isolated headless Chrome (`npm run test:integration`) and cover destructive paths safely. To test additional destructive commands (archive, dedupe), add Rust-side scenarios in `rust/crates/tabctl/tests/browser_integration.rs` (keep `scripts/ci/integration-bootstrap.js` as thin browser bootstrap only). On Windows, use `TABCTL_TRANSPORT=tcp`.
+Integration tests run against an isolated headless Chrome (`npm run test:integration`) and cover destructive paths safely. To test additional destructive commands (archive, dedupe), add Rust-side scenarios in `rust/crates/tabctl/tests/browser_integration.rs` (keep `scripts/ci/integration-bootstrap.js` as thin browser bootstrap only). Use the production macOS Unix-domain socket transport.
 
 ## Code architecture style
 
 This codebase follows the **progressive disclosure architecture** pattern (see the `agentic-progressive-disclosure-architecture` skill). Top-level files are declarative (module declarations + re-exports), with implementation in deeper modules. Each subtree has its own `AGENTS.md` describing its scope and constraints. When adding new modules, repeat this pattern: API shape first, forwarding second, implementation deepest.
 
 ## Hard stop rules
-- Never run `tabctl archive --all` or `tabctl close --apply` in a normal profile.
-- Never run `tabctl close` without explicit `--tab`, `--group`, or `--window` targets.
-- Always verify window ids and group names before any mutation.
+- Never run unscoped `archiveTabs`/`deduplicateTabs` or mutate normal user tabs.
+- Never run `closeTabs` without explicit, verified `tabIds`; always preview before confirming.
+- Always verify the profile, window/group/tab IDs, and test ownership before any mutation.

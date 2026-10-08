@@ -2,12 +2,11 @@
 "use strict";
 
 const { spawn } = require("node:child_process");
+const http = require("node:http");
 const path = require("node:path");
-const os = require("node:os");
 
 const tabctl = process.env.TABCTL_BIN || "./rust/target/debug/tabctl";
-const defaultTmpRoot =
-  process.platform === "win32" ? path.join(os.tmpdir(), "tctl-it") : path.join("/tmp", "tctl-it");
+const defaultTmpRoot = "/tmp/tctl-it";
 const shortTmpRoot = process.env.TABCTL_TEST_TMP_ROOT || defaultTmpRoot;
 let smokeBrowser = null;
 let smokeProfile = null;
@@ -19,6 +18,19 @@ let testWindow = null;
 let testGroup = null;
 const createdWindowIds = new Set();
 let finalizing = null;
+let fixtureServer = null;
+
+async function startFixturePage() {
+  fixtureServer = http.createServer((_request, response) => {
+    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    response.end("<!doctype html><title>Tabctl smoke fixture</title><main><h1>Tabctl smoke fixture</h1><p>Deterministic local content for browser extraction and screenshots.</p></main>");
+  });
+  await new Promise((resolve, reject) => {
+    fixtureServer.once("error", reject);
+    fixtureServer.listen(0, "127.0.0.1", resolve);
+  });
+  return `http://127.0.0.1:${fixtureServer.address().port}`;
+}
 
 function log(message) {
   const ts = new Date().toISOString();
@@ -40,19 +52,10 @@ function run(command, args, options = {}) {
     const env = {
       ...process.env,
       TABCTL_TEST_TMP_ROOT: shortTmpRoot,
-      TABCTL_BOOTSTRAP_TMP_ROOT: process.env.TABCTL_BOOTSTRAP_TMP_ROOT || shortTmpRoot,
     };
     if (options.scrubTabctlEnv === true) {
-      for (const key of [
-        "TABCTL_PROFILE",
-        "TABCTL_CONFIG_DIR",
-        "TABCTL_DATA_DIR",
-        "TABCTL_STATE_DIR",
-        "TABCTL_TRANSPORT",
-        "TABCTL_TCP_PORT",
-        "TABCTL_AUTH_TOKEN",
-      ]) {
-        delete env[key];
+      for (const key of Object.keys(env)) {
+        if (key.startsWith("TABCTL_")) delete env[key];
       }
     }
     Object.assign(env, options.env || {});
@@ -95,7 +98,6 @@ function run(command, args, options = {}) {
       clearInterval(heartbeat);
       reject(err);
     });
-    child.on("exit", finish);
     child.on("close", finish);
   });
 }
@@ -120,8 +122,10 @@ function buildTabctlSmokeEnv(ready) {
   return {
     TABCTL_CONFIG_DIR: ready.configDir,
     TABCTL_STATE_DIR: ready.dataDir,
-    XDG_CONFIG_HOME: path.join(ready.tmpDir, "xdg-config"),
-    XDG_STATE_HOME: path.join(ready.tmpDir, "xdg-state"),
+    XDG_CONFIG_HOME: path.join(ready.tmpDir, "c"),
+    XDG_STATE_HOME: path.join(ready.tmpDir, "s"),
+    TABCTL_AUTO_SYNC_MODE: "off",
+    HOME: ready.tmpDir,
   };
 }
 
@@ -171,8 +175,8 @@ async function startSmokeBrowser() {
     stdio: ["ignore", "pipe", "inherit"],
     env: {
       ...process.env,
+      TABCTL_BIN: path.resolve(tabctl),
       TABCTL_TEST_TMP_ROOT: shortTmpRoot,
-      TABCTL_BOOTSTRAP_TMP_ROOT: process.env.TABCTL_BOOTSTRAP_TMP_ROOT || shortTmpRoot,
     },
   });
 
@@ -283,27 +287,21 @@ async function cleanupSmokeTabs() {
 }
 
 async function stopSmokeBrowser() {
-  if (!smokeBrowser || smokeBrowser.exitCode !== null) return;
-  log("Stopping isolated smoke browser");
-  try {
-    smokeBrowser.kill("SIGTERM");
-  } catch {
-    // already gone
+  if (!smokeBrowser) return;
+  if (smokeBrowser.exitCode !== null) {
+    if (smokeBrowser.exitCode !== 0) throw new Error(`Browser fixture exited ${smokeBrowser.exitCode}`);
+    return;
   }
-  await new Promise((resolve) => {
+  log("Stopping isolated smoke browser");
+  smokeBrowser.kill("SIGTERM");
+  await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
-      if (smokeBrowser.exitCode === null) {
-        try {
-          smokeBrowser.kill("SIGKILL");
-        } catch {
-          // already gone
-        }
-      }
-      resolve();
-    }, 3_000);
-    smokeBrowser.on("exit", () => {
+      reject(new Error("Browser fixture did not finish cleanup within 15s"));
+    }, 15_000);
+    smokeBrowser.on("exit", (code, signal) => {
       clearTimeout(timeout);
-      resolve();
+      if (code === 0) resolve();
+      else reject(new Error(`Browser fixture cleanup failed (${signal || code})`));
     });
   });
 }
@@ -321,6 +319,10 @@ async function finalizeSmokeRun() {
       await stopSmokeBrowser();
     } catch (err) {
       errors.push(`stop smoke browser: ${err.message}`);
+    }
+    if (fixtureServer) {
+      await new Promise((resolve, reject) => fixtureServer.close((error) => error ? reject(error) : resolve()));
+      fixtureServer = null;
     }
     if (errors.length > 0) {
       throw new Error(errors.join("; "));
@@ -349,6 +351,8 @@ async function main() {
 
   log("Step 1/8: build");
   await run("npm", ["run", "build"]);
+  await run("npm", ["run", "test:extension"]);
+  await run("npm", ["run", "test:packaging"]);
 
   log("Step 2/8: Rust verify");
   await run("npm", ["run", "rust:verify"]);
@@ -375,7 +379,8 @@ async function main() {
   expect(report.data.reportTabs.totals.tabs >= 0, "reportTabs returned an invalid total");
 
   log("Step 6/8: readTabs markdown extraction");
-  const readOpen = await query('mutation { openTabs(urls: ["https://example.com"], newWindow: true) { windowId tabs { tabId url title } } }');
+  const fixtureUrl = await startFixturePage();
+  const readOpen = await query(`mutation { openTabs(urls: ["${fixtureUrl}/read"], newWindow: true) { windowId tabs { tabId url title } } }`);
   readWindow = readOpen.data.openTabs.windowId;
   readTab = readOpen.data.openTabs.tabs[0].tabId;
   createdWindowIds.add(readWindow);
@@ -386,24 +391,30 @@ async function main() {
   expect(read.data.readTabs.totals.tabs === 1, "readTabs did not return exactly one tab");
   expect(readEntry.status === "READ", `readTabs status was ${readEntry.status}: ${readEntry.error || readEntry.emptyReason || "no detail"}`);
   expect(readEntry.chars > 0, "readTabs returned empty content");
-  expect(readEntry.markdown.length > 0, "readTabs returned empty markdown");
+  expect(readEntry.markdown.includes("Deterministic local content"), "readTabs did not extract fixture content");
   log(`readTabs extracted ${readEntry.chars} chars from ${readEntry.url}`);
 
   log("Step 7/8: mutation, undo, screenshot, and inspect checks");
   testGroup = `TEST-Smoke-${Date.now()}`;
-  const opened = await query(`mutation { openTabs(urls: ["https://example.com", "https://example.org", "https://example.net"], newWindow: true, group: "${testGroup}") { windowId groupId tabs { tabId windowId url title groupId groupTitle } } }`);
+  const opened = await query(`mutation { openTabs(urls: ["${fixtureUrl}/one", "${fixtureUrl}/two", "${fixtureUrl}/three"], newWindow: true, group: "${testGroup}") { windowId groupId tabs { tabId windowId url title groupId groupTitle } } }`);
   testWindow = opened.data.openTabs.windowId;
   createdWindowIds.add(testWindow);
   const firstTab = opened.data.openTabs.tabs[0].tabId;
   log(`Opened smoke window: window=${testWindow} group=${testGroup} firstTab=${firstTab}`);
   const windowCheck = await query(`query { window(id: ${testWindow}) { windowId tabs { tabId url groupTitle index } groups { groupId title color collapsed tabCount } } }`);
   expect(windowCheck.data.window.windowId === testWindow, "smoke window was not found after openTabs");
+  async function restorableState(windowId) {
+    const result = await query(`query { window(id: ${windowId}) { tabs { url index groupTitle active } groups { title color collapsed } } }`);
+    return JSON.stringify(result.data.window);
+  }
+  const beforeMutation = await restorableState(testWindow);
 
   const closed = await query(`mutation { closeTabs(tabIds: [${firstTab}], confirm: true) { txid closedTabs } }`);
   expect(closed.data.closeTabs.closedTabs === 1, "closeTabs did not close exactly one tab");
   const closeTxid = closed.data.closeTabs.txid;
   log(`Closed one tab: txid=${closeTxid}`);
   await query(`mutation { undoAction(txid: "${closeTxid}") { txid summary } }`);
+  expect(await restorableState(testWindow) === beforeMutation, "undo close did not restore exact order, active tab and group metadata");
   log("Undo close succeeded");
 
   const archived = await query(`mutation { archiveTabs(windowId: ${testWindow}) { txid archivedTabs } }`);
@@ -415,12 +426,14 @@ async function main() {
 
   const restored = await query("query { tabs(limit: 200) { items { tabId windowId groupTitle } } }");
   const restoredTabs = restored.data.tabs.items.filter((tab) => tab.groupTitle === testGroup);
-  expect(restoredTabs.length > 0, "undo archive did not restore any grouped smoke tabs");
+  expect(restoredTabs.length === 3, "undo archive did not restore all three grouped smoke tabs");
   testWindow = restoredTabs[0].windowId;
   createdWindowIds.add(testWindow);
+  expect(await restorableState(testWindow) === beforeMutation, "undo archive did not restore exact order, active tab and group metadata");
   const restoredFirstTab = restoredTabs[0].tabId;
   const screenshots = await query(`query { captureScreenshots(tabIds: [${restoredFirstTab}], mode: "viewport") { totals { tabs tiles } entries { tabId tiles { index width height } error { message } } } }`);
   expect(screenshots.data.captureScreenshots.totals.tabs === 1, "captureScreenshots did not return one tab");
+  expect(screenshots.data.captureScreenshots.entries[0].tiles.length > 0 && !screenshots.data.captureScreenshots.entries[0].error, "captureScreenshots did not capture an image");
   const inspected = await query(`query { inspectTabs(tabIds: [${restoredFirstTab}], signals: ["page-meta"], waitFor: "dom") { totals { tabs signals tasks } entries { tabId signals { name valueJson } } } }`);
   expect(inspected.data.inspectTabs.totals.tabs === 1, "inspectTabs did not return one tab");
 
@@ -431,7 +444,6 @@ async function main() {
   readWindow = null;
   testWindow = null;
   testGroup = null;
-  log("Smoke test completed successfully");
 }
 
 main()
@@ -442,6 +454,7 @@ main()
   .finally(async () => {
     try {
       await finalizeSmokeRun();
+      if (!process.exitCode) log("Smoke test completed successfully");
     } catch (err) {
       log(`Cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;

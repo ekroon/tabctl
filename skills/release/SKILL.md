@@ -28,14 +28,20 @@ The manual flow below remains the fallback/operator path when you need to releas
 All version files must stay in sync. The Rust workspace manifest is the canonical Rust version source, and `scripts/bump-version.js` (exposed via `npm run bump:*`) updates the mirrored package versions in one command. The release workflow (`release.yml`) validates they match:
 
 1. `rust/Cargo.toml` — workspace package version (Rust source of truth)
-2. `package.json` — root npm package version (mirrors the workspace version) and `optionalDependencies.tabctl-win32-x64`
+2. `package.json` — root macOS npm package version (mirrors the workspace version)
 3. `package-lock.json` — lockfile
-4. `packages/win32-x64/package.json` — Windows platform package
-5. `rust/crates/tabctl/Cargo.toml` — main Rust binary (inherits workspace version)
-6. `rust/crates/host/Cargo.toml` — host crate (inherits workspace version)
-7. `rust/crates/graphql/Cargo.toml` — GraphQL crate (inherits workspace version)
-8. `rust/crates/shared/Cargo.toml` — shared crate (inherits workspace version)
-9. `rust/Cargo.lock` — Rust lockfile
+4. `rust/crates/tabctl/Cargo.toml` — main Rust binary (inherits workspace version)
+5. `rust/crates/host/Cargo.toml` — host crate (inherits workspace version)
+6. `rust/crates/graphql/Cargo.toml` — GraphQL crate (inherits workspace version)
+7. `rust/crates/shared/Cargo.toml` — shared crate (inherits workspace version)
+8. `rust/Cargo.lock` — Rust lockfile
+
+Distribution supports both GitHub Releases/mise and `npm install -g tabctl`.
+GitHub assets remain separate macOS Apple Silicon/Intel binaries plus the
+extension archive and checksum. The root npm package includes a universal macOS
+native executable and the extension, with no JS CLI, optional platform package,
+or postinstall download. All release jobs, including metadata preparation, Rust
+builds and npm native packaging/validation, run on macOS.
 
 Never edit these version fields manually. Always use `npm run bump:<kind>`.
 
@@ -120,7 +126,7 @@ Release plan:
   6. Push branch, open PR
   7. Wait for CI, merge PR (normal merge, not squash)
   8. Tag v{NEW} on main
-  9. Create GitHub Release (triggers release.yml → npm publish + binary builds)
+  9. Create GitHub Release (triggers release.yml → macOS binaries + extension assets + root macOS npm package)
 ```
 
 Ask the user to confirm the version. Offer the recommended bump plus alternatives.
@@ -134,7 +140,7 @@ git checkout -b "chore/release-v${NEW}"
 
 ### Step 5: Update all version files
 
-Use the bump script which updates all version files (package.json, package-lock.json, packages/win32-x64/package.json, 3× Cargo.toml, Cargo.lock) in one command:
+Use the bump script which updates the Rust workspace version, package.json, package-lock.json, and Cargo.lock in one command:
 
 ```bash
 # For the recommended bump type:
@@ -172,9 +178,7 @@ If the build fails, stop and report the failure. Do NOT proceed with the release
 ### Step 8: Commit
 
 ```bash
-git add package.json package-lock.json packages/win32-x64/package.json \
-       rust/crates/tabctl/Cargo.toml rust/crates/host/Cargo.toml \
-       rust/crates/graphql/Cargo.toml rust/crates/shared/Cargo.toml rust/Cargo.lock
+git add package.json package-lock.json rust/Cargo.toml rust/Cargo.lock
 git commit -m "chore(release): v${NEW}"
 ```
 
@@ -208,7 +212,12 @@ This script:
 5. Pushes the tag
 6. Creates a GitHub release (with `--prerelease` for `-alpha.N` / `-rc.N` versions)
 
-The release triggers the `release.yml` workflow which builds binaries and publishes to npm.
+The release triggers `release.yml`: two macOS binary archives and extension
+assets are published to GitHub Releases. The macOS `npm_publish` job consumes
+those same build artifacts, combines the native slices with `lipo`, packs and
+verifies an offline installation and isolated setup, then publishes only the
+root `tabctl` package using provenance and the `alpha`/`rc`/`latest` channel.
+`PUBLISH_NPM=false` can skip npm publishing without removing GitHub releases.
 
 After completion, display the release URL so the user can review.
 

@@ -70,12 +70,31 @@ pub(crate) struct Group {
 /// Result of a closeTabs mutation.
 #[derive(Debug, Clone, GraphQLObject)]
 pub(crate) struct CloseResult {
-    /// Transaction identifier — pass to `undo` to reverse the close.
-    pub txid: String,
+    /// Transaction identifier — pass to `undoAction` to reverse the close.
+    pub txid: Option<String>,
+    /// Reason durable undo is unavailable for a completed close, otherwise null.
+    pub undo_unavailable: Option<String>,
     /// Number of tabs actually closed.
     pub closed_tabs: i32,
+    /// Whether this result is a non-mutating preview.
+    pub dry_run: bool,
+    /// Number of eligible tabs selected by the close plan.
+    pub planned_tabs: i32,
+    /// Number of tabs excluded from the plan or actual close.
+    pub skipped_tabs: i32,
+    /// Individual policy exclusions or failed closes.
+    pub skipped: Vec<SkippedTab>,
+    /// Tabs selected by the host's close plan.
+    pub tabs: Vec<Tab>,
     /// Tabs remaining in the browser after the close.
     pub remaining_tabs: Vec<Tab>,
+}
+
+/// A tab excluded from a close plan or close operation.
+#[derive(Debug, Clone, GraphQLObject)]
+pub(crate) struct SkippedTab {
+    pub tab_id: i32,
+    pub reason: String,
 }
 
 /// A URL that was skipped during an openTabs mutation.
@@ -534,10 +553,23 @@ pub(crate) struct ReadTabResult {
 /// Result of a ping query.
 #[derive(Debug, Clone, GraphQLObject)]
 pub(crate) struct PingResult {
-    /// Whether the host responded.
+    /// Whether a real host-to-extension round trip succeeded.
     pub ok: bool,
     /// Round-trip latency in milliseconds.
     pub latency_ms: f64,
+    /// Extension identity returned by the browser.
+    pub runtime_id: String,
+    /// Extension version.
+    pub version: String,
+    pub base_version: Option<String>,
+    pub git_sha: Option<String>,
+    pub dirty: Option<bool>,
+    pub host_version: Option<String>,
+    pub host_base_version: Option<String>,
+    pub host_git_sha: Option<String>,
+    pub host_dirty: Option<bool>,
+    pub versions_in_sync: Option<bool>,
+    pub native_channel_available: bool,
 }
 
 /// A single history entry.

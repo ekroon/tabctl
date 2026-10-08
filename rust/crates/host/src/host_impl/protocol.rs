@@ -58,6 +58,7 @@ pub(super) fn local_actions() -> HashSet<&'static str> {
 
 pub(super) fn undo_actions() -> HashSet<&'static str> {
     HashSet::from([
+        "open",
         "archive",
         "close",
         "group-update",
@@ -75,6 +76,15 @@ pub(super) fn write_native_message<W: Write>(
     message: &NativeMessage,
 ) -> io::Result<()> {
     let payload = serde_json::to_vec(message)?;
+    if payload.len() > MAX_NATIVE_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "native message too large: {} bytes (max {MAX_NATIVE_MESSAGE_BYTES})",
+                payload.len()
+            ),
+        ));
+    }
     let len = payload.len() as u32;
     writer.write_all(&len.to_le_bytes())?;
     writer.write_all(&payload)?;
@@ -84,11 +94,15 @@ pub(super) fn write_native_message<W: Write>(
 
 pub(super) fn read_native_message<R: Read>(reader: &mut R) -> io::Result<Option<NativeMessage>> {
     let mut len_buf = [0_u8; 4];
-    match reader.read_exact(&mut len_buf) {
-        Ok(_) => {}
-        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(err) => return Err(err),
+    loop {
+        match reader.read(&mut len_buf[..1]) {
+            Ok(0) => return Ok(None),
+            Ok(_) => break,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
     }
+    reader.read_exact(&mut len_buf[1..])?;
     let len = u32::from_le_bytes(len_buf) as usize;
     if len > MAX_NATIVE_MESSAGE_BYTES {
         return Err(io::Error::new(
@@ -158,31 +172,8 @@ pub(super) fn value_object(input: Option<Value>) -> Map<String, Value> {
         .unwrap_or_default()
 }
 
-pub(super) fn host_ping_data(native_channel_available: bool) -> Map<String, Value> {
-    let mut data = Map::new();
-    data.insert("now".to_string(), Value::Number(now_ms().into()));
-    data.insert("component".to_string(), Value::String("host".to_string()));
-    data.insert(
-        "hostVersion".to_string(),
-        Value::String(host_version().to_string()),
-    );
-    data.insert(
-        "hostBaseVersion".to_string(),
-        Value::String(base_version().to_string()),
-    );
-    data.insert(
-        "hostGitSha".to_string(),
-        Value::String(git_sha().to_string()),
-    );
-    data.insert("hostDirty".to_string(), Value::Bool(is_dirty()));
-    data.insert(
-        "nativeChannelAvailable".to_string(),
-        Value::Bool(native_channel_available),
-    );
-    data
-}
-
 pub(super) fn add_ping_metadata(mut data: Map<String, Value>) -> Map<String, Value> {
+    data.insert("nativeChannelAvailable".to_string(), Value::Bool(true));
     let extension_version = data
         .get("version")
         .and_then(|v| v.as_str())
@@ -213,5 +204,53 @@ fn strip_dev_suffix(version: &str) -> &str {
         &version[..idx]
     } else {
         version
+    }
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::*;
+
+    #[test]
+    fn eof_is_clean_only_before_any_header_bytes() {
+        assert!(read_native_message(&mut &[][..]).unwrap().is_none());
+        for length in 1..4 {
+            let bytes = [0_u8; 3];
+            assert_eq!(
+                read_native_message(&mut &bytes[..length])
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::UnexpectedEof
+            );
+        }
+        let mut truncated = Vec::from(10_u32.to_le_bytes());
+        truncated.extend_from_slice(b"{}");
+        assert_eq!(
+            read_native_message(&mut truncated.as_slice())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[test]
+    fn oversized_outbound_frame_is_rejected_before_writing() {
+        let message = NativeMessage {
+            id: "oversized".into(),
+            action: None,
+            ok: Some(true),
+            progress: None,
+            params: None,
+            data: Some(Value::String("x".repeat(MAX_NATIVE_MESSAGE_BYTES))),
+            error: None,
+        };
+        let mut output = Vec::new();
+        assert_eq!(
+            write_native_message(&mut output, &message)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(output.is_empty());
     }
 }

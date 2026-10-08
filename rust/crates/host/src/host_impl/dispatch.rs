@@ -4,7 +4,7 @@ use std::process;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use tabctl_shared::{ProtocolError, RequestEnvelope, ResponseEnvelope};
+use tabctl_shared::{NativeMessage, ProtocolError, RequestEnvelope, ResponseEnvelope};
 
 use super::protocol::{
     base_response, host_version, log_line, read_native_message, trace_line, write_native_message,
@@ -141,55 +141,60 @@ pub(super) fn start_request_timeout_reaper(
     });
 }
 
-fn start_native_reader_with<R>(
-    mut reader: R,
-    state: Arc<Mutex<HostState>>,
-    clients: Clients,
-    native_out: NativeWriter,
-    exit_on_eof: bool,
-) where
-    R: Read + Send + 'static,
-{
-    thread::spawn(move || {
-        loop {
-            match read_native_message(&mut reader) {
-                Ok(Some(message)) => {
-                    trace_line(&format!(
-                        "recv native: id={} ok={} progress={} action={}",
-                        message.id,
-                        message.ok.unwrap_or(false),
-                        message.progress.unwrap_or(false),
-                        message.action.as_deref().unwrap_or("<none>")
-                    ));
-                    let effects = {
-                        let Ok(mut guard) = state.lock() else {
-                            continue;
-                        };
-                        guard.handle_native_message(message)
-                    };
-                    for effect in effects {
-                        dispatch_effect(effect, &state, &clients, &native_out);
-                    }
-                }
-                Ok(None) => break,
-                Err(err) => {
-                    log_line(&format!("failed to read native message: {err}"));
-                    break;
-                }
-            }
-        }
-        if exit_on_eof {
-            process::exit(0);
-        }
-    });
-}
-
 pub(super) fn start_native_reader(
     state: Arc<Mutex<HostState>>,
     clients: Clients,
     native_out: NativeWriter,
 ) {
-    start_native_reader_with(io::stdin(), state, clients, native_out, true);
+    thread::spawn(move || {
+        let mut reader = io::stdin();
+        let outcome = read_native_messages(&mut reader, |message| {
+            trace_line(&format!(
+                "recv native: id={} ok={} progress={} action={}",
+                message.id,
+                message.ok.unwrap_or(false),
+                message.progress.unwrap_or(false),
+                message.action.as_deref().unwrap_or("<none>")
+            ));
+            let effects = {
+                let Ok(mut guard) = state.lock() else {
+                    return;
+                };
+                guard.handle_native_message(message)
+            };
+            for effect in effects {
+                dispatch_effect(effect, &state, &clients, &native_out);
+            }
+        });
+        let (message, hint) = match &outcome {
+            Ok(()) => ("Native browser channel disconnected".to_string(), None),
+            Err(err) => {
+                log_line(&format!("failed to read native message: {err}"));
+                (
+                    "Invalid native browser message".to_string(),
+                    Some(err.to_string()),
+                )
+            }
+        };
+        let effects = state
+            .lock()
+            .map(|mut guard| guard.fail_all_pending_requests(message, hint))
+            .unwrap_or_default();
+        for effect in effects {
+            dispatch_effect(effect, &state, &clients, &native_out);
+        }
+        process::exit(i32::from(outcome.is_err()));
+    });
+}
+
+fn read_native_messages(
+    reader: &mut impl Read,
+    mut receive: impl FnMut(NativeMessage),
+) -> io::Result<()> {
+    while let Some(message) = read_native_message(reader)? {
+        receive(message);
+    }
+    Ok(())
 }
 
 pub(super) fn handle_client(
@@ -198,8 +203,6 @@ pub(super) fn handle_client(
     state: Arc<Mutex<HostState>>,
     clients: Clients,
     native_out: NativeWriter,
-    expected_auth_token: Option<Arc<String>>,
-    close_after_first_request: bool,
 ) {
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
@@ -228,40 +231,10 @@ pub(super) fn handle_client(
         let request = serde_json::from_str::<RequestEnvelope>(trimmed);
         let effects = match request {
             Ok(request) => {
-                if let Some(ref expected) = expected_auth_token {
-                    let provided = request.auth_token.as_deref().unwrap_or("");
-                    if provided != expected.as_str() {
-                        vec![HostEffect::Respond {
-                            client_id,
-                            payload: ResponseEnvelope {
-                                ok: false,
-                                action: None,
-                                request_id: request.id,
-                                component: Some("host".to_string()),
-                                version: Some(host_version().to_string()),
-                                progress: None,
-                                data: None,
-                                error: Some(ProtocolError {
-                                    message: "Authentication failed".to_string(),
-                                    hint: Some(
-                                        "Invalid or missing auth token for TCP connection"
-                                            .to_string(),
-                                    ),
-                                }),
-                            },
-                        }]
-                    } else {
-                        let Ok(mut guard) = state.lock() else {
-                            continue;
-                        };
-                        guard.handle_cli_request(client_id, request)
-                    }
-                } else {
-                    let Ok(mut guard) = state.lock() else {
-                        continue;
-                    };
-                    guard.handle_cli_request(client_id, request)
-                }
+                let Ok(mut guard) = state.lock() else {
+                    continue;
+                };
+                guard.handle_cli_request(client_id, request)
             }
             Err(_) => {
                 vec![HostEffect::Respond {
@@ -286,10 +259,6 @@ pub(super) fn handle_client(
         for effect in effects {
             dispatch_effect(effect, &state, &clients, &native_out);
         }
-
-        if close_after_first_request {
-            break;
-        }
     }
 
     if !saw_request {
@@ -300,12 +269,9 @@ pub(super) fn handle_client(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host_impl::protocol::{create_id, now_ms, read_native_message};
+    use crate::host_impl::protocol::{create_id, now_ms};
     use std::fs;
     use std::io::{Cursor, Result as IoResult};
-    use std::net::{TcpListener, TcpStream};
-    use std::time::{Duration, Instant};
-    use tabctl_shared::{NativeMessage, ResponseEnvelope};
 
     struct SharedBufferWriter(Arc<Mutex<Vec<u8>>>);
 
@@ -322,23 +288,30 @@ mod tests {
         }
     }
 
-    fn test_state(native_channel_available: bool) -> Arc<Mutex<HostState>> {
-        // Each call gets its own temp subdirectory so the undo log, focus DB,
-        // and HostState's derived `state.db` (derived from the undo log's
-        // parent) never collide between tests and never land in the crate
-        // working directory.
-        let base = std::env::temp_dir().join(format!(
-            "tabctl-host-dispatch-{}-{}",
-            now_ms(),
-            create_id("test")
-        ));
-        fs::create_dir_all(&base).expect("create dispatch test temp dir");
-        Arc::new(Mutex::new(HostState::new_with_native_channel(
+    struct FixtureRoot(std::path::PathBuf);
+
+    impl Drop for FixtureRoot {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).expect("clean dispatch fixture");
+        }
+    }
+
+    fn test_state(native_channel_available: bool) -> (Arc<Mutex<HostState>>, FixtureRoot) {
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/dispatch-tests")
+            .join(format!(
+                "tabctl-host-dispatch-{}-{}",
+                now_ms(),
+                create_id("test")
+            ));
+        fs::create_dir_all(&base).expect("create isolated dispatch test fixture");
+        let state = Arc::new(Mutex::new(HostState::new_with_native_channel(
             base.join("dispatch-test-undo.jsonl"),
             base.join("dispatch-test-focus.json"),
             None,
             native_channel_available,
-        )))
+        )));
+        (state, FixtureRoot(base))
     }
 
     fn native_sink() -> (NativeWriter, Arc<Mutex<Vec<u8>>>) {
@@ -359,8 +332,25 @@ mod tests {
     }
 
     #[test]
+    fn native_reader_distinguishes_clean_eof_from_invalid_or_oversized_input() {
+        assert!(read_native_messages(&mut Cursor::new(Vec::<u8>::new()), |_| {}).is_ok());
+        for input in [
+            vec![1, 0],
+            [1_u32.to_le_bytes().as_slice(), b"{".as_slice()].concat(),
+            ((super::super::protocol::MAX_NATIVE_MESSAGE_BYTES + 1) as u32)
+                .to_le_bytes()
+                .to_vec(),
+        ] {
+            assert!(read_native_messages(&mut Cursor::new(input), |_| {
+                panic!("invalid input must never be delivered")
+            })
+            .is_err());
+        }
+    }
+
+    #[test]
     fn handle_client_keeps_writer_registered_after_request_eof_for_async_response() {
-        let state = test_state(true);
+        let (state, _fixture) = test_state(true);
         let clients: Clients = Arc::new(Mutex::new(HashMap::new()));
         let sink = Arc::new(Mutex::new(Vec::new()));
         let writer: ClientWriter = Arc::new(Mutex::new(Box::new(SharedBufferWriter(sink))));
@@ -375,49 +365,8 @@ mod tests {
             state,
             clients.clone(),
             native_out,
-            None,
-            false,
         );
 
-        assert!(
-            clients.lock().unwrap().contains_key(&client_id),
-            "client writer should remain registered for async response delivery"
-        );
-    }
-
-    #[test]
-    fn handle_client_stops_after_first_request_when_requested() {
-        let state = test_state(true);
-        let clients: Clients = Arc::new(Mutex::new(HashMap::new()));
-        let sink = Arc::new(Mutex::new(Vec::new()));
-        let writer: ClientWriter = Arc::new(Mutex::new(Box::new(SharedBufferWriter(sink))));
-        let client_id = 43;
-        clients.lock().unwrap().insert(client_id, writer);
-
-        let first = r#"{"id":"req-43","action":"snapshot","params":{}}"#;
-        let second = r#"{"id":"req-44","action":"snapshot","params":{}}"#;
-        let (native_out, native_sink) = native_sink();
-        handle_client(
-            client_id,
-            Box::new(Cursor::new(format!("{first}\n{second}\n").into_bytes())),
-            state,
-            clients.clone(),
-            native_out,
-            None,
-            true,
-        );
-
-        let mut cursor = Cursor::new(native_sink.lock().unwrap().clone());
-        let native_request = read_native_message(&mut cursor)
-            .expect("decode first native request")
-            .expect("first native request exists");
-        assert_eq!(native_request.action.as_deref(), Some("p:snapshot"));
-        assert!(
-            read_native_message(&mut cursor)
-                .expect("decode remaining native requests")
-                .is_none(),
-            "close-after-first-request should stop before reading another request"
-        );
         assert!(
             clients.lock().unwrap().contains_key(&client_id),
             "client writer should remain registered for async response delivery"
@@ -426,7 +375,7 @@ mod tests {
 
     #[test]
     fn handle_client_removes_writer_when_no_request_was_read() {
-        let state = test_state(true);
+        let (state, _fixture) = test_state(true);
         let clients: Clients = Arc::new(Mutex::new(HashMap::new()));
         let sink = Arc::new(Mutex::new(Vec::new()));
         let writer: ClientWriter = Arc::new(Mutex::new(Box::new(SharedBufferWriter(sink))));
@@ -440,8 +389,6 @@ mod tests {
             state,
             clients.clone(),
             native_out,
-            None,
-            false,
         );
 
         assert!(
@@ -452,7 +399,7 @@ mod tests {
 
     #[test]
     fn final_response_removes_client_after_write() {
-        let state = test_state(true);
+        let (state, _fixture) = test_state(true);
         let clients: Clients = Arc::new(Mutex::new(HashMap::new()));
         let sink = Arc::new(Mutex::new(Vec::new()));
         let writer: ClientWriter = Arc::new(Mutex::new(Box::new(SharedBufferWriter(sink.clone()))));
@@ -482,156 +429,5 @@ mod tests {
         assert!(!clients.lock().unwrap().contains_key(&client_id));
         let output = String::from_utf8(sink.lock().unwrap().clone()).unwrap();
         assert!(output.contains("\"requestId\":\"req-9\""));
-    }
-
-    #[test]
-    fn end_to_end_async_native_response_is_returned_to_client() {
-        let state = test_state(true);
-        let clients: Clients = Arc::new(Mutex::new(HashMap::new()));
-        let client_sink = Arc::new(Mutex::new(Vec::new()));
-        let client_writer: ClientWriter = Arc::new(Mutex::new(Box::new(SharedBufferWriter(
-            client_sink.clone(),
-        ))));
-        let client_id = 15;
-        clients.lock().unwrap().insert(client_id, client_writer);
-
-        let (native_out, native_sink) = native_sink();
-        let request = r#"{"id":"req-15","action":"snapshot","params":{}}"#;
-        handle_client(
-            client_id,
-            Box::new(Cursor::new(format!("{request}\n").into_bytes())),
-            state.clone(),
-            clients.clone(),
-            native_out.clone(),
-            None,
-            false,
-        );
-
-        let native_bytes = native_sink.lock().unwrap().clone();
-        let native_request = read_native_message(&mut Cursor::new(native_bytes))
-            .expect("decode native request")
-            .expect("native request exists");
-        assert_eq!(native_request.action.as_deref(), Some("p:snapshot"));
-
-        let effects = state.lock().unwrap().handle_native_message(NativeMessage {
-            id: native_request.id,
-            action: Some("p:snapshot".to_string()),
-            ok: Some(true),
-            progress: None,
-            params: None,
-            data: Some(serde_json::json!({
-                "windows": [],
-                "generatedAt": 1700000000000_u64
-            })),
-            error: None,
-        });
-        for effect in effects {
-            dispatch_effect(effect, &state, &clients, &native_out);
-        }
-
-        let output = String::from_utf8(client_sink.lock().unwrap().clone()).unwrap();
-        assert!(
-            output.contains("\"ok\":true"),
-            "missing success response: {output}"
-        );
-        assert!(
-            output.contains("\"requestId\":\"req-15\""),
-            "missing request id in response: {output}"
-        );
-        assert!(
-            output.contains("\"action\":\"snapshot\""),
-            "missing action in response: {output}"
-        );
-        assert!(
-            !clients.lock().unwrap().contains_key(&client_id),
-            "client should be removed after final async response"
-        );
-    }
-
-    #[test]
-    fn native_reader_thread_returns_async_response_to_client_end_to_end() {
-        let state = test_state(true);
-        let clients: Clients = Arc::new(Mutex::new(HashMap::new()));
-        let client_sink = Arc::new(Mutex::new(Vec::new()));
-        let client_writer: ClientWriter = Arc::new(Mutex::new(Box::new(SharedBufferWriter(
-            client_sink.clone(),
-        ))));
-        let client_id = 21;
-        clients.lock().unwrap().insert(client_id, client_writer);
-
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake native listener");
-        let addr = listener.local_addr().expect("fake native addr");
-        let extension_side = TcpStream::connect(addr).expect("connect fake native client");
-        let (host_side, _) = listener.accept().expect("accept fake native host side");
-        let host_reader = host_side.try_clone().expect("clone fake native host side");
-        let native_out: NativeWriter = Arc::new(Mutex::new(Box::new(host_side)));
-
-        start_native_reader_with(
-            host_reader,
-            state.clone(),
-            clients.clone(),
-            native_out.clone(),
-            false,
-        );
-
-        let request = r#"{"id":"req-21","action":"snapshot","params":{}}"#;
-        handle_client(
-            client_id,
-            Box::new(Cursor::new(format!("{request}\n").into_bytes())),
-            state,
-            clients.clone(),
-            native_out,
-            None,
-            false,
-        );
-
-        let mut extension_reader = extension_side.try_clone().expect("clone extension stream");
-        let native_request = read_native_message(&mut extension_reader)
-            .expect("read native request")
-            .expect("native request exists");
-        assert_eq!(native_request.action.as_deref(), Some("p:snapshot"));
-
-        let mut extension_writer = extension_side;
-        write_native_message(
-            &mut extension_writer,
-            &NativeMessage {
-                id: native_request.id,
-                action: Some("p:snapshot".to_string()),
-                ok: Some(true),
-                progress: None,
-                params: None,
-                data: Some(serde_json::json!({
-                    "windows": [],
-                    "generatedAt": 1700000001234_u64
-                })),
-                error: None,
-            },
-        )
-        .expect("write native response");
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let output = String::from_utf8(client_sink.lock().unwrap().clone()).unwrap();
-            if output.contains("\"requestId\":\"req-21\"") {
-                assert!(
-                    output.contains("\"ok\":true"),
-                    "missing success response: {output}"
-                );
-                assert!(
-                    output.contains("\"action\":\"snapshot\""),
-                    "missing action: {output}"
-                );
-                assert!(
-                    output.contains("\"generatedAt\":1700000001234"),
-                    "missing data: {output}"
-                );
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "timed out waiting for client response"
-            );
-            thread::sleep(Duration::from_millis(10));
-        }
     }
 }

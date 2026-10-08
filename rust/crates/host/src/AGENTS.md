@@ -3,7 +3,7 @@
 ## Current structure
 - `lib.rs`: top-level forwarding surface.
 - `host_impl.rs`: module map + forwarding shell (`run()`).
-- `host_impl/runtime.rs`: platform runtime wiring (unix/windows/tcp bootstrap).
+- `host_impl/runtime.rs`: macOS Unix-domain socket runtime bootstrap.
 - `host_impl/dispatch.rs`: client/native IO dispatch loop.
 - `host_impl/protocol.rs`: protocol framing + response helpers.
 - `host_impl/state.rs`: request/response state machine + action routing.
