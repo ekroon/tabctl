@@ -16,6 +16,7 @@ A **split hook gate** is active via `core.hooksPath=.githooks` (set by `npm inst
 - **pre-push** (`.githooks/pre-push`) runs heavier checks (`npm run rust:verify` and `npm run test:integration`) when Rust/build/hook-related files changed.
 - **local cross-target checks** are opt-in via `npm run check:targets` / `make dev-check-targets`; they check Apple Silicon and Intel macOS and require both rustup targets plus Xcode command-line tools.
 - Product support is macOS only, Edge and Chrome, with Unix-domain sockets. All CI and release jobs run on macOS.
+- Hosted Copilot review may use a managed Linux runner regardless of the setup job's runner setting. Its setup is source-only there; do not install, build, or run browser tests outside macOS.
 
 ## Project architecture
 

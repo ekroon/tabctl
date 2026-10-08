@@ -22,16 +22,24 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Node.js
+        if: runner.os == 'macOS'
         uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: "npm"
 
       - name: Set up Rust
+        if: runner.os == 'macOS'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
+        if: runner.os == 'macOS'
         run: npm ci
 
       - name: Build
+        if: runner.os == 'macOS'
         run: npm run build
+
+      - name: Explain source-only setup on managed non-macOS runners
+        if: runner.os != 'macOS'
+        run: echo "tabctl builds and tests require macOS. Review source here; use the required macOS CI checks for validation."
