@@ -61,6 +61,16 @@ impl MergeWindowOrchestration {
 }
 
 impl super::Orchestration for MergeWindowOrchestration {
+    fn mutation_scope(&self) -> super::MutationScope {
+        super::MutationScope {
+            tab_ids: Vec::new(),
+            window_ids: self
+                .state
+                .as_ref()
+                .map(|state| vec![state.from_window_id, state.to_window_id])
+                .unwrap_or_default(),
+        }
+    }
     fn start(&mut self) -> OrchStep {
         OrchStep::SendPrimitive {
             action: "p:snapshot".to_string(),

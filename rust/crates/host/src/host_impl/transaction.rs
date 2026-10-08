@@ -6,6 +6,10 @@ use super::policy::affected_tab_ids;
 use super::protocol::now_ms;
 use super::undo::append_undo_record;
 
+mod privacy;
+pub(super) use privacy::MutationScope;
+use privacy::Privacy;
+
 /// Write-ahead recovery stores only tabs targeted by issued primitives. Undo
 /// reconciles their current existence, including an effect whose reply was lost.
 #[derive(Debug)]
@@ -13,6 +17,7 @@ pub(super) struct Transaction {
     pub(super) snapshot: Value,
     pub(super) record: Map<String, Value>,
     pub(super) persisted: bool,
+    privacy: Option<Privacy>,
 }
 
 impl Transaction {
@@ -27,6 +32,7 @@ impl Transaction {
             .unwrap()
             .clone(),
             persisted: false,
+            privacy: None,
         }
     }
 
@@ -35,26 +41,22 @@ impl Transaction {
         action: &str,
         params: &Value,
         path: &Path,
+        scope: MutationScope,
     ) -> Result<(), String> {
         if self.snapshot.is_null() {
             return Err("Cannot mutate without a recovery snapshot".into());
         }
+        let privacy = privacy::classify(&self.snapshot, action, params, scope)?
+            .or(self.privacy)
+            .ok_or("Cannot determine mutation privacy scope from the recovery snapshot")?;
+        if self.privacy.is_some_and(|previous| previous != privacy) {
+            return Err("Cannot mix private and regular browser scopes in one transaction".into());
+        }
+        self.privacy = Some(privacy);
         let ids = affected_tab_ids(&self.snapshot, action, params);
         let tabs = select_tabs_by_scope(&self.snapshot, &json!({"tabIds": ids})).tabs;
-        let target_incognito = params
-            .get("windowId")
-            .and_then(Value::as_i64)
-            .is_some_and(|id| {
-                self.snapshot["windows"].as_array().is_some_and(|windows| {
-                    windows.iter().any(|window| {
-                        window["windowId"].as_i64() == Some(id)
-                            && window["incognito"].as_bool() == Some(true)
-                    })
-                })
-            })
-            || params["incognito"].as_bool() == Some(true);
         let undo = self.record.get_mut("undo").unwrap();
-        if target_incognito || tabs.iter().any(|tab| tab.incognito) {
+        if privacy == Privacy::Private {
             // Never persist private data, nor advertise durable undo for it.
             if self.persisted {
                 return Err("Cannot mix private tabs into a persisted transaction".into());
@@ -206,8 +208,13 @@ mod tests {
             {"tabId":1,"url":"https://a.example","index":0},
             {"tabId":2,"url":"https://b.example","index":1}
         ]}]});
-        tx.prepare("p:tab-remove", &json!({"tabIds":[1]}), &path)
-            .unwrap();
+        tx.prepare(
+            "p:tab-remove",
+            &json!({"tabIds":[1]}),
+            &path,
+            MutationScope::default(),
+        )
+        .unwrap();
         let records = super::super::undo::read_undo_records(&path);
         assert_eq!(records[0]["undo"]["tabs"].as_array().unwrap().len(), 1);
         assert_eq!(records[0]["undo"]["tabs"][0]["tabId"], 1);
@@ -217,6 +224,7 @@ mod tests {
             "p:tab-create",
             &json!({"windowId":1,"url":"https://new.example"}),
             &path,
+            MutationScope::default(),
         )
         .unwrap();
         tx.acknowledge("p:tab-create", &json!({"id":9}), &path)
@@ -237,8 +245,14 @@ mod tests {
                 .join(super::super::protocol::create_id("test"))
                 .join("undo.jsonl");
             let mut tx = Transaction::new("creation", "open");
-            tx.snapshot = json!({"windows":[]});
-            tx.prepare(action, &json!({}), &path).unwrap();
+            tx.snapshot = json!({"windows":[{"windowId":1,"tabs":[]}]});
+            let params = if action == "p:tab-create" {
+                json!({"windowId":1})
+            } else {
+                json!({})
+            };
+            tx.prepare(action, &params, &path, MutationScope::default())
+                .unwrap();
             let original = tx.record.clone();
             assert!(tx
                 .acknowledge(action, &response, &path)

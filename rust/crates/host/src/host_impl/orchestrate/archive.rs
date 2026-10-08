@@ -59,6 +59,19 @@ impl ArchiveOrchestration {
 }
 
 impl super::Orchestration for ArchiveOrchestration {
+    fn mutation_scope(&self) -> super::MutationScope {
+        self.state
+            .as_ref()
+            .map(|state| super::MutationScope {
+                tab_ids: state
+                    .batches
+                    .iter()
+                    .flat_map(|batch| batch.tab_ids.iter().copied())
+                    .collect(),
+                window_ids: state.archive_window_id.into_iter().collect(),
+            })
+            .unwrap_or_default()
+    }
     fn set_policy(&mut self, policy: Arc<Policy>) {
         self.policy = policy;
     }

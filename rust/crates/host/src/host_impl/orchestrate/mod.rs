@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::policy::Policy;
+use super::transaction::MutationScope;
 
 mod analyze;
 mod archive;
@@ -39,6 +40,11 @@ pub(super) struct OrchestrationContext {
 
 pub(super) trait Orchestration: Send + std::fmt::Debug {
     fn set_policy(&mut self, _policy: Arc<Policy>) {}
+    /// Multi-scope plans must disclose all affected sources and destinations
+    /// before their first mutation, rather than only the current primitive.
+    fn mutation_scope(&self) -> MutationScope {
+        MutationScope::default()
+    }
     fn recovery_checkpoint(&self) -> Option<Value> {
         None
     }

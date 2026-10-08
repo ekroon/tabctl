@@ -110,6 +110,36 @@ fn close_undo_restores_order_surviving_group_and_active_tab_once() {
 
 #[test]
 #[ignore = "requires built dist artifacts and Chrome or Edge"]
+fn open_exposes_exact_transaction_for_undo() {
+    let b = shared_browser();
+    let (id, _) = b.create_test_window(&["about:blank?open-keep"], None);
+    let _window = TestWindow { browser: b, id };
+    let before = snapshot(b, id);
+    let opened = b.run_query(&format!(
+        "mutation {{ openTabs(urls: [\"about:blank?open-one\", \"about:blank?open-two\"], windowId: {id}) {{ txid undoUnavailable tabs {{ tabId }} }} }}"
+    ));
+    assert_eq!(
+        response_data(&opened)["openTabs"]["tabs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        response_data(&opened)["openTabs"].get("undoUnavailable"),
+        Some(&Value::Null)
+    );
+    let transaction = txid(&opened, "openTabs");
+    let undo = b.run_query(&format!(
+        "mutation {{ undoAction(txid: {}) {{ txid }} }}",
+        gql_string(&transaction)
+    ));
+    assert_eq!(response_data(&undo)["undoAction"]["txid"], transaction);
+    assert_eq!(snapshot(b, id), before);
+}
+
+#[test]
+#[ignore = "requires built dist artifacts and Chrome or Edge"]
 fn dedupe_is_durable_and_reversible() {
     let b = shared_browser();
     let page = HttpFixture::html("<title>Dedupe fixture</title><main>Duplicate</main>".into());
@@ -218,16 +248,27 @@ fn policy_protects_pinned_tabs_through_the_real_host() {
     )
     .unwrap();
     let before = snapshot(b, id);
-    for mutation in [
-        format!("archiveTabs(windowId: {id}) {{ archivedTabs }}"),
-        format!("deduplicateTabs(windowId: {id}, confirm: true) {{ closedTabs }}"),
-        format!(
+    for (field, mutation) in [
+        ("archiveTabs", format!("archiveTabs(windowId: {id}) {{ txid undoUnavailable archivedTabs skippedTabs skipped {{ tabId reason }} }}")),
+        ("deduplicateTabs", format!("deduplicateTabs(windowId: {id}, confirm: true) {{ txid undoUnavailable closedTabs skippedTabs skipped {{ tabId reason }} }}")),
+        ("closeTabs", format!(
             "closeTabs(tabIds: [{}], confirm: true) {{ closedTabs }}",
             tabs[1]
-        ),
+        )),
     ] {
-        let _result = b.output(&["query", &format!("mutation {{ {mutation} }}")]);
+        let result = b.run_query(&format!("mutation {{ {mutation} }}"));
         assert_eq!(snapshot(b, id), before, "policy was bypassed by {mutation}");
+        if field != "closeTabs" {
+            let outcome = &response_data(&result)[field];
+            assert_eq!(outcome.get("txid"), Some(&Value::Null));
+            let skipped = outcome["skipped"].as_array().expect("policy exclusions");
+            assert!(!skipped.is_empty(), "policy reasons lost: {outcome}");
+            assert_eq!(outcome["skippedTabs"].as_u64(), Some(skipped.len() as u64));
+            assert!(skipped.iter().all(|tab| tab["reason"]
+                .as_str()
+                .unwrap()
+                .starts_with("protected_")));
+        }
     }
 }
 

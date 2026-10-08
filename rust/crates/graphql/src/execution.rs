@@ -163,4 +163,56 @@ mod tests {
             }}})
         );
     }
+
+    #[test]
+    fn archive_projects_no_transaction_outcomes_without_empty_ids() {
+        struct ArchiveSender(Value);
+        impl CommandSender for ArchiveSender {
+            fn send(&self, action: &str, _params: Value) -> Result<Value, String> {
+                assert_eq!(action, "archive");
+                Ok(self.0.clone())
+            }
+        }
+
+        for (host, expected) in [
+            (
+                serde_json::json!({
+                    "txid": null,
+                    "undoUnavailable": "private tabs are never persisted",
+                    "summary": {"archivedTabs": 1}
+                }),
+                serde_json::json!({
+                    "txid": null,
+                    "undoUnavailable": "private tabs are never persisted",
+                    "archivedTabs": 1, "skippedTabs": 0, "skipped": []
+                }),
+            ),
+            (
+                serde_json::json!({
+                    "txid": null,
+                    "summary": {"archivedTabs": 0, "skippedTabs": 1},
+                    "skipped": [{"tabId": 7, "reason": "protected_pinned"}]
+                }),
+                serde_json::json!({
+                    "txid": null, "undoUnavailable": null,
+                    "archivedTabs": 0, "skippedTabs": 1,
+                    "skipped": [{"tabId": 7, "reason": "protected_pinned"}]
+                }),
+            ),
+        ] {
+            let response = execute(
+                "mutation { archiveTabs(tabIds: [7]) {
+                    txid undoUnavailable archivedTabs skippedTabs skipped { tabId reason }
+                } }",
+                None,
+                serde_json::json!({}),
+                Arc::new(ArchiveSender(host)),
+            )
+            .unwrap();
+            assert_eq!(
+                response,
+                serde_json::json!({"data": {"archiveTabs": expected}})
+            );
+        }
+    }
 }

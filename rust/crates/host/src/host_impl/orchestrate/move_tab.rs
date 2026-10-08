@@ -148,7 +148,7 @@ impl MoveTabOrchestration {
             self.phase = Phase::WindowCreated;
             OrchStep::SendPrimitive {
                 action: "p:window-create".to_string(),
-                params: serde_json::json!({"tabId": tab_id, "focused": false}),
+                params: serde_json::json!({"tabId": tab_id, "focused": false, "incognito": source_tab.incognito}),
             }
         } else {
             // Resolve target window — explicit windowId takes priority, then anchor

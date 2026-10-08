@@ -206,13 +206,21 @@ journal before retrying; deleting it discards recovery information. A valid fina
 record without a newline is preserved when appending. Incognito actions do not
 persist undo data.
 
-A successful private-tab close returns its actual `closedTabs` count,
-`txid: null`, and an `undoUnavailable` reason; it does not pretend the close
-failed or manufacture a transaction ID. Request that field when reporting the
-result:
+Mutations whose affected tabs or windows mix private and non-private browsing
+are rejected before the first change. Unrelated private windows do not block a
+normal operation; new-window moves preserve the source's privacy.
+
+`openTabs`, `closeTabs`, `archiveTabs`, and `deduplicateTabs` return an optional
+`txid`; retain it for `undoAction(txid: ...)` instead of racing another operation
+with `latest: true`. Successful private-tab mutations return their actual results,
+`txid: null`, and an `undoUnavailable` reason; they do not pretend the mutation
+failed or manufacture a transaction ID. Close, archive, and dedupe also expose
+`skippedTabs` and per-tab `skipped { tabId reason }` policy exclusions. A fully
+protected selection can succeed without changes or a transaction.
 
 ```bash
 tabctl query 'mutation { closeTabs(tabIds: [456], confirm: true) { closedTabs txid undoUnavailable } }'
+tabctl query 'mutation { archiveTabs(windowId: 123) { archivedTabs txid undoUnavailable skippedTabs skipped { tabId reason } } }'
 ```
 
 ## Configuration

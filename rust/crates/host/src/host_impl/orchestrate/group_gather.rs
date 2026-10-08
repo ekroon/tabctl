@@ -48,6 +48,22 @@ impl GroupGatherOrchestration {
 }
 
 impl super::Orchestration for GroupGatherOrchestration {
+    fn mutation_scope(&self) -> super::MutationScope {
+        super::MutationScope {
+            tab_ids: self
+                .state
+                .as_ref()
+                .map(|state| {
+                    state
+                        .merge_queue
+                        .iter()
+                        .flat_map(|op| op.tab_ids.iter().copied())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            window_ids: Vec::new(),
+        }
+    }
     fn start(&mut self) -> OrchStep {
         OrchStep::SendPrimitive {
             action: "p:snapshot".to_string(),

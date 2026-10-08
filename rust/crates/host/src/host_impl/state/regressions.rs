@@ -3,10 +3,10 @@ use crate::host_impl::orchestrate::{OrchStep, Orchestration};
 use serde_json::json;
 use std::fs;
 
-struct Fixture(PathBuf);
+pub(super) struct Fixture(PathBuf);
 
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/recovery-regressions")
             .join(create_id("test"));
@@ -14,7 +14,7 @@ impl Fixture {
         Self(path)
     }
 
-    fn state(&self) -> HostState {
+    pub(super) fn state(&self) -> HostState {
         HostState::new(self.0.join("undo.jsonl"), self.0.join("focus.db"), None)
     }
 }
@@ -25,7 +25,7 @@ impl Drop for Fixture {
     }
 }
 
-fn request(action: &str, params: Value) -> RequestEnvelope {
+pub(super) fn request(action: &str, params: Value) -> RequestEnvelope {
     RequestEnvelope {
         id: Some(create_id("request")),
         action: action.into(),
@@ -34,7 +34,7 @@ fn request(action: &str, params: Value) -> RequestEnvelope {
     }
 }
 
-fn reply(id: &str, data: Value) -> NativeMessage {
+pub(super) fn reply(id: &str, data: Value) -> NativeMessage {
     NativeMessage {
         id: id.into(),
         action: None,
@@ -64,7 +64,7 @@ fn begin_close(state: &mut HostState) -> (String, String) {
     (remove.id.clone(), txid)
 }
 
-fn assert_error(effects: &[HostEffect], needle: &str) {
+pub(super) fn assert_error(effects: &[HostEffect], needle: &str) {
     let [HostEffect::Respond { payload, .. }] = effects else {
         panic!("must not dispatch browser work")
     };

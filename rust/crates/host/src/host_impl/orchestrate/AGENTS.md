@@ -38,6 +38,7 @@ New commands: add a file here, implement `Orchestration`, wire into `orchestrati
 - `undo.rs` and `undo/`: normalize historical/write-ahead payloads, reconcile current browser IDs, restore placement/groups, and remove only recorded created tabs.
 
 Durable recovery is captured centrally at the host primitive boundary in `transaction.rs`, not inferred from orchestration success. Explicit empty tab selections must never broaden scope.
+Multi-scope plans implement `mutation_scope()` with all planned tab sources and destination windows before their first mutation. Transaction preflight rejects mixed private/regular scopes without touching the browser or persisting private data.
 
 **Analysis & capture:**
 - `analyze.rs`: `analyze` — stale/duplicate detection.

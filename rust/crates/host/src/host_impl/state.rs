@@ -24,6 +24,8 @@ use super::undo::{
 
 const HISTORY_LIMIT_DEFAULT: usize = 20;
 mod orchestration;
+#[cfg(test)]
+mod privacy_tests;
 mod recovery;
 #[cfg(test)]
 mod regressions;

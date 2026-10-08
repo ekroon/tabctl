@@ -3,7 +3,8 @@ use juniper::{graphql_object, EmptySubscription, FieldResult, GraphQLEnum, RootN
 use crate::context::GqlContext;
 use crate::convert::{tab_from_value, windows_from_snapshot};
 use crate::response::{
-    close_from_response, live_group_result, ping_from_response, undo_from_response,
+    close_from_response, live_group_result, ping_from_response, skipped_tabs, undo_from_response,
+    undo_metadata,
 };
 use crate::types::*;
 
@@ -1251,7 +1252,7 @@ impl Mutation {
             .send("open", serde_json::Value::Object(params))
             .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
 
-        let tabs = response
+        let tabs: Vec<Tab> = response
             .get("created")
             .and_then(|v| v.as_array())
             .map(|arr| {
@@ -1295,7 +1296,10 @@ impl Mutation {
             .and_then(|v| v.as_i64())
             .map(|v| v as i32);
 
+        let (txid, undo_unavailable) = undo_metadata(&response, !tabs.is_empty())?;
         Ok(OpenResult {
+            txid,
+            undo_unavailable,
             tabs,
             skipped_urls,
             window_id,
@@ -1714,20 +1718,24 @@ impl Mutation {
             .send("archive", serde_json::Value::Object(params))
             .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
 
-        let txid = response
-            .get("txid")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
         let archived_tabs = response
             .get("summary")
             .and_then(|s| s.get("archivedTabs"))
             .and_then(|v| v.as_i64())
             .unwrap_or(0) as i32;
 
+        let (txid, undo_unavailable) = undo_metadata(&response, archived_tabs > 0)?;
+        let skipped = skipped_tabs(&response)?;
         Ok(ArchiveResult {
             txid,
+            undo_unavailable,
             archived_tabs,
+            skipped_tabs: response
+                .get("summary")
+                .and_then(|s| s.get("skippedTabs"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(skipped.len() as i64) as i32,
+            skipped,
         })
     }
 
@@ -1776,16 +1784,23 @@ impl Mutation {
             .send("analyze", serde_json::Value::Object(params))
             .map_err(|e| juniper::FieldError::new(e, juniper::Value::Null))?;
 
+        let closed_tabs = response
+            .get("dedupeSummary")
+            .and_then(|s| s.get("closedTabs"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32;
+        let (txid, undo_unavailable) = undo_metadata(&response, closed_tabs > 0)?;
+        let skipped = skipped_tabs(&response)?;
         Ok(DedupeResult {
-            txid: response
-                .get("txid")
-                .and_then(|v| v.as_str())
-                .map(|v| v.to_string()),
-            closed_tabs: response
+            txid,
+            undo_unavailable,
+            closed_tabs,
+            skipped_tabs: response
                 .get("dedupeSummary")
-                .and_then(|s| s.get("closedTabs"))
+                .and_then(|s| s.get("skippedTabs"))
                 .and_then(|v| v.as_i64())
-                .unwrap_or(0) as i32,
+                .unwrap_or(skipped.len() as i64) as i32,
+            skipped,
             duplicate_groups: response
                 .get("duplicates")
                 .and_then(|v| v.as_array())
@@ -1829,6 +1844,7 @@ mod tests {
                     Err("Browser round trips are covered by isolated integration tests".to_string())
                 }
                 "open" => Ok(serde_json::json!({
+                    "txid": "tx-open-1",
                     "windowId": 100,
                     "groupId": 10,
                     "created": [

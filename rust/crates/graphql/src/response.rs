@@ -62,6 +62,57 @@ pub(crate) fn ping_from_response(response: &Value, latency_ms: f64) -> FieldResu
     })
 }
 
+pub(crate) fn undo_metadata(
+    response: &Value,
+    mutated: bool,
+) -> FieldResult<(Option<String>, Option<String>)> {
+    let txid = match response.get("txid") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(txid)) if !txid.trim().is_empty() => Some(txid.clone()),
+        Some(_) => {
+            return Err(invalid(
+                "Host response has an invalid undo transaction identifier",
+            ))
+        }
+    };
+    let unavailable = match response.get("undoUnavailable") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(reason)) if !reason.trim().is_empty() => Some(reason.clone()),
+        Some(_) => {
+            return Err(invalid(
+                "Host response has an invalid undoUnavailable reason",
+            ))
+        }
+    };
+    if mutated && txid.is_none() && unavailable.is_none() {
+        return Err(invalid(
+            "Mutation completed but host response is missing the undo transaction identifier",
+        ));
+    }
+    Ok((txid, unavailable))
+}
+
+pub(crate) fn skipped_tabs(response: &Value) -> FieldResult<Vec<SkippedTab>> {
+    let items = match response.get("skipped") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(items)) => items,
+        Some(_) => return Err(invalid("Host response has an invalid skipped tab list")),
+    };
+    items
+        .iter()
+        .map(|item| {
+            Ok(SkippedTab {
+                tab_id: item
+                    .get("tabId")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| invalid("Skipped result is missing tabId"))?
+                    as i32,
+                reason: required_string(item, "reason")?,
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn close_from_response(
     response: &Value,
     remaining_tabs: Vec<Tab>,
@@ -78,45 +129,8 @@ pub(crate) fn close_from_response(
         .get("dryRun")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let txid = response
-        .get("txid")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(String::from);
-    let undo_unavailable = match response.get("undoUnavailable") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(reason)) if !reason.trim().is_empty() => Some(reason.clone()),
-        Some(_) => {
-            return Err(invalid(
-                "Close response has an invalid undoUnavailable reason",
-            ))
-        }
-    };
-    if !dry_run && closed_tabs > 0 && txid.is_none() && undo_unavailable.is_none() {
-        return Err(invalid(
-            "Tabs closed but host response is missing the undo transaction identifier",
-        ));
-    }
-    let skipped = response
-        .get("skipped")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .map(|item| {
-                    Ok(SkippedTab {
-                        tab_id: item
-                            .get("tabId")
-                            .and_then(Value::as_i64)
-                            .ok_or_else(|| invalid("Skipped close result is missing tabId"))?
-                            as i32,
-                        reason: required_string(item, "reason")?,
-                    })
-                })
-                .collect::<FieldResult<Vec<_>>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
+    let (txid, undo_unavailable) = undo_metadata(response, !dry_run && closed_tabs > 0)?;
+    let skipped = skipped_tabs(response)?;
     let tabs = response
         .get("tabs")
         .and_then(Value::as_array)
