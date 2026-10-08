@@ -6,7 +6,25 @@ use crate::host_impl::policy::affected_tab_ids;
 #[derive(Debug, Default)]
 pub(in crate::host_impl) struct MutationScope {
     pub(in crate::host_impl) tab_ids: Vec<i64>,
+    pub(in crate::host_impl) group_ids: Vec<i64>,
+    // Privacy context only: unrelated tabs in these windows are not policy targets.
     pub(in crate::host_impl) window_ids: Vec<i64>,
+}
+
+impl MutationScope {
+    pub(in crate::host_impl) fn affected_tab_ids(&self, snapshot: &Value) -> Vec<i64> {
+        let mut ids = self.tab_ids.clone();
+        for id in &self.group_ids {
+            ids.extend(affected_tab_ids(
+                snapshot,
+                "p:tab-group",
+                &json!({"groupId":id}),
+            ));
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,7 +53,12 @@ pub(super) fn classify(
         private |= incognito;
         regular |= !incognito;
     };
-    for tab in select_tabs_by_scope(snapshot, &json!({"tabIds":scope.tab_ids})).tabs {
+    for tab in select_tabs_by_scope(
+        snapshot,
+        &json!({"tabIds":scope.affected_tab_ids(snapshot)}),
+    )
+    .tabs
+    {
         include(tab.incognito);
     }
     for window in snapshot["windows"].as_array().into_iter().flatten() {

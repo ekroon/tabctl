@@ -304,6 +304,67 @@ fn policy_protects_pinned_tabs_through_the_real_host() {
 
 #[test]
 #[ignore = "requires built dist artifacts and Chrome or Edge"]
+fn protected_destination_group_rejects_before_moving_source_tabs() {
+    let b = shared_browser();
+    let (source, tabs) = b.create_test_window(
+        &["about:blank?source-move", "about:blank?source-keep"],
+        None,
+    );
+    let _source = TestWindow {
+        browser: b,
+        id: source,
+    };
+    let (destination, _) = b.create_test_window(
+        &["about:blank?protected-destination"],
+        Some("TEST-Policy-Destination"),
+    );
+    let _destination = TestWindow {
+        browser: b,
+        id: destination,
+    };
+    let path = b.config_home.join("tabctl/policy.json");
+    let previous = match fs::read(&path) {
+        Ok(previous) => Some(previous),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => panic!("read sandbox policy: {error}"),
+    };
+    let _policy = PolicyGuard {
+        path: path.clone(),
+        previous,
+    };
+    fs::write(
+        &path,
+        r#"{"protect":{"groupTitles":["TEST-Policy-Destination"]}}"#,
+    )
+    .unwrap();
+    let before_source = snapshot(b, source);
+    let before_destination = snapshot(b, destination);
+    let result = b.output(&[
+        "query",
+        &format!(
+            "mutation {{ assignToGroup(tabIds: [{}], groupTitle: \"TEST-Policy-Destination\") {{ groupId }} }}",
+            tabs[0]
+        ),
+    ]);
+    assert!(!result.status.success(), "protected assignment must fail");
+    let error: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert!(error["errors"]
+        .as_array()
+        .is_some_and(|errors| !errors.is_empty()));
+    assert_eq!(
+        snapshot(b, source),
+        before_source,
+        "source moved before policy rejection"
+    );
+    assert_eq!(
+        snapshot(b, destination),
+        before_destination,
+        "protected destination changed"
+    );
+}
+
+#[test]
+#[ignore = "requires built dist artifacts and Chrome or Edge"]
 fn partial_group_failure_records_recovery_and_cli_reports_errors() {
     let b = shared_browser();
     let (id, tabs) = b.create_test_window(&["about:blank?partial", "about:blank?keep"], None);

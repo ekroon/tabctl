@@ -78,6 +78,7 @@ impl super::Orchestration for MoveGroupOrchestration {
             .map(|state| super::MutationScope {
                 tab_ids: state.tab_ids.clone(),
                 window_ids: state.target_window_id.into_iter().collect(),
+                ..super::MutationScope::default()
             })
             .unwrap_or_default()
     }

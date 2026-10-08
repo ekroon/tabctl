@@ -69,6 +69,7 @@ impl super::Orchestration for ArchiveOrchestration {
                     .flat_map(|batch| batch.tab_ids.iter().copied())
                     .collect(),
                 window_ids: state.archive_window_id.into_iter().collect(),
+                ..super::MutationScope::default()
             })
             .unwrap_or_default()
     }

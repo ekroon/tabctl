@@ -2,7 +2,7 @@ use super::regressions::{assert_error, reply, request, Fixture};
 use super::*;
 use serde_json::json;
 
-fn window(id: i64, private: bool) -> Value {
+pub(super) fn window(id: i64, private: bool) -> Value {
     let host = if private {
         "private.example"
     } else {
@@ -18,7 +18,12 @@ fn window(id: i64, private: bool) -> Value {
     })
 }
 
-fn start(state: &mut HostState, action: &str, params: Value, snapshot: Value) -> Vec<HostEffect> {
+pub(super) fn start(
+    state: &mut HostState,
+    action: &str,
+    params: Value,
+    snapshot: Value,
+) -> Vec<HostEffect> {
     let effects = state.handle_cli_request(1, request(action, params));
     let [HostEffect::SendNative(native)] = effects.as_slice() else {
         panic!("expected initial snapshot: {effects:?}")

@@ -39,6 +39,7 @@ New commands: add a file here, implement `Orchestration`, wire into `orchestrati
 
 Durable recovery is captured centrally at the host primitive boundary in `transaction.rs`, not inferred from orchestration success. Explicit empty tab selections must never broaden scope.
 Multi-scope plans implement `mutation_scope()` with all planned tab sources and destination windows before their first mutation. Transaction preflight rejects mixed private/regular scopes without touching the browser or persisting private data.
+Include all existing groups whose members will be touched by later steps. Shared policy admission checks planned tab/group targets before the first mutation; destination window context does not imply touching all its tabs. Preserve filtered eligible plans and undo exemption.
 
 **Analysis & capture:**
 - `analyze.rs`: `analyze` — stale/duplicate detection.

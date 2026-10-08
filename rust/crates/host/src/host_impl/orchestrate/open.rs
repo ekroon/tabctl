@@ -61,6 +61,13 @@ impl OpenOrchestration {
 }
 
 impl super::Orchestration for OpenOrchestration {
+    fn mutation_scope(&self) -> super::MutationScope {
+        super::MutationScope {
+            group_ids: self.state.existing_group_id.into_iter().collect(),
+            window_ids: self.state.window_id.into_iter().collect(),
+            ..super::MutationScope::default()
+        }
+    }
     fn start(&mut self) -> OrchStep {
         // Parse params
         let urls: Vec<String> = self

@@ -51,6 +51,7 @@ impl super::Orchestration for GroupAssignOrchestration {
             .as_ref()
             .map(|state| super::MutationScope {
                 tab_ids: state.resolved_tab_ids.clone(),
+                group_ids: state.target_group_id.into_iter().collect(),
                 window_ids: vec![state.target_window_id],
             })
             .unwrap_or_default()

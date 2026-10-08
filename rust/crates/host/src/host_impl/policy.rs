@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 use super::orchestrate::scope::{select_tabs_by_scope, ScopedTab};
+use super::transaction::MutationScope;
 
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct Policy {
@@ -67,7 +68,18 @@ impl Policy {
         action: &str,
         params: &Value,
     ) -> Result<(), String> {
-        let ids = affected_tab_ids(snapshot, action, params);
+        self.check_tabs(snapshot, affected_tab_ids(snapshot, action, params))
+    }
+
+    pub(super) fn check_scope(
+        &self,
+        snapshot: &Value,
+        scope: &MutationScope,
+    ) -> Result<(), String> {
+        self.check_tabs(snapshot, scope.affected_tab_ids(snapshot))
+    }
+
+    fn check_tabs(&self, snapshot: &Value, ids: Vec<i64>) -> Result<(), String> {
         let tabs = select_tabs_by_scope(snapshot, &serde_json::json!({"tabIds": ids})).tabs;
         let protected: Vec<_> = tabs
             .iter()

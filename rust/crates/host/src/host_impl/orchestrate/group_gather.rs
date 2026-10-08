@@ -61,6 +61,17 @@ impl super::Orchestration for GroupGatherOrchestration {
                         .collect()
                 })
                 .unwrap_or_default(),
+            group_ids: self
+                .state
+                .as_ref()
+                .map(|state| {
+                    state
+                        .merge_queue
+                        .iter()
+                        .map(|op| op.primary_group_id)
+                        .collect()
+                })
+                .unwrap_or_default(),
             window_ids: Vec::new(),
         }
     }

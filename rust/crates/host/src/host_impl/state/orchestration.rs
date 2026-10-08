@@ -66,14 +66,11 @@ impl HostState {
                         txid.as_ref()
                             .and_then(|id| self.transactions.get_mut(id))
                             .map(|tx| {
+                                let scope = orch.mutation_scope();
+                                self.policy.check_scope(&tx.snapshot, &scope)?;
                                 self.policy
                                     .check_primitive(&tx.snapshot, &prim_action, &params)?;
-                                tx.prepare(
-                                    &prim_action,
-                                    &params,
-                                    &self.undo_log,
-                                    orch.mutation_scope(),
-                                )
+                                tx.prepare(&prim_action, &params, &self.undo_log, scope)
                             })
                             .unwrap_or_else(|| Err("Mutation has no recovery transaction".into()))
                     };

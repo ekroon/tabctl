@@ -63,12 +63,24 @@ impl MergeWindowOrchestration {
 impl super::Orchestration for MergeWindowOrchestration {
     fn mutation_scope(&self) -> super::MutationScope {
         super::MutationScope {
-            tab_ids: Vec::new(),
+            tab_ids: self
+                .state
+                .as_ref()
+                .map(|state| {
+                    state
+                        .batches
+                        .iter()
+                        .flat_map(|batch| batch.tab_ids.iter().copied())
+                        .chain(state.ungrouped_tab_ids.iter().copied())
+                        .collect()
+                })
+                .unwrap_or_default(),
             window_ids: self
                 .state
                 .as_ref()
                 .map(|state| vec![state.from_window_id, state.to_window_id])
                 .unwrap_or_default(),
+            ..super::MutationScope::default()
         }
     }
     fn start(&mut self) -> OrchStep {
